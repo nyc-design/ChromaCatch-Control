@@ -78,5 +78,5 @@ class TestESP32Client:
     @pytest.mark.asyncio
     async def test_connection_error_raises(self, client):
         with patch.object(client._client, "post", new_callable=AsyncMock, side_effect=httpx.ConnectError("refused")):
-            with pytest.raises(httpx.ConnectError):
+            with pytest.raises(Exception):
                 await client.move(10, 10)

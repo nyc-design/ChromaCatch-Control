@@ -1,6 +1,10 @@
 """HTTP client for sending HID commands to the ESP32."""
 
+import asyncio
+import json
 import logging
+import urllib.error
+import urllib.request
 
 import httpx
 
@@ -57,6 +61,19 @@ class ESP32Client:
             limits=limits,
         )
 
+    def _urllib_request(self, method: str, path: str, payload: dict | None = None) -> dict:
+        """Fallback HTTP request using stdlib urllib (runs in thread)."""
+        url = f"{self._base_url}{path}"
+        data = None
+        headers = {}
+        if payload is not None:
+            data = json.dumps(payload).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        with urllib.request.urlopen(req, timeout=self.timeout) as response:
+            body = response.read().decode("utf-8")
+            return json.loads(body) if body else {}
+
     async def send_command(self, command: HIDCommand) -> dict:
         """Send a HID command to the ESP32."""
         payload = command.to_dict()
@@ -67,9 +84,20 @@ class ESP32Client:
             result = response.json()
             logger.debug("ESP32 response: %s", result)
             return result
-        except httpx.ConnectError:
-            logger.error("Cannot connect to ESP32 at %s", self._base_url)
-            raise
+        except httpx.ConnectError as e:
+            logger.warning("HTTPX connect failed to ESP32 (%s), retrying with urllib", e)
+            try:
+                result = await asyncio.to_thread(
+                    self._urllib_request,
+                    "POST",
+                    "/command",
+                    payload,
+                )
+                logger.debug("ESP32 response (urllib fallback): %s", result)
+                return result
+            except Exception:
+                logger.error("Cannot connect to ESP32 at %s", self._base_url)
+                raise
         except httpx.HTTPStatusError as e:
             logger.error("ESP32 returned error: %s", e.response.text)
             raise
@@ -89,13 +117,20 @@ class ESP32Client:
             response = await self._client.get("/ping")
             return response.status_code == 200
         except httpx.HTTPError:
-            return False
+            try:
+                await asyncio.to_thread(self._urllib_request, "GET", "/ping", None)
+                return True
+            except Exception:
+                return False
 
     async def status(self) -> dict:
         """Get ESP32 status (BLE connection state, etc.)."""
-        response = await self._client.get("/status")
-        response.raise_for_status()
-        return response.json()
+        try:
+            response = await self._client.get("/status")
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError:
+            return await asyncio.to_thread(self._urllib_request, "GET", "/status", None)
 
     async def close(self) -> None:
         await self._client.aclose()
