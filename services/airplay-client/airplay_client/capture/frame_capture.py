@@ -335,7 +335,7 @@ class FrameCapture:
                 logger.info("GStreamer not ready: %s — retrying in 3s...", e)
                 time.sleep(3)
 
-        frame_idx: int | None = None
+        last_frame_idx = -1
 
         while self._running:
             # Check if GStreamer process died
@@ -343,11 +343,15 @@ class FrameCapture:
                 logger.warning("GStreamer process exited (rc=%d)", self._gst_proc.returncode)
                 break
 
-            next_frame = self._pick_next_frame_path(frame_dir=frame_dir, frame_idx=frame_idx)
-            if next_frame is None:
+            files = self._list_frame_files(frame_dir)
+            newer_files = [(idx, path) for idx, path in files if idx > last_frame_idx]
+            if not newer_files:
                 time.sleep(0.01)
                 continue
-            frame_path, frame_idx = next_frame
+
+            # Always consume the newest completed frame available to avoid stalling
+            # on missing/intermediate indices when multifilesink rolls quickly.
+            frame_idx, frame_path = newer_files[-1]
 
             if self._get_stable_file_size(frame_path, timeout=1.0) <= 0:
                 time.sleep(0.005)
@@ -362,15 +366,9 @@ class FrameCapture:
                     if frame is None:
                         raise ValueError("imdecode returned None")
                     self._push_frame(frame)
+                    last_frame_idx = frame_idx
             except (OSError, ValueError) as e:
                 logger.debug("Frame %d read error: %s", frame_idx, e)
-
-            try:
-                os.remove(frame_path)
-            except OSError:
-                pass
-
-            frame_idx = frame_idx + 1
 
         logger.info("GStreamer CLI capture loop stopped")
 
