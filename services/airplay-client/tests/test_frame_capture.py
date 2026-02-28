@@ -108,25 +108,25 @@ class TestFrameCapture:
         assert size == 1234
 
     def test_list_frame_files_sorted(self, capture, tmp_path: Path):
-        (tmp_path / "frame_00010.raw").write_bytes(b"a")
-        (tmp_path / "frame_00002.raw").write_bytes(b"a")
-        (tmp_path / "frame_00001.raw").write_bytes(b"a")
+        (tmp_path / "frame_00010.jpg").write_bytes(b"a")
+        (tmp_path / "frame_00002.jpg").write_bytes(b"a")
+        (tmp_path / "frame_00001.jpg").write_bytes(b"a")
         files = capture._list_frame_files(str(tmp_path))
         assert [idx for idx, _ in files] == [1, 2, 10]
 
     def test_pick_next_frame_path_uses_first_when_frame_idx_none(self, capture, tmp_path: Path):
-        (tmp_path / "frame_00004.raw").write_bytes(b"a")
-        (tmp_path / "frame_00009.raw").write_bytes(b"a")
+        (tmp_path / "frame_00004.jpg").write_bytes(b"a")
+        (tmp_path / "frame_00009.jpg").write_bytes(b"a")
         path, idx = capture._pick_next_frame_path(str(tmp_path), None)
         assert idx == 4
-        assert path.endswith("frame_00004.raw")
+        assert path.endswith("frame_00004.jpg")
 
     def test_pick_next_frame_path_jumps_forward_when_missing(self, capture, tmp_path: Path):
-        (tmp_path / "frame_00105.raw").write_bytes(b"a")
-        (tmp_path / "frame_00108.raw").write_bytes(b"a")
+        (tmp_path / "frame_00105.jpg").write_bytes(b"a")
+        (tmp_path / "frame_00108.jpg").write_bytes(b"a")
         path, idx = capture._pick_next_frame_path(str(tmp_path), 100)
         assert idx == 105
-        assert path.endswith("frame_00105.raw")
+        assert path.endswith("frame_00105.jpg")
 
     def test_stop_when_not_started(self, capture):
         capture.stop()

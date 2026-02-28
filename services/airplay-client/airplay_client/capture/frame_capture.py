@@ -74,20 +74,18 @@ class FrameCapture:
         )
 
 
-    def _start_gst_cli_process(self) -> tuple[str, int, int]:
+    def _start_gst_cli_process(self) -> str:
         """Start gst-launch-1.0 with multifilesink for frame capture.
 
-        Uses a SINGLE pipeline that writes decoded BGR frames to temp files.
-        This avoids the SPS/PPS timing issue — the iPhone only sends SPS/PPS +
-        IDR keyframe once at AirPlay connection time, so we must keep one
-        continuous pipeline from the start. A two-phase approach (probe then
-        restart) would lose the keyframe and never decode.
+        Uses a SINGLE pipeline that writes decoded JPEG frames to temp files.
+        JPEG output avoids raw-frame resolution inference issues and prevents
+        warped output when caps negotiation logs are unavailable.
 
         On macOS, gst-launch outputs verbose info to stdout (not only stderr),
         so fdsink is unusable (raw frame bytes + text would mix). multifilesink
         avoids this entirely by writing frame bytes to disk.
 
-        Returns (frame_dir, width, height). Stores proc in self._gst_proc.
+        Returns frame_dir. Stores proc in self._gst_proc.
         """
         import tempfile
 
@@ -96,7 +94,7 @@ class FrameCapture:
             raise RuntimeError("gst-launch-1.0 not found. Install GStreamer.")
 
         frame_dir = tempfile.mkdtemp(prefix="chromacatch_frames_")
-        frame_pattern = os.path.join(frame_dir, "frame_%05d.raw")
+        frame_pattern = os.path.join(frame_dir, "frame_%05d.jpg")
         cmd = [
             gst_path,
             "-v",
@@ -104,10 +102,11 @@ class FrameCapture:
             "caps=application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000",
             "!", "rtpjitterbuffer", "latency=50", "drop-on-latency=true",
             "!", "rtph264depay", "!", "h264parse", "!", "avdec_h264",
-            "!", "videoconvert", "!", "video/x-raw,format=BGR",
+            "!", "videoconvert",
+            "!", "jpegenc", "quality=85",
             "!", "multifilesink",
             f"location={frame_pattern}",
-            "max-files=30",
+            "max-files=60",
             "next-file=buffer",
             "sync=false",
             "async=false",
@@ -117,13 +116,7 @@ class FrameCapture:
         self._gst_proc = proc
         self._frame_dir = frame_dir
 
-        # Wait for negotiated caps + first frame file.
-        # We prefer parsing width/height from verbose caps output because
-        # inferring from raw byte size is ambiguous (multiple valid WxH pairs).
-        width, height = 0, 0
-        resolution_source: str | None = None
-        fallback_set_at: float | None = None
-        first_frame_seen_at: float | None = None
+        # Wait for first decoded JPEG frame.
         deadline = time.time() + 120
         logger.info("GStreamer pid=%d, waiting for first decoded frame...", proc.pid)
 
@@ -142,71 +135,16 @@ class FrameCapture:
                 text = line.decode("utf-8", errors="replace").rstrip() if line else ""
                 if text:
                     logger.debug("[gst] %s", text)
-                    caps_resolution = self._extract_resolution_from_caps_line(text)
-                    if caps_resolution:
-                        caps_w, caps_h = caps_resolution
-                        if (
-                            resolution_source == "fallback"
-                            and (caps_w != width or caps_h != height)
-                        ):
-                            logger.info(
-                                "Caps resolution (%dx%d) overrides fallback (%dx%d)",
-                                caps_w,
-                                caps_h,
-                                width,
-                                height,
-                            )
-                        width, height = caps_w, caps_h
-                        resolution_source = "caps"
-                        logger.info(
-                            "Detected stream resolution from caps: %dx%d",
-                            width,
-                            height,
-                        )
-
             latest_frame = self._pick_next_frame_path(frame_dir=frame_dir, frame_idx=None)
             if latest_frame is not None:
                 frame_path, _ = latest_frame
-                if first_frame_seen_at is None:
-                    first_frame_seen_at = time.time()
-
-                time.sleep(0.05)  # Let the file finish writing
-                if (width == 0 or height == 0) and (
-                    first_frame_seen_at is not None
-                    and time.time() - first_frame_seen_at >= 1.0
-                ):
-                    frame_bytes = self._get_stable_file_size(frame_path, timeout=0.8)
-                    if frame_bytes > 0:
-                        inferred = self._infer_resolution_from_frame_size(frame_bytes)
-                        if inferred:
-                            width, height = inferred
-                            resolution_source = "fallback"
-                            fallback_set_at = time.time()
-                            logger.info(
-                                "Detected stream resolution from frame size fallback: %dx%d",
-                                width,
-                                height,
-                            )
-                        else:
-                            logger.warning(
-                                "Could not determine resolution from frame size %d",
-                                frame_bytes,
-                            )
-
-                if width > 0 and height > 0 and resolution_source == "caps":
-                    break
-                if (
-                    width > 0
-                    and height > 0
-                    and resolution_source == "fallback"
-                    and fallback_set_at is not None
-                    and time.time() - fallback_set_at >= 1.0
-                ):
+                frame_bytes = self._get_stable_file_size(frame_path, timeout=0.8)
+                if frame_bytes > 0:
                     break
 
             time.sleep(0.5)
 
-        if width == 0 or height == 0:
+        if self._pick_next_frame_path(frame_dir=frame_dir, frame_idx=None) is None:
             proc.terminate()
             try:
                 proc.wait(timeout=3)
@@ -220,14 +158,13 @@ class FrameCapture:
         for stream in (proc.stdout, proc.stderr):
             threading.Thread(target=self._drain_stream, args=(stream,), daemon=True).start()
 
-        logger.info("Using stream resolution: %dx%d", width, height)
-        return frame_dir, width, height
+        return frame_dir
 
     @staticmethod
     def _list_frame_files(frame_dir: str) -> list[tuple[int, str]]:
         """List available raw frame files sorted by frame index."""
         result: list[tuple[int, str]] = []
-        for path in Path(frame_dir).glob("frame_*.raw"):
+        for path in Path(frame_dir).glob("frame_*.*"):
             try:
                 idx = int(path.stem.split("_")[1])
             except (IndexError, ValueError):
@@ -382,22 +319,21 @@ class FrameCapture:
     def _capture_loop_gst_cli(self) -> None:
         """Capture loop using gst-launch-1.0 with multifilesink.
 
-        Reads decoded BGR frame files from a temp directory. A single
+        Reads decoded JPEG frame files from a temp directory. A single
         continuous GStreamer pipeline writes frames there, ensuring we
         never miss the SPS/PPS+IDR keyframe burst.
         """
         logger.info("Waiting for AirPlay stream on port %d (GStreamer CLI)...", self.udp_port)
 
-        frame_dir, width, height = None, 0, 0
+        frame_dir = None
         while self._running and frame_dir is None:
             try:
-                frame_dir, width, height = self._start_gst_cli_process()
+                frame_dir = self._start_gst_cli_process()
                 logger.info("AirPlay stream connected via GStreamer CLI!")
             except RuntimeError as e:
                 logger.info("GStreamer not ready: %s — retrying in 3s...", e)
                 time.sleep(3)
 
-        frame_size = width * height * 3
         frame_idx: int | None = None
 
         while self._running:
@@ -412,21 +348,18 @@ class FrameCapture:
                 continue
             frame_path, frame_idx = next_frame
 
-            # Wait for file to be fully written
-            try:
-                fsize = os.path.getsize(frame_path)
-            except OSError:
-                time.sleep(0.005)
-                continue
-            if fsize < frame_size:
+            if self._get_stable_file_size(frame_path, timeout=0.3) <= 0:
                 time.sleep(0.005)
                 continue
 
             try:
                 with open(frame_path, "rb") as f:
-                    data = f.read(frame_size)
-                if len(data) == frame_size:
-                    frame = np.frombuffer(data, dtype=np.uint8).reshape((height, width, 3))
+                    data = f.read()
+                if data:
+                    arr = np.frombuffer(data, dtype=np.uint8)
+                    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                    if frame is None:
+                        raise ValueError("imdecode returned None")
                     self._push_frame(frame)
             except (OSError, ValueError) as e:
                 logger.debug("Frame %d read error: %s", frame_idx, e)
