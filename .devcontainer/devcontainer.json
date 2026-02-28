@@ -1,0 +1,16 @@
+{
+  "name": "Fullstack Development",
+  "image": "ghcr.io/nyc-design/workspace-images/fullstack-dev:latest",
+  "features": {},
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "workbench.colorTheme": "Default Dark Modern",
+        "typescript.preferences.quoteStyle": "double",
+        "python.defaultInterpreterPath": "/usr/local/bin/python"
+      }
+    }
+  },
+  "forwardPorts": [],
+  "postCreateCommand": ""
+}
