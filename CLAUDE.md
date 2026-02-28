@@ -127,6 +127,7 @@ ChromaCatch-Go/
 - [x] CLI tool packaging (pip-installable `chromacatch-client`)
 - [x] Backend live dashboard with MJPEG frame streaming
 - [x] HID mouse test script
+- [x] GStreamer CLI capture stability fixes (single long-lived pipeline + reliable resolution detection from caps)
 
 ### Phase 2: Computer Vision
 - [ ] Screen state detection (battle, overworld, menu, etc.)

@@ -77,5 +77,15 @@ class TestFrameCapture:
             frames.append(capture.frame_queue.get_nowait())
         assert frames[-1][0, 0, 0] == 99
 
+    def test_infer_resolution_prefers_expected_shape(self, capture):
+        # 1920x1080 and 540x3840 have the same byte size. We should prefer 1920x1080.
+        frame_bytes = 1920 * 1080 * 3
+        resolution = capture._infer_resolution_from_frame_size(frame_bytes)
+        assert resolution == (1920, 1080)
+
+    def test_infer_resolution_rejects_invalid_size(self, capture):
+        assert capture._infer_resolution_from_frame_size(0) is None
+        assert capture._infer_resolution_from_frame_size(7) is None
+
     def test_stop_when_not_started(self, capture):
         capture.stop()

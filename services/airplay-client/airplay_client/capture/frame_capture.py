@@ -3,6 +3,8 @@
 import logging
 import os
 import queue
+import re
+import select
 import shutil
 import subprocess
 import threading
@@ -80,9 +82,9 @@ class FrameCapture:
         continuous pipeline from the start. A two-phase approach (probe then
         restart) would lose the keyframe and never decode.
 
-        On macOS, gst-launch outputs ALL verbose info to stdout (not stderr),
+        On macOS, gst-launch outputs verbose info to stdout (not only stderr),
         so fdsink is unusable (raw frame bytes + text would mix). multifilesink
-        avoids this entirely by writing to disk.
+        avoids this entirely by writing frame bytes to disk.
 
         Returns (frame_dir, width, height). Stores proc in self._gst_proc.
         """
@@ -96,8 +98,9 @@ class FrameCapture:
         frame_pattern = os.path.join(frame_dir, "frame_%05d.raw")
         cmd = [
             gst_path,
+            "-v",
             "udpsrc", f"port={self.udp_port}",
-            f'caps=application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000',
+            "caps=application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000",
             "!", "rtph264depay", "!", "h264parse", "!", "avdec_h264",
             "!", "videoconvert", "!", "video/x-raw,format=BGR",
             "!", "multifilesink", f"location={frame_pattern}", "max-files=30",
@@ -107,12 +110,9 @@ class FrameCapture:
         self._gst_proc = proc
         self._frame_dir = frame_dir
 
-        # Drain stdout+stderr in background to prevent pipe blocking
-        # (macOS gst-launch sends verbose info to stdout, not stderr)
-        for stream in (proc.stdout, proc.stderr):
-            threading.Thread(target=self._drain_stream, args=(stream,), daemon=True).start()
-
-        # Wait for first frame file to detect resolution
+        # Wait for negotiated caps + first frame file.
+        # We prefer parsing width/height from verbose caps output because
+        # inferring from raw byte size is ambiguous (multiple valid WxH pairs).
         width, height = 0, 0
         deadline = time.time() + 120
         first_frame = os.path.join(frame_dir, "frame_00000.raw")
@@ -120,29 +120,107 @@ class FrameCapture:
 
         while time.time() < deadline and self._running:
             if proc.poll() is not None:
+                shutil.rmtree(frame_dir, ignore_errors=True)
                 raise RuntimeError(f"GStreamer exited early (rc={proc.returncode})")
+
+            if width == 0 or height == 0:
+                try:
+                    ready, _, _ = select.select([proc.stdout, proc.stderr], [], [], 0.2)
+                except (ValueError, OSError):
+                    ready = []
+
+                for stream in ready:
+                    line = stream.readline()
+                    text = line.decode("utf-8", errors="replace").rstrip() if line else ""
+                    if text:
+                        logger.debug("[gst] %s", text)
+                        if "video/x-raw" in text and "BGR" in text:
+                            w_match = re.search(r"width=\(int\)(\d+)", text)
+                            h_match = re.search(r"height=\(int\)(\d+)", text)
+                            if w_match and h_match:
+                                width = int(w_match.group(1))
+                                height = int(h_match.group(1))
+                                logger.info("Detected stream resolution from caps: %dx%d", width, height)
+
             if os.path.exists(first_frame):
                 time.sleep(0.1)  # Let the file finish writing
                 frame_bytes = os.path.getsize(first_frame)
-                if frame_bytes > 0:
-                    # BGR: 3 bytes per pixel. Try even widths to find valid resolution.
-                    for w in range(100, 4000, 2):
-                        if frame_bytes % (w * 3) == 0:
-                            h = frame_bytes // (w * 3)
-                            if 100 < h < 4000:
-                                width, height = w, h
-                                break
-                    if width == 0:
+                if frame_bytes > 0 and (width == 0 or height == 0):
+                    inferred = self._infer_resolution_from_frame_size(frame_bytes)
+                    if inferred:
+                        width, height = inferred
+                        logger.info(
+                            "Detected stream resolution from frame size fallback: %dx%d",
+                            width,
+                            height,
+                        )
+                    else:
                         logger.warning("Could not determine resolution from frame size %d", frame_bytes)
+
+                if width > 0 and height > 0:
                     break
+
             time.sleep(0.5)
 
         if width == 0 or height == 0:
             proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=2)
+            shutil.rmtree(frame_dir, ignore_errors=True)
             raise RuntimeError("Could not detect stream resolution from GStreamer")
 
-        logger.info("Detected stream resolution: %dx%d", width, height)
+        # Drain stdout+stderr in background for long-running pipeline.
+        for stream in (proc.stdout, proc.stderr):
+            threading.Thread(target=self._drain_stream, args=(stream,), daemon=True).start()
+
+        logger.info("Using stream resolution: %dx%d", width, height)
         return frame_dir, width, height
+
+
+    def _infer_resolution_from_frame_size(self, frame_bytes: int) -> tuple[int, int] | None:
+        """Infer width/height from raw BGR frame size.
+
+        Multiple resolutions can map to the same byte size (W * H * 3), so this
+        uses configured frame_width/frame_height as a hint and picks the closest
+        candidate to that expected shape.
+        """
+        if frame_bytes <= 0 or frame_bytes % 3 != 0:
+            return None
+
+        expected_w = max(1, settings.frame_width)
+        expected_h = max(1, settings.frame_height)
+        expected_pixels = expected_w * expected_h
+        expected_ratio = expected_w / expected_h
+
+        best: tuple[float, int, int] | None = None
+        max_dim = 5000
+
+        for width in range(100, max_dim + 1, 2):
+            if frame_bytes % (width * 3) != 0:
+                continue
+
+            height = frame_bytes // (width * 3)
+            if not (100 <= height <= max_dim):
+                continue
+
+            ratio = width / height
+            ratio_score = abs(ratio - expected_ratio)
+
+            dim_score = (abs(width - expected_w) / expected_w) + (abs(height - expected_h) / expected_h)
+
+            pixels = width * height
+            pixels_score = abs(pixels - expected_pixels) / max(1, expected_pixels)
+
+            score = ratio_score + pixels_score + dim_score
+            if best is None or score < best[0]:
+                best = (score, width, height)
+
+        if not best:
+            return None
+        return best[1], best[2]
 
 
     @staticmethod
