@@ -1,6 +1,7 @@
 """Manages the UxPlay AirPlay receiver process."""
 
 import logging
+import os
 import shutil
 import subprocess
 import threading
@@ -40,9 +41,24 @@ class AirPlayManager:
 
         UxPlay automatically adds 'h264parse ! rtph264pay' before the -vrtp
         argument, so we only provide rtph264pay options and the UDP sink.
+
+        Key flags for reliable reconnection:
+        - -key: Persist server identity so iPhone doesn't need restart to reconnect
+        - -nohold: Drop current connection when new client connects
+        - -reset 0: Never auto-reset (we manage lifecycle ourselves)
+        - -d: Enable UxPlay debug logging for diagnostics
         """
         vrtp_pipeline = f"config-interval=1 ! udpsink host=127.0.0.1 port={self.udp_port}"
-        return [self.uxplay_path, "-n", self.airplay_name, "-vrtp", vrtp_pipeline]
+        key_path = os.path.expanduser("~/.uxplay.pem")
+        return [
+            self.uxplay_path,
+            "-n", self.airplay_name,
+            "-key", key_path,  # Persist server key for stable identity across restarts
+            "-nohold",         # Drop stale connection when new client connects
+            "-reset", "0",     # Never auto-reset; we manage the lifecycle
+            "-d",              # Debug logging for diagnostics
+            "-vrtp", vrtp_pipeline,
+        ]
 
 
     def start(self) -> None:

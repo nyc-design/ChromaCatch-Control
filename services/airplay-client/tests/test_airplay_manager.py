@@ -24,6 +24,14 @@ class TestAirPlayManager:
         assert "TestCatch" in cmd
         assert "-vrtp" in cmd
         assert "-vs" not in cmd  # -vs 0 disables video, must not be present
+        assert "-key" in cmd  # Persist server identity for reconnection
+        key_idx = cmd.index("-key")
+        assert cmd[key_idx + 1].endswith(".uxplay.pem")  # Explicit key path
+        assert "-nohold" in cmd  # Drop stale connections
+        assert "-reset" in cmd
+        reset_idx = cmd.index("-reset")
+        assert cmd[reset_idx + 1] == "0"  # Never auto-reset
+        assert "-d" in cmd  # Debug logging
         vrtp_idx = cmd.index("-vrtp")
         pipeline = cmd[vrtp_idx + 1]
         assert "udpsink host=127.0.0.1 port=5000" in pipeline
