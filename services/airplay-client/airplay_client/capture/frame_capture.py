@@ -3,8 +3,12 @@
 import logging
 import os
 import queue
+import re
+import shutil
+import subprocess
 import tempfile
 import threading
+import time
 from enum import Enum
 
 import cv2
@@ -21,13 +25,13 @@ class CaptureBackend(str, Enum):
 
 
 class FrameCapture:
-    """Captures frames from the AirPlay RTP stream via OpenCV.
+    """Captures frames from the AirPlay RTP stream.
 
     Supports two backends:
-    - GStreamer: OpenCV VideoCapture with GStreamer pipeline (preferred)
-    - FFmpeg: OpenCV VideoCapture with FFmpeg subprocess (fallback)
+    - GStreamer: OpenCV VideoCapture with GStreamer pipeline (preferred, Linux)
+    - FFmpeg: FFmpeg subprocess piping raw frames (fallback, macOS)
 
-    Frames are pushed into a thread-safe queue for consumption by the CV pipeline.
+    Frames are pushed into a thread-safe queue for consumption.
     """
 
     def __init__(self, udp_port: int | None = None, backend: CaptureBackend | None = None, max_queue_size: int = 5):
@@ -35,6 +39,7 @@ class FrameCapture:
         self.backend = backend or self._detect_backend()
         self.frame_queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=max_queue_size)
         self._capture: cv2.VideoCapture | None = None
+        self._ffmpeg_proc: subprocess.Popen | None = None
         self._thread: threading.Thread | None = None
         self._running = False
         self._sdp_path: str | None = None
@@ -45,7 +50,6 @@ class FrameCapture:
         """Auto-detect the best available backend."""
         build_info = cv2.getBuildInformation()
         if "GStreamer" in build_info:
-            # Extract the line containing GStreamer and check for YES
             for line in build_info.split("\n"):
                 if "GStreamer" in line and "YES" in line:
                     return CaptureBackend.GSTREAMER
@@ -80,39 +84,82 @@ class FrameCapture:
         return path
 
 
-    def _create_capture(self) -> cv2.VideoCapture:
-        """Create the OpenCV VideoCapture with the appropriate backend."""
-        if self.backend == CaptureBackend.GSTREAMER:
-            pipeline = self._build_gstreamer_pipeline()
-            logger.info("Using GStreamer pipeline: %s", pipeline)
-            cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
-        else:
-            sdp_path = self._build_sdp_file()
-            logger.info("Using FFmpeg with SDP file: %s (port %d)", sdp_path, self.udp_port)
-            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "protocol_whitelist;file,crypto,data,rtp,udp"
-            cap = cv2.VideoCapture(sdp_path, cv2.CAP_FFMPEG)
+    def _start_ffmpeg_process(self) -> tuple[subprocess.Popen, int, int]:
+        """Start FFmpeg subprocess to decode RTP H264 → raw BGR frames.
 
-        if not cap.isOpened():
-            raise RuntimeError(
-                f"Failed to open video capture with {self.backend.value} backend. "
-                "Ensure UxPlay is running and forwarding to the correct port."
-            )
-        return cap
-
-
-    def _capture_loop(self) -> None:
-        """Background thread that reads frames and pushes to queue.
-
-        Opens the capture lazily, retrying every few seconds until the
-        RTP stream becomes available (iPhone connects to UxPlay).
+        Returns (process, width, height). Resolution is auto-detected from
+        FFmpeg's stderr output.
         """
+        if not shutil.which("ffmpeg"):
+            raise RuntimeError("ffmpeg not found. Install it: brew install ffmpeg")
+
+        sdp_path = self._build_sdp_file()
+        cmd = [
+            "ffmpeg",
+            "-loglevel", "info",
+            "-protocol_whitelist", "file,crypto,data,rtp,udp",
+            "-fflags", "nobuffer",
+            "-flags", "low_delay",
+            "-i", sdp_path,
+            "-f", "rawvideo",
+            "-pix_fmt", "bgr24",
+            "pipe:1",
+        ]
+        logger.info("Starting FFmpeg subprocess: %s", " ".join(cmd))
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=10**8)
+
+        # Read stderr line-by-line until we find the stream resolution
+        width, height = 0, 0
+        deadline = time.time() + 30
+        buf = b""
+        while time.time() < deadline:
+            byte = proc.stderr.read(1)
+            if not byte:
+                break
+            buf += byte
+            if byte in (b"\n", b"\r"):
+                line = buf.decode("utf-8", errors="replace")
+                match = re.search(r"(\d{3,5})x(\d{3,5})", line)
+                if match and "Video" in line:
+                    width, height = int(match.group(1)), int(match.group(2))
+                    break
+                buf = b""
+
+        if width == 0 or height == 0:
+            proc.kill()
+            raise RuntimeError("Could not detect stream resolution from FFmpeg")
+
+        logger.info("Detected stream resolution: %dx%d", width, height)
+
+        # Drain remaining stderr in background to prevent pipe blocking
+        threading.Thread(target=self._drain_stderr, args=(proc,), daemon=True).start()
+
+        return proc, width, height
+
+
+    @staticmethod
+    def _drain_stderr(proc: subprocess.Popen) -> None:
+        """Read and discard stderr to prevent FFmpeg from blocking."""
+        try:
+            while proc.poll() is None:
+                proc.stderr.read(4096)
+        except Exception:
+            pass
+
+
+    def _capture_loop_gstreamer(self) -> None:
+        """Capture loop using OpenCV GStreamer backend."""
         logger.info("Waiting for AirPlay stream on port %d...", self.udp_port)
         while self._running and self._capture is None:
             try:
-                self._capture = self._create_capture()
+                pipeline = self._build_gstreamer_pipeline()
+                logger.info("Using GStreamer pipeline: %s", pipeline)
+                cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+                if not cap.isOpened():
+                    raise RuntimeError("GStreamer capture failed to open")
+                self._capture = cap
                 logger.info("AirPlay stream connected!")
             except RuntimeError:
-                import time
                 time.sleep(3)
 
         while self._running:
@@ -120,36 +167,59 @@ class FrameCapture:
                 break
             ret, frame = self._capture.read()
             if not ret:
-                logger.debug("No frame received, retrying...")
                 continue
+            self._push_frame(frame)
 
-            # Drop oldest frame if queue is full (keep latest)
-            if self.frame_queue.full():
-                try:
-                    self.frame_queue.get_nowait()
-                except queue.Empty:
-                    pass
+        logger.info("GStreamer capture loop stopped")
 
-            self.frame_queue.put(frame)
 
-        logger.info("Frame capture loop stopped")
+    def _capture_loop_ffmpeg(self) -> None:
+        """Capture loop using FFmpeg subprocess piping raw frames."""
+        logger.info("Waiting for AirPlay stream on port %d (FFmpeg)...", self.udp_port)
+
+        proc, width, height = None, 0, 0
+        while self._running and proc is None:
+            try:
+                proc, width, height = self._start_ffmpeg_process()
+                self._ffmpeg_proc = proc
+                logger.info("AirPlay stream connected via FFmpeg!")
+            except RuntimeError as e:
+                logger.debug("FFmpeg not ready: %s, retrying...", e)
+                time.sleep(3)
+
+        frame_size = width * height * 3
+        while self._running and proc is not None:
+            raw = proc.stdout.read(frame_size)
+            if len(raw) != frame_size:
+                logger.warning("FFmpeg stream ended (got %d/%d bytes)", len(raw), frame_size)
+                break
+            frame = np.frombuffer(raw, dtype=np.uint8).reshape((height, width, 3))
+            self._push_frame(frame)
+
+        logger.info("FFmpeg capture loop stopped")
+
+
+    def _push_frame(self, frame: np.ndarray) -> None:
+        """Push a frame to the queue, dropping oldest if full."""
+        if self.frame_queue.full():
+            try:
+                self.frame_queue.get_nowait()
+            except queue.Empty:
+                pass
+        self.frame_queue.put(frame)
 
 
     def start(self) -> None:
-        """Start capturing frames in a background thread.
-
-        The capture opens lazily in the background thread, retrying until
-        the RTP stream is available (i.e. iPhone has connected to UxPlay).
-        """
+        """Start capturing frames in a background thread."""
         if self._running:
             logger.warning("Frame capture is already running")
             return
 
         self._running = True
-        self._thread = threading.Thread(target=self._capture_loop, daemon=True)
+        target = self._capture_loop_gstreamer if self.backend == CaptureBackend.GSTREAMER else self._capture_loop_ffmpeg
+        self._thread = threading.Thread(target=target, daemon=True)
         self._thread.start()
-        logger.info("Frame capture started (backend=%s, port=%d)",
-                     self.backend.value, self.udp_port)
+        logger.info("Frame capture started (backend=%s, port=%d)", self.backend.value, self.udp_port)
 
 
     def stop(self) -> None:
@@ -161,6 +231,10 @@ class FrameCapture:
         if self._capture:
             self._capture.release()
             self._capture = None
+        if self._ffmpeg_proc and self._ffmpeg_proc.poll() is None:
+            self._ffmpeg_proc.kill()
+            self._ffmpeg_proc.wait(timeout=3)
+            self._ffmpeg_proc = None
         if self._sdp_path and os.path.exists(self._sdp_path):
             os.unlink(self._sdp_path)
             self._sdp_path = None
