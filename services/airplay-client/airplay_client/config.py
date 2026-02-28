@@ -1,5 +1,7 @@
 """Configuration for the local client."""
 
+import socket
+
 from pydantic_settings import BaseSettings
 
 from shared.constants import DEFAULT_FRAME_INTERVAL_MS, DEFAULT_JPEG_QUALITY, DEFAULT_MAX_DIMENSION
@@ -8,6 +10,8 @@ from shared.constants import DEFAULT_FRAME_INTERVAL_MS, DEFAULT_JPEG_QUALITY, DE
 class ClientSettings(BaseSettings):
     # Backend connection
     backend_ws_url: str = "ws://localhost:8000/ws/client"
+    backend_control_ws_url: str | None = None
+    client_id: str = socket.gethostname()
     api_key: str = ""
 
     # ESP32 connection
@@ -21,9 +25,16 @@ class ClientSettings(BaseSettings):
     uxplay_path: str = "uxplay"
 
     # Frame capture
+    capture_source: str = "airplay"  # airplay | capture | screen
+    capture_device: str = "0"
     frame_width: int = 1920
     frame_height: int = 1080
-    target_fps: int = 15
+    capture_width: int = 0
+    capture_height: int = 0
+    capture_fps: int = 30
+    target_fps: int = 30
+    screen_monitor: int = 1
+    screen_region: str = ""  # x,y,width,height
 
     # Frame encoding for transport
     jpeg_quality: int = DEFAULT_JPEG_QUALITY

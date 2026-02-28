@@ -29,6 +29,10 @@ class TestWebSocketClient:
     def test_not_connected_initially(self, ws_client):
         assert ws_client.is_connected is False
 
+    def test_connect_url_includes_client_id(self, ws_client):
+        url = ws_client._build_connect_url()
+        assert "client_id=" in url
+
     def test_frame_sequence_starts_at_zero(self, ws_client):
         assert ws_client._frame_sequence == 0
 

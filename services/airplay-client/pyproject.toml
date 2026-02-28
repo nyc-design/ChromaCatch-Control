@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chromacatch-client"
-version = "0.4.11"
+version = "0.5.0"
 description = "ChromaCatch-Go AirPlay client - captures iPhone screen and forwards to backend"
 requires-python = ">=3.11"
 dependencies = [
@@ -12,6 +12,7 @@ dependencies = [
     "numpy>=1.26.0",
     "httpx>=0.25.0",
     "websockets>=12.0",
+    "mss>=10.1.0",
     "pydantic>=2.5.0",
     "pydantic-settings>=2.1.0",
 ]

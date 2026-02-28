@@ -21,11 +21,12 @@ class TestESP32Forwarder:
     @pytest.mark.asyncio
     async def test_forward_click(self, forwarder, mock_esp32):
         msg = HIDCommandMessage(action="click", params={"x": 100, "y": 200})
-        await forwarder.handle_command(msg)
+        ack = await forwarder.handle_command(msg)
         mock_esp32.send_command.assert_called_once()
         cmd = mock_esp32.send_command.call_args[0][0]
         assert cmd.action == "click"
         assert cmd.params == {"x": 100, "y": 200}
+        assert ack.success is True
 
     @pytest.mark.asyncio
     async def test_forward_move(self, forwarder, mock_esp32):
@@ -56,8 +57,8 @@ class TestESP32Forwarder:
     async def test_forward_error_logged_not_raised(self, forwarder, mock_esp32):
         mock_esp32.send_command = AsyncMock(side_effect=ConnectionError("refused"))
         msg = HIDCommandMessage(action="click", params={"x": 0, "y": 0})
-        # Should not raise
-        await forwarder.handle_command(msg)
+        ack = await forwarder.handle_command(msg)
+        assert ack.success is False
 
     @pytest.mark.asyncio
     async def test_forward_empty_params(self, forwarder, mock_esp32):

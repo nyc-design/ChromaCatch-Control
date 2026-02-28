@@ -41,13 +41,41 @@ app = FastAPI(
 
 
 @app.websocket("/ws/client")
-async def websocket_endpoint(websocket: WebSocket, api_key: str = Query(default=None)):
-    """Client WebSocket connection for frame upload and command dispatch."""
+async def websocket_endpoint(
+    websocket: WebSocket,
+    api_key: str = Query(default=None),
+    client_id: str | None = Query(default=None),
+):
+    """Frame/status channel from client to backend."""
     auth_header = websocket.headers.get("authorization", "")
     token = api_key or (
         auth_header.removeprefix("Bearer ").strip() if auth_header else None
     )
-    await ws_handler.handle_connection(websocket, api_key=token)
+    await ws_handler.handle_connection(
+        websocket,
+        api_key=token,
+        channel="frame",
+        client_id=client_id,
+    )
+
+
+@app.websocket("/ws/control")
+async def websocket_control_endpoint(
+    websocket: WebSocket,
+    api_key: str = Query(default=None),
+    client_id: str | None = Query(default=None),
+):
+    """Dedicated low-latency control channel (commands + acks)."""
+    auth_header = websocket.headers.get("authorization", "")
+    token = api_key or (
+        auth_header.removeprefix("Bearer ").strip() if auth_header else None
+    )
+    await ws_handler.handle_connection(
+        websocket,
+        api_key=token,
+        channel="control",
+        client_id=client_id,
+    )
 
 
 # --- REST Endpoints ---
@@ -81,10 +109,21 @@ async def send_command(req: SendCommandRequest):
     cmd = HIDCommandMessage(action=req.action, params=req.params)
     try:
         if req.client_id:
-            await session_manager.send_command(req.client_id, cmd)
+            sent_cmd = await session_manager.send_command(req.client_id, cmd)
+            return {
+                "status": "sent",
+                "action": req.action,
+                "client_id": req.client_id,
+                "command_id": sent_cmd.command_id,
+                "command_sequence": sent_cmd.command_sequence,
+            }
         else:
-            await session_manager.broadcast_command(cmd)
-        return {"status": "sent", "action": req.action}
+            sent = await session_manager.broadcast_command(cmd)
+            return {
+                "status": "sent",
+                "action": req.action,
+                "sent_to": len(sent),
+            }
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -103,10 +142,12 @@ async def get_client_status(client_id: str):
 @app.get("/clients/{client_id}/frame")
 async def get_latest_frame(client_id: str):
     """Get the latest frame as JPEG (for debug viewing)."""
-    frame = session_manager.get_latest_frame(client_id)
-    if frame is None:
-        raise HTTPException(status_code=404, detail="No frame available")
-    jpeg_bytes, _, _ = encode_frame(frame, quality=85, max_dimension=0)
+    jpeg_bytes, _ = session_manager.get_latest_frame_jpeg(client_id)
+    if jpeg_bytes is None:
+        frame = session_manager.get_latest_frame(client_id)
+        if frame is None:
+            raise HTTPException(status_code=404, detail="No frame available")
+        jpeg_bytes, _, _ = encode_frame(frame, quality=85, max_dimension=0)
     return Response(content=jpeg_bytes, media_type="image/jpeg")
 
 
@@ -115,20 +156,22 @@ async def get_latest_frame(client_id: str):
 
 async def _mjpeg_generator(client_id: str):
     """Yield JPEG frames as a multipart MJPEG stream."""
+    last_sequence = -1
     while True:
         session = session_manager.get_session(client_id)
         if session is None:
             return
-        frame = session.latest_frame
-        if frame is not None:
-            jpeg_bytes, _, _ = encode_frame(frame, quality=70, max_dimension=0)
+        jpeg_bytes, sequence = session_manager.get_latest_frame_jpeg(client_id)
+        if jpeg_bytes is not None and sequence != last_sequence:
+            last_sequence = sequence
             yield (
                 b"--frame\r\n"
                 b"Content-Type: image/jpeg\r\n"
                 b"Content-Length: " + str(len(jpeg_bytes)).encode() + b"\r\n\r\n"
                 + jpeg_bytes + b"\r\n"
             )
-        await asyncio.sleep(0.2)
+        else:
+            await asyncio.sleep(0.01)
 
 
 @app.get("/stream/{client_id}")
@@ -192,6 +235,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                                     <span class="value ${s.esp32_ble_connected ? 'ok' : 'fail'}">${s.esp32_ble_connected ? 'Connected' : 'Disconnected'}</span></div>
                                 <div class="status-item"><span class="label">Frames Sent</span><br>
                                     <span class="value">${s.frames_sent || 0}</span></div>
+                                <div class="status-item"><span class="label">Capture Source</span><br>
+                                    <span class="value">${s.capture_source || 'airplay'}</span></div>
+                                <div class="status-item"><span class="label">Control WS</span><br>
+                                    <span class="value ${s.control_channel_connected ? 'ok' : 'fail'}">${s.control_channel_connected ? 'Connected' : 'Disconnected'}</span></div>
+                                <div class="status-item"><span class="label">Cmd Ack RTT</span><br>
+                                    <span class="value">${s.last_command_rtt_ms ? Math.round(s.last_command_rtt_ms) + ' ms' : 'n/a'}</span></div>
                                 <div class="status-item"><span class="label">Uptime</span><br>
                                     <span class="value">${Math.floor((s.uptime_seconds || 0) / 60)}m ${Math.floor((s.uptime_seconds || 0) % 60)}s</span></div>`;
                         } else {

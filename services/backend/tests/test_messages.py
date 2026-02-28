@@ -3,7 +3,17 @@
 import json
 
 from shared.constants import PROTOCOL_VERSION, MessageType
-from shared.messages import BaseMessage, ClientStatus, ConfigUpdate, ErrorMessage, FrameMetadata, HeartbeatPing, HeartbeatPong, HIDCommandMessage
+from shared.messages import (
+    BaseMessage,
+    ClientStatus,
+    CommandAck,
+    ConfigUpdate,
+    ErrorMessage,
+    FrameMetadata,
+    HeartbeatPing,
+    HeartbeatPong,
+    HIDCommandMessage,
+)
 
 
 class TestBaseMessage:
@@ -44,6 +54,7 @@ class TestFrameMetadata:
         assert parsed.sequence == 42
         assert parsed.width == 1920
         assert parsed.capture_timestamp == 1234.5
+        assert parsed.sent_timestamp is None
 
     def test_type_field_from_json(self):
         raw = FrameMetadata(
@@ -149,3 +160,18 @@ class TestErrorMessage:
         msg = ErrorMessage(code="FRAME_TOO_LARGE", detail="500KB limit exceeded")
         parsed = ErrorMessage.model_validate_json(msg.model_dump_json())
         assert parsed.code == "FRAME_TOO_LARGE"
+
+
+class TestCommandAck:
+    def test_roundtrip_json(self):
+        msg = CommandAck(
+            command_id="cmd-1",
+            command_sequence=10,
+            received_at_client=1000.0,
+            forwarded_at_client=1000.1,
+            completed_at_client=1000.2,
+            success=True,
+        )
+        parsed = CommandAck.model_validate_json(msg.model_dump_json())
+        assert parsed.command_id == "cmd-1"
+        assert parsed.success is True

@@ -21,10 +21,10 @@ def make_auth_headers(api_key: str | None) -> dict[str, str]:
         return {"Authorization": f"Bearer {api_key}"}
     return {}
 
-# Frame encoding defaults
-DEFAULT_JPEG_QUALITY = 70
-DEFAULT_MAX_DIMENSION = 960
-DEFAULT_FRAME_INTERVAL_MS = 200  # 5 FPS to backend
+# Frame encoding defaults (latency-optimized)
+DEFAULT_JPEG_QUALITY = 65
+DEFAULT_MAX_DIMENSION = 720
+DEFAULT_FRAME_INTERVAL_MS = 33  # ~30 FPS to backend
 
 
 class MessageType:
@@ -36,6 +36,7 @@ class MessageType:
 
     # Backend -> Client
     HID_COMMAND = "hid_command"
+    COMMAND_ACK = "command_ack"
     CONFIG_UPDATE = "config_update"
 
     # Bidirectional

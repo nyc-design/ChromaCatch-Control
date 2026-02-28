@@ -7,9 +7,16 @@ import uuid
 from fastapi import WebSocket, WebSocketDisconnect
 
 from backend.config import backend_settings
-from backend.session_manager import ClientSession, SessionManager
+from backend.session_manager import ChannelType, ClientSession, SessionManager
 from shared.frame_codec import decode_frame
-from shared.messages import ClientStatus, FrameMetadata, HeartbeatPing, HeartbeatPong, parse_message
+from shared.messages import (
+    ClientStatus,
+    CommandAck,
+    FrameMetadata,
+    HeartbeatPing,
+    HeartbeatPong,
+    parse_message,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,28 +27,46 @@ class WebSocketHandler:
     def __init__(self, session_manager: SessionManager) -> None:
         self._session_manager = session_manager
 
-    async def handle_connection(self, websocket: WebSocket, api_key: str | None = None) -> None:
+    async def handle_connection(
+        self,
+        websocket: WebSocket,
+        api_key: str | None = None,
+        channel: ChannelType = "frame",
+        client_id: str | None = None,
+    ) -> None:
         """Main handler for a client WebSocket connection."""
         if backend_settings.api_key and api_key != backend_settings.api_key:
             await websocket.close(code=4001, reason="Invalid API key")
             return
 
         await websocket.accept()
-        client_id = str(uuid.uuid4())[:8]
-        session = await self._session_manager.register(client_id, websocket)
-        logger.info("Client %s connected", client_id)
+        resolved_client_id = (client_id or str(uuid.uuid4())[:8]).strip()
+        session = await self._session_manager.register(
+            resolved_client_id,
+            websocket,
+            channel=channel,
+        )
+        logger.info("Client %s connected (channel=%s)", resolved_client_id, channel)
 
         try:
-            await self._message_loop(client_id, session, websocket)
+            if channel == "control":
+                await self._control_message_loop(resolved_client_id, websocket)
+            else:
+                await self._frame_message_loop(resolved_client_id, session, websocket)
         except WebSocketDisconnect:
-            logger.info("Client %s disconnected", client_id)
+            logger.info("Client %s disconnected (channel=%s)", resolved_client_id, channel)
         except Exception as e:
-            logger.error("Client %s error: %s", client_id, e)
+            logger.error("Client %s error (channel=%s): %s", resolved_client_id, channel, e)
         finally:
-            await self._session_manager.unregister(client_id)
+            await self._session_manager.unregister(resolved_client_id, channel=channel)
 
-    async def _message_loop(self, client_id: str, session: ClientSession, websocket: WebSocket) -> None:
-        """Process incoming messages from the client."""
+    async def _frame_message_loop(
+        self,
+        client_id: str,
+        session: ClientSession,
+        websocket: WebSocket,
+    ) -> None:
+        """Process incoming frame-channel messages from the client."""
         expecting_frame_data: FrameMetadata | None = None
 
         while True:
@@ -66,6 +91,9 @@ class WebSocketHandler:
                         msg.airplay_running,
                         msg.esp32_reachable,
                     )
+
+                elif isinstance(msg, CommandAck):
+                    self._session_manager.mark_command_ack(client_id, msg)
 
                 elif isinstance(msg, HeartbeatPing):
                     await websocket.send_text(HeartbeatPong().model_dump_json())
@@ -92,21 +120,58 @@ class WebSocketHandler:
                 try:
                     frame = decode_frame(jpeg_bytes)
                     session.latest_frame = frame
+                    session.latest_frame_jpeg = jpeg_bytes
+                    session.latest_frame_sequence = expecting_frame_data.sequence
                     session.frames_received += 1
                     session.last_frame_at = time.time()
 
                     latency_ms = (
                         time.time() - expecting_frame_data.capture_timestamp
                     ) * 1000
+                    transport_latency_ms = None
+                    if expecting_frame_data.sent_timestamp is not None:
+                        transport_latency_ms = (
+                            time.time() - expecting_frame_data.sent_timestamp
+                        ) * 1000
                     logger.debug(
-                        "Frame #%d from %s: %dx%d, latency=%.0fms",
+                        "Frame #%d from %s: %dx%d, latency=%.0fms, transport=%s",
                         expecting_frame_data.sequence,
                         client_id,
                         frame.shape[1],
                         frame.shape[0],
                         latency_ms,
+                        (
+                            f"{transport_latency_ms:.0f}ms"
+                            if transport_latency_ms is not None
+                            else "n/a"
+                        ),
                     )
                 except Exception as e:
                     logger.error("Failed to decode frame from %s: %s", client_id, e)
 
                 expecting_frame_data = None
+
+    async def _control_message_loop(self, client_id: str, websocket: WebSocket) -> None:
+        """Process incoming control-channel messages from the client."""
+        while True:
+            message = await websocket.receive()
+            if "text" not in message:
+                continue
+
+            raw = message["text"]
+            try:
+                msg = parse_message(raw)
+            except Exception:
+                logger.error("Invalid control message from %s: %s", client_id, raw[:200])
+                continue
+
+            if isinstance(msg, CommandAck):
+                self._session_manager.mark_command_ack(client_id, msg)
+            elif isinstance(msg, HeartbeatPing):
+                await websocket.send_text(HeartbeatPong().model_dump_json())
+            elif isinstance(msg, ClientStatus):
+                session = self._session_manager.get_session(client_id)
+                if session is not None:
+                    session.last_status = msg
+            else:
+                logger.debug("Unhandled control message type from %s: %s", client_id, msg.type)

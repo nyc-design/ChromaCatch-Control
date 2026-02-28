@@ -29,7 +29,7 @@ Automated shiny hunting bot for Pokemon Go using AirPlay screen mirroring, compu
 ### Data Flow
 1. iPhone runs Pokemon Go, screen mirrors via AirPlay to UxPlay (on local client)
 2. UxPlay decrypts H.264 stream, forwards as RTP over localhost UDP
-3. Local client captures frames via OpenCV, JPEG-encodes (960px, q70), sends over WebSocket
+3. Local client captures frames via a unified source layer (`airplay` / `capture` / `screen`), JPEG-encodes (720px, q65 default), sends over WebSocket
 4. Remote backend decodes frames, runs CV pipeline, decides next action
 5. Backend sends HID command over WebSocket to local client
 6. Local client forwards command to ESP32 via HTTP
@@ -37,8 +37,12 @@ Automated shiny hunting bot for Pokemon Go using AirPlay screen mirroring, compu
 
 ### WebSocket Protocol
 - **Frames (client → backend)**: Two-message pattern — JSON `FrameMetadata` followed by binary JPEG bytes
-- **Commands (backend → client)**: JSON `HIDCommandMessage` with action + params
+- **Commands (backend → client)**: JSON `HIDCommandMessage` with action + params (+ command id/sequence)
+- **Command ACKs (client → backend)**: JSON `CommandAck` after ESP32 forward attempt
 - **Status (client → backend)**: Periodic JSON `ClientStatus` updates
+- **Channel split**:
+  - `/ws/client` = frame/status channel
+  - `/ws/control` = low-jitter command/ack channel (with backend fallback to frame channel)
 - **Auth**: API key via query param or Authorization header
 
 ## Project Structure
@@ -55,9 +59,9 @@ ChromaCatch-Go/
 │   │   └── frame_codec.py                  # JPEG encode/decode with resize
 │   ├── backend/                             # REMOTE: CV brain + command dispatch
 │   │   ├── config.py                        # BackendSettings (CC_BACKEND_ prefix)
-│   │   ├── main.py                          # FastAPI + WebSocket endpoint
-│   │   ├── ws_handler.py                    # WebSocket frame/command handler
-│   │   ├── session_manager.py               # Connected client session tracking
+│   │   ├── main.py                          # FastAPI + WS endpoints + dashboard
+│   │   ├── ws_handler.py                    # WebSocket frame/control handler
+│   │   ├── session_manager.py               # Dual-channel client session tracking
 │   │   ├── cv/                              # Phase 2: computer vision
 │   │   ├── orchestrator/                    # Phase 3: state machine
 │   │   └── tests/                           # Backend tests (69 tests)
@@ -72,15 +76,20 @@ ChromaCatch-Go/
 │   │   ├── airplay_client/                  # Python package (airplay_client)
 │   │   │   ├── cli.py                        # CLI entry point (connect, run)
 │   │   │   ├── config.py                    # ClientSettings (CC_CLIENT_ prefix)
-│   │   │   ├── main.py                      # asyncio entrypoint
-│   │   │   ├── ws_client.py                 # WebSocket client (auto-reconnect)
-│   │   │   ├── esp32_forwarder.py           # WS command → ESP32 HTTP bridge
+│   │   │   ├── main.py                      # asyncio entrypoint (dual WS + source factory)
+│   │   │   ├── ws_client.py                 # WebSocket client (auto-reconnect + command ack)
+│   │   │   ├── esp32_forwarder.py           # WS command → ESP32 HTTP bridge (+ ack timing)
 │   │   │   ├── capture/
 │   │   │   │   ├── airplay_manager.py       # UxPlay process management
 │   │   │   │   └── frame_capture.py         # OpenCV GStreamer/FFmpeg frame capture
+│   │   │   ├── sources/
+│   │   │   │   ├── airplay_source.py        # AirPlay/UxPlay source adapter
+│   │   │   │   ├── capture_card_source.py   # USB capture/camera source adapter
+│   │   │   │   ├── screen_source.py         # Desktop/window capture source adapter
+│   │   │   │   └── factory.py               # Runtime source selection
 │   │   │   └── commander/
 │   │   │       └── esp32_client.py          # HTTP client for ESP32 commands
-│   │   └── tests/                           # Client tests (44 tests)
+│   │   └── tests/                           # Client tests (45 tests)
 │   │       ├── test_airplay_manager.py
 │   │       ├── test_esp32_client.py
 │   │       ├── test_esp32_forwarder.py
@@ -104,13 +113,13 @@ ChromaCatch-Go/
 | Backend | Python 3.11+, FastAPI, uvicorn, pydantic |
 | Client-Backend transport | WebSocket (websockets library) |
 | CV | OpenCV (with GStreamer support), numpy |
-| Frame encoding | JPEG via OpenCV (960px max, quality 70) |
+| Frame encoding | JPEG via OpenCV (720px max, quality 65 default) |
 | AirPlay | UxPlay (C, installed separately) |
 | Frame capture | OpenCV GStreamer pipeline from RTP/UDP |
 | ESP32 firmware | C++ / Arduino / PlatformIO |
 | ESP32 comms | WiFi HTTP (REST) |
 | BLE HID | ESP32 BLE HID library (BleCombo) |
-| Testing | pytest, pytest-asyncio (121 tests) |
+| Testing | pytest, pytest-asyncio (138 tests) |
 | Linting | ruff, black, mypy |
 
 ## Phases
@@ -128,6 +137,8 @@ ChromaCatch-Go/
 - [x] Backend live dashboard with MJPEG frame streaming
 - [x] HID mouse test script
 - [x] GStreamer CLI capture stability fixes (single long-lived pipeline + reliable resolution detection from caps)
+- [x] Dual WebSocket channels (`/ws/client`, `/ws/control`) with command sequencing + ACK telemetry
+- [x] Unified client frame source layer (AirPlay, capture card, desktop capture)
 
 ### Phase 2: Computer Vision
 - [ ] Screen state detection (battle, overworld, menu, etc.)
@@ -183,14 +194,21 @@ cd services/esp32 && pio run -t upload    # Flash
 **Client** (`.env` with `CC_CLIENT_` prefix):
 ```bash
 CC_CLIENT_BACKEND_WS_URL=wss://your-backend.run.app/ws/client
+CC_CLIENT_BACKEND_CONTROL_WS_URL=wss://your-backend.run.app/ws/control
+CC_CLIENT_CLIENT_ID=macbook-station-1
 CC_CLIENT_API_KEY=your-secret-key
 CC_CLIENT_ESP32_HOST=192.168.1.100
 CC_CLIENT_ESP32_PORT=80
 CC_CLIENT_AIRPLAY_UDP_PORT=5000
 CC_CLIENT_AIRPLAY_NAME=ChromaCatch
-CC_CLIENT_JPEG_QUALITY=70
-CC_CLIENT_MAX_DIMENSION=960
-CC_CLIENT_FRAME_INTERVAL_MS=200
+CC_CLIENT_CAPTURE_SOURCE=airplay            # airplay | capture | screen
+CC_CLIENT_CAPTURE_DEVICE=0                  # device index/path for capture source
+CC_CLIENT_CAPTURE_FPS=30
+CC_CLIENT_SCREEN_MONITOR=1                  # used by screen source
+CC_CLIENT_SCREEN_REGION=                    # optional x,y,width,height
+CC_CLIENT_JPEG_QUALITY=65
+CC_CLIENT_MAX_DIMENSION=720
+CC_CLIENT_FRAME_INTERVAL_MS=33
 ```
 
 **Backend** (`.env` with `CC_BACKEND_` prefix):
@@ -205,7 +223,8 @@ CC_BACKEND_MAX_FRAME_BYTES=500000
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| WS | `/ws/client` | Client WebSocket (frames up, commands down) |
+| WS | `/ws/client` | Frame/status WebSocket (frames up, command fallback) |
+| WS | `/ws/control` | Low-latency command/ack WebSocket |
 | GET | `/health` | Health check |
 | GET | `/status` | Connected clients count |
 | POST | `/command` | Send HID command to client(s) |

@@ -19,9 +19,14 @@ def build_parser() -> argparse.ArgumentParser:
         description="ChromaCatch-Go AirPlay client",
     )
     parser.add_argument("--backend-url", help="Backend WebSocket URL (overrides CC_CLIENT_BACKEND_WS_URL)")
+    parser.add_argument("--backend-control-url", help="Backend control WebSocket URL (overrides CC_CLIENT_BACKEND_CONTROL_WS_URL)")
+    parser.add_argument("--client-id", help="Stable client ID for WS pairing (overrides CC_CLIENT_CLIENT_ID)")
     parser.add_argument("--api-key", help="API key for backend auth (overrides CC_CLIENT_API_KEY)")
     parser.add_argument("--esp32-host", help="ESP32 IP address (overrides CC_CLIENT_ESP32_HOST)")
     parser.add_argument("--esp32-port", type=int, help="ESP32 HTTP port (overrides CC_CLIENT_ESP32_PORT)")
+    parser.add_argument("--capture-source", choices=["airplay", "capture", "screen"], help="Capture source to use (overrides CC_CLIENT_CAPTURE_SOURCE)")
+    parser.add_argument("--capture-device", help="Capture card/camera device index or path (overrides CC_CLIENT_CAPTURE_DEVICE)")
+    parser.add_argument("--capture-fps", type=int, help="Capture FPS target (overrides CC_CLIENT_CAPTURE_FPS)")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging (shows UxPlay/FFmpeg output)")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -38,12 +43,22 @@ def apply_cli_overrides(args: argparse.Namespace) -> None:
 
     if args.backend_url:
         client_settings.backend_ws_url = args.backend_url
+    if args.backend_control_url:
+        client_settings.backend_control_ws_url = args.backend_control_url
+    if args.client_id:
+        client_settings.client_id = args.client_id
     if args.api_key:
         client_settings.api_key = args.api_key
     if args.esp32_host:
         client_settings.esp32_host = args.esp32_host
     if args.esp32_port is not None:
         client_settings.esp32_port = args.esp32_port
+    if args.capture_source:
+        client_settings.capture_source = args.capture_source
+    if args.capture_device:
+        client_settings.capture_device = args.capture_device
+    if args.capture_fps is not None:
+        client_settings.capture_fps = args.capture_fps
 
 
 async def cmd_connect(args: argparse.Namespace) -> None:
@@ -51,12 +66,17 @@ async def cmd_connect(args: argparse.Namespace) -> None:
     from airplay_client.config import client_settings
 
     ws_url = client_settings.backend_ws_url
+    control_ws_url = (
+        client_settings.backend_control_ws_url
+        or ws_url.replace("/ws/client", "/ws/control")
+    )
     # Derive HTTP URL from WebSocket URL for health check
     base_url = ws_url.replace("ws://", "http://").replace("wss://", "https://")
     if "/ws/" in base_url:
         base_url = base_url.rsplit("/ws/", 1)[0]
 
     print(f"Backend WS URL: {ws_url}")
+    print(f"Control WS URL: {control_ws_url}")
     print(f"Backend HTTP:   {base_url}")
 
     print(f"\n--- Backend Connectivity ---")

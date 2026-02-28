@@ -10,6 +10,7 @@ import asyncio
 import logging
 import time
 from typing import Awaitable, Callable
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import websockets
 from websockets.client import WebSocketClientProtocol
@@ -17,7 +18,16 @@ from websockets.client import WebSocketClientProtocol
 from airplay_client.config import client_settings
 from shared.constants import make_auth_headers
 from shared.frame_codec import encode_frame
-from shared.messages import ClientStatus, ConfigUpdate, FrameMetadata, HIDCommandMessage, HeartbeatPong, parse_message
+from shared.messages import (
+    BaseMessage,
+    ClientStatus,
+    CommandAck,
+    ConfigUpdate,
+    FrameMetadata,
+    HIDCommandMessage,
+    HeartbeatPong,
+    parse_message,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,19 +35,38 @@ logger = logging.getLogger(__name__)
 class WebSocketClient:
     """Maintains a persistent WebSocket connection to the backend."""
 
-    def __init__(self, on_hid_command: Callable[[HIDCommandMessage], Awaitable[None]], on_config_update: Callable[[ConfigUpdate], Awaitable[None]] | None = None, backend_ws_url: str | None = None):
+    def __init__(
+        self,
+        on_hid_command: Callable[[HIDCommandMessage], Awaitable[CommandAck | None]],
+        on_config_update: Callable[[ConfigUpdate], Awaitable[None]] | None = None,
+        backend_ws_url: str | None = None,
+        name: str = "ws",
+    ):
         self._on_hid_command = on_hid_command
         self._on_config_update = on_config_update
         self._backend_ws_url = backend_ws_url or client_settings.backend_ws_url
+        self._name = name
         self._ws: WebSocketClientProtocol | None = None
         self._running = False
         self._connected = False
         self._frame_sequence = 0
+        self._acks_sent = 0
         self._send_lock = asyncio.Lock()
 
     @property
     def is_connected(self) -> bool:
         return self._connected and self._ws is not None
+
+    @property
+    def acks_sent(self) -> int:
+        return self._acks_sent
+
+    def _build_connect_url(self) -> str:
+        parts = urlparse(self._backend_ws_url)
+        query = dict(parse_qsl(parts.query, keep_blank_values=True))
+        if "client_id" not in query:
+            query["client_id"] = client_settings.client_id
+        return urlunparse(parts._replace(query=urlencode(query)))
 
     async def connect(self) -> None:
         """Connect to backend with auto-reconnect loop."""
@@ -47,16 +76,17 @@ class WebSocketClient:
         while self._running:
             try:
                 extra_headers = make_auth_headers(client_settings.api_key)
+                connect_url = self._build_connect_url()
 
                 self._ws = await websockets.connect(
-                    self._backend_ws_url,
+                    connect_url,
                     additional_headers=extra_headers,
                     ping_interval=client_settings.ws_heartbeat_interval,
                     ping_timeout=20,
                 )
                 self._connected = True
                 delay = client_settings.ws_reconnect_delay
-                logger.info("Connected to backend: %s", self._backend_ws_url)
+                logger.info("[%s] Connected to backend: %s", self._name, connect_url)
 
                 await self._receive_loop()
 
@@ -66,7 +96,10 @@ class WebSocketClient:
                 if not self._running:
                     break
                 logger.warning(
-                    "WebSocket disconnected: %s. Reconnecting in %.1fs", e, delay
+                    "[%s] WebSocket disconnected: %s. Reconnecting in %.1fs",
+                    self._name,
+                    e,
+                    delay,
                 )
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, client_settings.ws_reconnect_max_delay)
@@ -85,7 +118,10 @@ class WebSocketClient:
                 continue
 
             if isinstance(msg, HIDCommandMessage):
-                await self._on_hid_command(msg)
+                ack = await self._on_hid_command(msg)
+                if ack is not None:
+                    await self.send_message(ack)
+                    self._acks_sent += 1
             elif isinstance(msg, ConfigUpdate):
                 if self._on_config_update:
                     await self._on_config_update(msg)
@@ -93,6 +129,16 @@ class WebSocketClient:
                 pass
             else:
                 logger.debug("Unhandled message type: %s", msg.type)
+
+    async def send_message(self, message: BaseMessage) -> None:
+        """Send an arbitrary JSON message model to backend."""
+        if not self.is_connected:
+            return
+        async with self._send_lock:
+            try:
+                await self._ws.send(message.model_dump_json())
+            except websockets.ConnectionClosed:
+                self._connected = False
 
     async def send_frame(self, frame_bgr, capture_timestamp: float | None = None) -> None:
         """Encode and send a frame to the backend.
@@ -114,6 +160,7 @@ class WebSocketClient:
             height=h,
             jpeg_quality=client_settings.jpeg_quality,
             capture_timestamp=ts,
+            sent_timestamp=time.time(),
             byte_length=len(jpeg_bytes),
         )
 
@@ -126,13 +173,7 @@ class WebSocketClient:
 
     async def send_status(self, status: ClientStatus) -> None:
         """Send a status update to the backend."""
-        if not self.is_connected:
-            return
-        async with self._send_lock:
-            try:
-                await self._ws.send(status.model_dump_json())
-            except websockets.ConnectionClosed:
-                self._connected = False
+        await self.send_message(status)
 
     async def disconnect(self) -> None:
         """Gracefully close the WebSocket."""

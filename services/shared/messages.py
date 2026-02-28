@@ -34,6 +34,7 @@ class FrameMetadata(BaseMessage):
     height: int
     jpeg_quality: int
     capture_timestamp: float
+    sent_timestamp: float | None = None
     byte_length: int
 
 
@@ -47,6 +48,12 @@ class ClientStatus(BaseMessage):
     esp32_ble_connected: bool | None = None
     frames_captured: int = 0
     frames_sent: int = 0
+    capture_source: str = "airplay"
+    source_running: bool = False
+    control_channel_connected: bool = False
+    commands_sent: int = 0
+    commands_acked: int = 0
+    last_command_rtt_ms: float | None = None
     uptime_seconds: float = 0.0
 
 
@@ -60,6 +67,22 @@ class HIDCommandMessage(BaseMessage):
     action: str
     params: dict[str, int | float] = {}
     request_id: str | None = None
+    command_id: str | None = None
+    command_sequence: int | None = None
+    dispatched_at_backend: float | None = None
+
+
+class CommandAck(BaseMessage):
+    """Ack and timing from client after forwarding a command."""
+
+    type: str = MessageType.COMMAND_ACK
+    command_id: str
+    command_sequence: int | None = None
+    received_at_client: float
+    forwarded_at_client: float | None = None
+    completed_at_client: float
+    success: bool = True
+    error: str | None = None
 
 
 class ConfigUpdate(BaseMessage):
@@ -94,6 +117,7 @@ _TYPE_MAP: dict[str, type[BaseMessage]] = {
     MessageType.FRAME: FrameMetadata,
     MessageType.CLIENT_STATUS: ClientStatus,
     MessageType.HID_COMMAND: HIDCommandMessage,
+    MessageType.COMMAND_ACK: CommandAck,
     MessageType.CONFIG_UPDATE: ConfigUpdate,
     MessageType.PING: HeartbeatPing,
     MessageType.PONG: HeartbeatPong,

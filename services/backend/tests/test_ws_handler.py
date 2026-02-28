@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from backend.main import app, session_manager
 from shared.frame_codec import encode_frame
-from shared.messages import ClientStatus, FrameMetadata, HeartbeatPing
+from shared.messages import ClientStatus, CommandAck, FrameMetadata, HeartbeatPing
 
 
 class TestWebSocketConnection:
@@ -128,3 +128,32 @@ class TestWebSocketConnection:
             ws.send_text(HeartbeatPing().model_dump_json())
             response = ws.receive_text()
             assert json.loads(response)["type"] == "pong"
+
+    def test_websocket_control_channel_receives_ack(self):
+        client = TestClient(app)
+        with client.websocket_connect("/ws/client?client_id=test-client") as frame_ws:
+            frame_ws.send_text(HeartbeatPing().model_dump_json())
+            frame_ws.receive_text()
+            client_id = session_manager.connected_clients[0]
+
+            session = session_manager.get_session(client_id)
+            assert session is not None
+            session.pending_commands["cmd-1"] = 1.0
+
+            with client.websocket_connect("/ws/control?client_id=test-client") as control_ws:
+                control_ws.send_text(
+                    CommandAck(
+                        command_id="cmd-1",
+                        command_sequence=1,
+                        received_at_client=2.0,
+                        completed_at_client=3.0,
+                        success=True,
+                    ).model_dump_json()
+                )
+                control_ws.send_text(HeartbeatPing().model_dump_json())
+                response = control_ws.receive_text()
+                assert json.loads(response)["type"] == "pong"
+
+                session = session_manager.get_session(client_id)
+                assert session is not None
+                assert session.commands_acked == 1
