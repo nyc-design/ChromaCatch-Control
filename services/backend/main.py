@@ -135,7 +135,11 @@ async def get_client_status(client_id: str):
     if session is None:
         raise HTTPException(status_code=404, detail="Client not found")
     if session.last_status:
-        return session.last_status.model_dump()
+        payload = session.last_status.model_dump()
+        payload["backend_commands_sent"] = session.commands_sent
+        payload["backend_commands_acked"] = session.commands_acked
+        payload["backend_last_command_rtt_ms"] = session.last_command_rtt_ms
+        return payload
     return {"detail": "No status received yet"}
 
 
