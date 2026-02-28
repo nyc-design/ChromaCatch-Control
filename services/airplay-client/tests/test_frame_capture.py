@@ -1,6 +1,7 @@
 """Tests for frame capture service."""
 
-from unittest.mock import MagicMock, patch
+from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -86,6 +87,25 @@ class TestFrameCapture:
     def test_infer_resolution_rejects_invalid_size(self, capture):
         assert capture._infer_resolution_from_frame_size(0) is None
         assert capture._infer_resolution_from_frame_size(7) is None
+
+    def test_extract_resolution_from_caps_line(self, capture):
+        line = (
+            "video/x-raw, format=(string)BGR, width=(int)498, "
+            "height=(int)1080, framerate=(fraction)0/1"
+        )
+        assert capture._extract_resolution_from_caps_line(line) == (498, 1080)
+
+    def test_extract_resolution_from_caps_line_returns_none_without_dimensions(
+        self,
+        capture,
+    ):
+        assert capture._extract_resolution_from_caps_line("video/x-raw, format=BGR") is None
+
+    def test_get_stable_file_size(self, capture, tmp_path: Path):
+        f = tmp_path / "frame.raw"
+        f.write_bytes(b"a" * 1234)
+        size = capture._get_stable_file_size(str(f), timeout=0.5)
+        assert size == 1234
 
     def test_stop_when_not_started(self, capture):
         capture.stop()

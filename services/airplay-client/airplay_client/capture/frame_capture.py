@@ -114,6 +114,9 @@ class FrameCapture:
         # We prefer parsing width/height from verbose caps output because
         # inferring from raw byte size is ambiguous (multiple valid WxH pairs).
         width, height = 0, 0
+        resolution_source: str | None = None
+        fallback_set_at: float | None = None
+        first_frame_seen_at: float | None = None
         deadline = time.time() + 120
         first_frame = os.path.join(frame_dir, "frame_00000.raw")
         logger.info("GStreamer pid=%d, waiting for first decoded frame...", proc.pid)
@@ -134,30 +137,64 @@ class FrameCapture:
                     text = line.decode("utf-8", errors="replace").rstrip() if line else ""
                     if text:
                         logger.debug("[gst] %s", text)
-                        if "video/x-raw" in text and "BGR" in text:
-                            w_match = re.search(r"width=\(int\)(\d+)", text)
-                            h_match = re.search(r"height=\(int\)(\d+)", text)
-                            if w_match and h_match:
-                                width = int(w_match.group(1))
-                                height = int(h_match.group(1))
-                                logger.info("Detected stream resolution from caps: %dx%d", width, height)
+                        caps_resolution = self._extract_resolution_from_caps_line(text)
+                        if caps_resolution:
+                            caps_w, caps_h = caps_resolution
+                            if (
+                                resolution_source == "fallback"
+                                and (caps_w != width or caps_h != height)
+                            ):
+                                logger.info(
+                                    "Caps resolution (%dx%d) overrides fallback (%dx%d)",
+                                    caps_w,
+                                    caps_h,
+                                    width,
+                                    height,
+                                )
+                            width, height = caps_w, caps_h
+                            resolution_source = "caps"
+                            logger.info(
+                                "Detected stream resolution from caps: %dx%d",
+                                width,
+                                height,
+                            )
 
             if os.path.exists(first_frame):
-                time.sleep(0.1)  # Let the file finish writing
-                frame_bytes = os.path.getsize(first_frame)
-                if frame_bytes > 0 and (width == 0 or height == 0):
-                    inferred = self._infer_resolution_from_frame_size(frame_bytes)
-                    if inferred:
-                        width, height = inferred
-                        logger.info(
-                            "Detected stream resolution from frame size fallback: %dx%d",
-                            width,
-                            height,
-                        )
-                    else:
-                        logger.warning("Could not determine resolution from frame size %d", frame_bytes)
+                if first_frame_seen_at is None:
+                    first_frame_seen_at = time.time()
 
-                if width > 0 and height > 0:
+                time.sleep(0.1)  # Let the file finish writing
+                if (width == 0 or height == 0) and (
+                    first_frame_seen_at is not None
+                    and time.time() - first_frame_seen_at >= 1.0
+                ):
+                    frame_bytes = self._get_stable_file_size(first_frame, timeout=0.8)
+                    if frame_bytes > 0:
+                        inferred = self._infer_resolution_from_frame_size(frame_bytes)
+                        if inferred:
+                            width, height = inferred
+                            resolution_source = "fallback"
+                            fallback_set_at = time.time()
+                            logger.info(
+                                "Detected stream resolution from frame size fallback: %dx%d",
+                                width,
+                                height,
+                            )
+                        else:
+                            logger.warning(
+                                "Could not determine resolution from frame size %d",
+                                frame_bytes,
+                            )
+
+                if width > 0 and height > 0 and resolution_source == "caps":
+                    break
+                if (
+                    width > 0
+                    and height > 0
+                    and resolution_source == "fallback"
+                    and fallback_set_at is not None
+                    and time.time() - fallback_set_at >= 1.0
+                ):
                     break
 
             time.sleep(0.5)
@@ -178,6 +215,45 @@ class FrameCapture:
 
         logger.info("Using stream resolution: %dx%d", width, height)
         return frame_dir, width, height
+
+    @staticmethod
+    def _extract_resolution_from_caps_line(line: str) -> tuple[int, int] | None:
+        """Extract width/height from a GStreamer caps line."""
+        if "width=(int)" not in line or "height=(int)" not in line:
+            return None
+        w_match = re.search(r"width=\(int\)(\d+)", line)
+        h_match = re.search(r"height=\(int\)(\d+)", line)
+        if not w_match or not h_match:
+            return None
+        width = int(w_match.group(1))
+        height = int(h_match.group(1))
+        if not (100 <= width <= 5000 and 100 <= height <= 5000):
+            return None
+        return width, height
+
+    @staticmethod
+    def _get_stable_file_size(path: str, timeout: float = 1.0) -> int:
+        """Wait until file size stabilizes, then return final size."""
+        end = time.time() + timeout
+        previous_size = -1
+        stable_reads = 0
+
+        while time.time() < end:
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                size = 0
+
+            if size > 0 and size == previous_size:
+                stable_reads += 1
+                if stable_reads >= 3:
+                    return size
+            else:
+                stable_reads = 0
+            previous_size = size
+            time.sleep(0.05)
+
+        return max(0, previous_size)
 
 
     def _infer_resolution_from_frame_size(self, frame_bytes: int) -> tuple[int, int] | None:
