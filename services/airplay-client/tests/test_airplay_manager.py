@@ -23,11 +23,14 @@ class TestAirPlayManager:
         assert "-n" in cmd
         assert "TestCatch" in cmd
         assert "-vrtp" in cmd
-        assert "-vs" in cmd
-        assert "0" in cmd
+        assert "-vs" not in cmd  # -vs 0 disables video, must not be present
         vrtp_idx = cmd.index("-vrtp")
         pipeline = cmd[vrtp_idx + 1]
         assert "udpsink host=127.0.0.1 port=5000" in pipeline
+        assert "config-interval=1" in pipeline
+        # UxPlay auto-adds h264parse/rtph264pay, so they should NOT be in our pipeline
+        assert "h264parse" not in pipeline
+        assert "rtph264pay" not in pipeline
 
     def test_not_running_initially(self, manager):
         assert manager.is_running is False
