@@ -1,7 +1,9 @@
 """Captures video frames from the UxPlay RTP stream."""
 
 import logging
+import os
 import queue
+import tempfile
 import threading
 from enum import Enum
 
@@ -35,6 +37,7 @@ class FrameCapture:
         self._capture: cv2.VideoCapture | None = None
         self._thread: threading.Thread | None = None
         self._running = False
+        self._sdp_path: str | None = None
 
 
     @staticmethod
@@ -59,10 +62,22 @@ class FrameCapture:
         )
 
 
-    def _build_ffmpeg_pipeline(self) -> str:
-        return (
-            f'udp://127.0.0.1:{self.udp_port}'
+    def _build_sdp_file(self) -> str:
+        """Create a temporary SDP file describing the RTP H264 stream."""
+        sdp_content = (
+            "v=0\r\n"
+            "o=- 0 0 IN IP4 127.0.0.1\r\n"
+            "s=UxPlay\r\n"
+            "c=IN IP4 127.0.0.1\r\n"
+            "t=0 0\r\n"
+            f"m=video {self.udp_port} RTP/AVP 96\r\n"
+            "a=rtpmap:96 H264/90000\r\n"
         )
+        fd, path = tempfile.mkstemp(suffix=".sdp", prefix="chromacatch_")
+        with os.fdopen(fd, "w") as f:
+            f.write(sdp_content)
+        self._sdp_path = path
+        return path
 
 
     def _create_capture(self) -> cv2.VideoCapture:
@@ -72,9 +87,9 @@ class FrameCapture:
             logger.info("Using GStreamer pipeline: %s", pipeline)
             cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
         else:
-            pipeline = self._build_ffmpeg_pipeline()
-            logger.info("Using FFmpeg pipeline: %s", pipeline)
-            cap = cv2.VideoCapture(pipeline, cv2.CAP_FFMPEG)
+            sdp_path = self._build_sdp_file()
+            logger.info("Using FFmpeg with SDP file: %s (port %d)", sdp_path, self.udp_port)
+            cap = cv2.VideoCapture(sdp_path, cv2.CAP_FFMPEG)
 
         if not cap.isOpened():
             raise RuntimeError(
@@ -85,8 +100,20 @@ class FrameCapture:
 
 
     def _capture_loop(self) -> None:
-        """Background thread that reads frames and pushes to queue."""
-        logger.info("Frame capture loop started")
+        """Background thread that reads frames and pushes to queue.
+
+        Opens the capture lazily, retrying every few seconds until the
+        RTP stream becomes available (iPhone connects to UxPlay).
+        """
+        logger.info("Waiting for AirPlay stream on port %d...", self.udp_port)
+        while self._running and self._capture is None:
+            try:
+                self._capture = self._create_capture()
+                logger.info("AirPlay stream connected!")
+            except RuntimeError:
+                import time
+                time.sleep(3)
+
         while self._running:
             if self._capture is None:
                 break
@@ -108,12 +135,15 @@ class FrameCapture:
 
 
     def start(self) -> None:
-        """Start capturing frames in a background thread."""
+        """Start capturing frames in a background thread.
+
+        The capture opens lazily in the background thread, retrying until
+        the RTP stream is available (i.e. iPhone has connected to UxPlay).
+        """
         if self._running:
             logger.warning("Frame capture is already running")
             return
 
-        self._capture = self._create_capture()
         self._running = True
         self._thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._thread.start()
@@ -130,6 +160,9 @@ class FrameCapture:
         if self._capture:
             self._capture.release()
             self._capture = None
+        if self._sdp_path and os.path.exists(self._sdp_path):
+            os.unlink(self._sdp_path)
+            self._sdp_path = None
         logger.info("Frame capture stopped")
 
 
