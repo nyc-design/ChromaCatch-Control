@@ -232,7 +232,8 @@ class FrameCapture:
             previous_size = size
             time.sleep(0.05)
 
-        return max(0, previous_size)
+        # Not stable yet (likely still being written) — caller should retry.
+        return 0
 
 
     def _infer_resolution_from_frame_size(self, frame_bytes: int) -> tuple[int, int] | None:
@@ -348,7 +349,7 @@ class FrameCapture:
                 continue
             frame_path, frame_idx = next_frame
 
-            if self._get_stable_file_size(frame_path, timeout=0.3) <= 0:
+            if self._get_stable_file_size(frame_path, timeout=1.0) <= 0:
                 time.sleep(0.005)
                 continue
 
