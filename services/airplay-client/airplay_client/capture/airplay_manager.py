@@ -19,9 +19,16 @@ class AirPlayManager:
     packets over localhost UDP to the configured port.
     """
 
-    def __init__(self, uxplay_path: str | None = None, udp_port: int | None = None, airplay_name: str | None = None):
+    def __init__(
+        self,
+        uxplay_path: str | None = None,
+        udp_port: int | None = None,
+        airplay_name: str | None = None,
+        audio_udp_port: int | None = None,
+    ):
         self.uxplay_path = uxplay_path or settings.uxplay_path
         self.udp_port = udp_port or settings.airplay_udp_port
+        self.audio_udp_port = audio_udp_port or settings.airplay_audio_udp_port
         self.airplay_name = airplay_name or settings.airplay_name
         self._process: subprocess.Popen | None = None
         self._drain_threads: list[threading.Thread] = []
@@ -49,8 +56,11 @@ class AirPlayManager:
         - -d: Enable UxPlay debug logging for diagnostics
         """
         vrtp_pipeline = f"config-interval=1 ! udpsink host=127.0.0.1 port={self.udp_port}"
+        artp_pipeline = (
+            f"pt=96 ! udpsink host=127.0.0.1 port={self.audio_udp_port}"
+        )
         key_path = os.path.expanduser("~/.uxplay.pem")
-        return [
+        cmd = [
             self.uxplay_path,
             "-n", self.airplay_name,
             "-key", key_path,  # Persist server key for stable identity across restarts
@@ -59,6 +69,9 @@ class AirPlayManager:
             "-d",              # Debug logging for diagnostics
             "-vrtp", vrtp_pipeline,
         ]
+        if settings.audio_enabled:
+            cmd.extend(["-artp", artp_pipeline])
+        return cmd
 
 
     def start(self) -> None:

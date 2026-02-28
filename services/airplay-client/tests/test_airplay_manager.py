@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from airplay_client.capture.airplay_manager import AirPlayManager
+from airplay_client.config import client_settings
 
 
 class TestAirPlayManager:
@@ -36,9 +37,22 @@ class TestAirPlayManager:
         pipeline = cmd[vrtp_idx + 1]
         assert "udpsink host=127.0.0.1 port=5000" in pipeline
         assert "config-interval=1" in pipeline
+        assert "-artp" in cmd
+        artp_idx = cmd.index("-artp")
+        audio_pipeline = cmd[artp_idx + 1]
+        assert f"port={manager.audio_udp_port}" in audio_pipeline
         # UxPlay auto-adds h264parse/rtph264pay, so they should NOT be in our pipeline
         assert "h264parse" not in pipeline
         assert "rtph264pay" not in pipeline
+
+    def test_build_command_without_audio(self, manager):
+        old = client_settings.audio_enabled
+        try:
+            client_settings.audio_enabled = False
+            cmd = manager.build_command()
+            assert "-artp" not in cmd
+        finally:
+            client_settings.audio_enabled = old
 
     def test_not_running_initially(self, manager):
         assert manager.is_running is False

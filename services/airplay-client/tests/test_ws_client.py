@@ -98,3 +98,25 @@ class TestWebSocketClient:
         mock_ws.send.assert_called_once()
         sent = mock_ws.send.call_args[0][0]
         assert '"client_status"' in sent
+
+    @pytest.mark.asyncio
+    async def test_send_audio_chunk_sends_two_messages(self, ws_client):
+        mock_ws = AsyncMock()
+        ws_client._ws = mock_ws
+        ws_client._connected = True
+
+        chunk = b"\x00\x01" * 512
+        await ws_client.send_audio_chunk(
+            pcm_bytes=chunk,
+            sequence=1,
+            sample_rate=44100,
+            channels=2,
+            capture_timestamp=1000.0,
+        )
+
+        assert mock_ws.send.call_count == 2
+        metadata_json = mock_ws.send.call_args_list[0][0][0]
+        assert '"audio_chunk"' in metadata_json
+        assert '"sample_rate":44100' in metadata_json
+        sent_bytes = mock_ws.send.call_args_list[1][0][0]
+        assert sent_bytes == chunk

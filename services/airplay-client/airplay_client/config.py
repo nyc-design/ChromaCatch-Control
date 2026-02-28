@@ -4,7 +4,14 @@ import socket
 
 from pydantic_settings import BaseSettings
 
-from shared.constants import DEFAULT_FRAME_INTERVAL_MS, DEFAULT_JPEG_QUALITY, DEFAULT_MAX_DIMENSION
+from shared.constants import (
+    DEFAULT_AUDIO_CHANNELS,
+    DEFAULT_AUDIO_CHUNK_MS,
+    DEFAULT_AUDIO_SAMPLE_RATE,
+    DEFAULT_FRAME_INTERVAL_MS,
+    DEFAULT_JPEG_QUALITY,
+    DEFAULT_MAX_DIMENSION,
+)
 
 
 class ClientSettings(BaseSettings):
@@ -21,6 +28,7 @@ class ClientSettings(BaseSettings):
 
     # AirPlay / UxPlay
     airplay_udp_port: int = 5000
+    airplay_audio_udp_port: int = 5002
     airplay_name: str = "ChromaCatch"
     uxplay_path: str = "uxplay"
 
@@ -40,6 +48,12 @@ class ClientSettings(BaseSettings):
     jpeg_quality: int = DEFAULT_JPEG_QUALITY
     max_dimension: int = DEFAULT_MAX_DIMENSION
     frame_interval_ms: int = DEFAULT_FRAME_INTERVAL_MS
+
+    # Audio transport
+    audio_enabled: bool = True
+    audio_sample_rate: int = DEFAULT_AUDIO_SAMPLE_RATE
+    audio_channels: int = DEFAULT_AUDIO_CHANNELS
+    audio_chunk_ms: int = DEFAULT_AUDIO_CHUNK_MS
 
     # WebSocket resilience
     ws_reconnect_delay: float = 1.0

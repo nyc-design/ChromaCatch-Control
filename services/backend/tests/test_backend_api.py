@@ -113,6 +113,45 @@ class TestClientFrameEndpoint:
             )
 
 
+class TestClientAudioEndpoint:
+    def test_audio_not_found(self):
+        client = TestClient(app)
+        response = client.get("/clients/unknown/audio")
+        assert response.status_code == 404
+
+    def test_audio_no_chunk_available(self):
+        ws = AsyncMock()
+        import asyncio
+
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(session_manager.register("test-audio", ws))
+        try:
+            client = TestClient(app)
+            response = client.get("/clients/test-audio/audio")
+            assert response.status_code == 404
+        finally:
+            loop.run_until_complete(session_manager.unregister("test-audio"))
+
+    def test_audio_returns_wav(self):
+        ws = AsyncMock()
+        import asyncio
+
+        loop = asyncio.get_event_loop()
+        session = loop.run_until_complete(session_manager.register("test-audio-wav", ws))
+        session.latest_audio_chunk = b"\x00\x00\x01\x00" * 100
+        session.latest_audio_sample_rate = 44100
+        session.latest_audio_channels = 2
+        session.latest_audio_format = "s16le"
+        try:
+            client = TestClient(app)
+            response = client.get("/clients/test-audio-wav/audio")
+            assert response.status_code == 200
+            assert response.headers["content-type"] == "audio/wav"
+            assert response.content.startswith(b"RIFF")
+        finally:
+            loop.run_until_complete(session_manager.unregister("test-audio-wav"))
+
+
 class TestStreamEndpoint:
     def test_stream_client_not_found(self):
         client = TestClient(app)

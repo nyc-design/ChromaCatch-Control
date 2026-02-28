@@ -31,6 +31,13 @@ class ClientSession:
     latest_frame: np.ndarray | None = None
     latest_frame_jpeg: bytes | None = None
     latest_frame_sequence: int = 0
+    last_audio_at: float = 0.0
+    audio_chunks_received: int = 0
+    latest_audio_chunk: bytes | None = None
+    latest_audio_sequence: int = 0
+    latest_audio_sample_rate: int = 0
+    latest_audio_channels: int = 0
+    latest_audio_format: str = "s16le"
     next_command_sequence: int = 0
     pending_commands: dict[str, float] = field(default_factory=dict)
     commands_sent: int = 0

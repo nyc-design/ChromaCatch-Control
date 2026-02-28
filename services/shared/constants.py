@@ -26,12 +26,18 @@ DEFAULT_JPEG_QUALITY = 65
 DEFAULT_MAX_DIMENSION = 720
 DEFAULT_FRAME_INTERVAL_MS = 33  # ~30 FPS to backend
 
+# Audio transport defaults
+DEFAULT_AUDIO_SAMPLE_RATE = 44_100
+DEFAULT_AUDIO_CHANNELS = 2
+DEFAULT_AUDIO_CHUNK_MS = 100
+
 
 class MessageType:
     """WebSocket message type identifiers."""
 
     # Client -> Backend
     FRAME = "frame"
+    AUDIO_CHUNK = "audio_chunk"
     CLIENT_STATUS = "client_status"
 
     # Backend -> Client

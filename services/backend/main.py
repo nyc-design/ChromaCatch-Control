@@ -1,7 +1,9 @@
 """FastAPI application for ChromaCatch-Go remote backend."""
 
 import asyncio
+import io
 import logging
+import wave
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket
@@ -139,6 +141,7 @@ async def get_client_status(client_id: str):
         payload["backend_commands_sent"] = session.commands_sent
         payload["backend_commands_acked"] = session.commands_acked
         payload["backend_last_command_rtt_ms"] = session.last_command_rtt_ms
+        payload["backend_audio_chunks_received"] = session.audio_chunks_received
         return payload
     return {"detail": "No status received yet"}
 
@@ -153,6 +156,41 @@ async def get_latest_frame(client_id: str):
             raise HTTPException(status_code=404, detail="No frame available")
         jpeg_bytes, _, _ = encode_frame(frame, quality=85, max_dimension=0)
     return Response(content=jpeg_bytes, media_type="image/jpeg")
+
+
+def _pcm_chunk_to_wav(
+    pcm_bytes: bytes,
+    sample_rate: int,
+    channels: int,
+    sample_format: str,
+) -> bytes:
+    """Wrap raw PCM bytes in a WAV container for easy playback/debug."""
+    if sample_format.lower() != "s16le":
+        raise HTTPException(status_code=415, detail="Unsupported sample format")
+    with io.BytesIO() as buffer:
+        with wave.open(buffer, "wb") as wav:
+            wav.setnchannels(max(1, channels))
+            wav.setsampwidth(2)  # s16le
+            wav.setframerate(max(1, sample_rate))
+            wav.writeframes(pcm_bytes)
+        return buffer.getvalue()
+
+
+@app.get("/clients/{client_id}/audio")
+async def get_latest_audio_chunk(client_id: str):
+    """Get latest audio chunk wrapped as a WAV snippet (debug)."""
+    session = session_manager.get_session(client_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Client not found")
+    if session.latest_audio_chunk is None:
+        raise HTTPException(status_code=404, detail="No audio available")
+    wav_bytes = _pcm_chunk_to_wav(
+        pcm_bytes=session.latest_audio_chunk,
+        sample_rate=session.latest_audio_sample_rate,
+        channels=session.latest_audio_channels,
+        sample_format=session.latest_audio_format,
+    )
+    return Response(content=wav_bytes, media_type="audio/wav")
 
 
 # --- MJPEG Stream + Dashboard --- #TODO: REORG: move to separate file
@@ -245,6 +283,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                                     <span class="value ${s.control_channel_connected ? 'ok' : 'fail'}">${s.control_channel_connected ? 'Connected' : 'Disconnected'}</span></div>
                                 <div class="status-item"><span class="label">Cmd Ack RTT</span><br>
                                     <span class="value">${s.last_command_rtt_ms ? Math.round(s.last_command_rtt_ms) + ' ms' : 'n/a'}</span></div>
+                                <div class="status-item"><span class="label">Audio Chunks</span><br>
+                                    <span class="value">${s.audio_chunks_sent || 0}</span></div>
                                 <div class="status-item"><span class="label">Uptime</span><br>
                                     <span class="value">${Math.floor((s.uptime_seconds || 0) / 60)}m ${Math.floor((s.uptime_seconds || 0) % 60)}s</span></div>`;
                         } else {

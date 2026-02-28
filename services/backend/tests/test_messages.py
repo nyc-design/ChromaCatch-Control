@@ -4,6 +4,7 @@ import json
 
 from shared.constants import PROTOCOL_VERSION, MessageType
 from shared.messages import (
+    AudioChunk,
     BaseMessage,
     ClientStatus,
     CommandAck,
@@ -63,6 +64,32 @@ class TestFrameMetadata:
         ).model_dump_json()
         data = json.loads(raw)
         assert data["type"] == "frame"
+
+
+class TestAudioChunk:
+    def test_creation(self):
+        msg = AudioChunk(
+            sequence=1,
+            sample_rate=44100,
+            channels=2,
+            capture_timestamp=1000.0,
+            byte_length=4096,
+        )
+        assert msg.type == MessageType.AUDIO_CHUNK
+        assert msg.sample_format == "s16le"
+
+    def test_roundtrip_json(self):
+        msg = AudioChunk(
+            sequence=2,
+            sample_rate=48000,
+            channels=1,
+            capture_timestamp=1.23,
+            sent_timestamp=2.34,
+            byte_length=1024,
+        )
+        parsed = AudioChunk.model_validate_json(msg.model_dump_json())
+        assert parsed.sample_rate == 48000
+        assert parsed.sent_timestamp == 2.34
 
 
 class TestHIDCommandMessage:

@@ -19,6 +19,7 @@ from airplay_client.config import client_settings
 from shared.constants import make_auth_headers
 from shared.frame_codec import encode_frame
 from shared.messages import (
+    AudioChunk,
     BaseMessage,
     ClientStatus,
     CommandAck,
@@ -168,6 +169,33 @@ class WebSocketClient:
             try:
                 await self._ws.send(metadata.model_dump_json())
                 await self._ws.send(jpeg_bytes)
+            except websockets.ConnectionClosed:
+                self._connected = False
+
+    async def send_audio_chunk(
+        self,
+        pcm_bytes: bytes,
+        sequence: int,
+        sample_rate: int,
+        channels: int,
+        capture_timestamp: float | None = None,
+    ) -> None:
+        """Send an audio chunk (metadata + binary PCM)."""
+        if not self.is_connected:
+            return
+        ts = capture_timestamp or time.time()
+        metadata = AudioChunk(
+            sequence=sequence,
+            sample_rate=sample_rate,
+            channels=channels,
+            capture_timestamp=ts,
+            sent_timestamp=time.time(),
+            byte_length=len(pcm_bytes),
+        )
+        async with self._send_lock:
+            try:
+                await self._ws.send(metadata.model_dump_json())
+                await self._ws.send(pcm_bytes)
             except websockets.ConnectionClosed:
                 self._connected = False
 

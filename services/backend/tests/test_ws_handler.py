@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from backend.main import app, session_manager
 from shared.frame_codec import encode_frame
-from shared.messages import ClientStatus, CommandAck, FrameMetadata, HeartbeatPing
+from shared.messages import AudioChunk, ClientStatus, CommandAck, FrameMetadata, HeartbeatPing
 
 
 class TestWebSocketConnection:
@@ -128,6 +128,32 @@ class TestWebSocketConnection:
             ws.send_text(HeartbeatPing().model_dump_json())
             response = ws.receive_text()
             assert json.loads(response)["type"] == "pong"
+
+    def test_websocket_send_audio_chunk(self):
+        client = TestClient(app)
+        with client.websocket_connect("/ws/client") as ws:
+            ws.send_text(HeartbeatPing().model_dump_json())
+            ws.receive_text()
+
+            raw_audio = b"\x00\x01" * 2048
+            metadata = AudioChunk(
+                sequence=1,
+                sample_rate=44100,
+                channels=2,
+                capture_timestamp=1000.0,
+                byte_length=len(raw_audio),
+            )
+            ws.send_text(metadata.model_dump_json())
+            ws.send_bytes(raw_audio)
+
+            ws.send_text(HeartbeatPing().model_dump_json())
+            ws.receive_text()
+
+            client_id = session_manager.connected_clients[0]
+            session = session_manager.get_session(client_id)
+            assert session is not None
+            assert session.audio_chunks_received == 1
+            assert session.latest_audio_chunk == raw_audio
 
     def test_websocket_control_channel_receives_ack(self):
         client = TestClient(app)

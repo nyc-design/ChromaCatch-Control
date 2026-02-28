@@ -10,6 +10,7 @@ import asyncio
 import logging
 import time
 
+from airplay_client.capture.audio_capture import AudioCapture
 from airplay_client.commander.esp32_client import ESP32Client
 from airplay_client.config import client_settings
 from airplay_client.esp32_forwarder import ESP32Forwarder
@@ -44,6 +45,16 @@ class ChromaCatchClient:
         self._start_time = time.time()
         self._frames_captured = 0
         self._frames_sent = 0
+        self._audio_capture: AudioCapture | None = None
+        self._audio_sequence = 0
+        self._audio_chunks_captured = 0
+        self._audio_chunks_sent = 0
+
+        if (
+            client_settings.audio_enabled
+            and client_settings.capture_source.lower().strip() == "airplay"
+        ):
+            self._audio_capture = AudioCapture()
 
     @staticmethod
     def _resolve_control_ws_url() -> str:
@@ -119,6 +130,9 @@ class ChromaCatchClient:
                 commands_sent=self._forwarder.commands_sent,
                 commands_acked=self._forwarder.commands_acked,
                 last_command_rtt_ms=self._forwarder.last_command_rtt_ms,
+                audio_enabled=self._audio_capture is not None,
+                audio_chunks_captured=self._audio_chunks_captured,
+                audio_chunks_sent=self._audio_chunks_sent,
                 uptime_seconds=time.time() - self._start_time,
             )
             if self._frame_ws.is_connected:
@@ -127,10 +141,31 @@ class ChromaCatchClient:
                 await self._control_ws.send_status(status)
             await asyncio.sleep(15)
 
+    async def _audio_sender_loop(self) -> None:
+        """Capture and send audio chunks when enabled."""
+        if self._audio_capture is None:
+            while True:
+                await asyncio.sleep(60)
+
+        while True:
+            chunk = await asyncio.to_thread(self._audio_capture.get_chunk, 0.5)
+            if chunk:
+                self._audio_chunks_captured += 1
+                self._audio_sequence += 1
+                await self._frame_ws.send_audio_chunk(
+                    pcm_bytes=chunk,
+                    sequence=self._audio_sequence,
+                    sample_rate=client_settings.audio_sample_rate,
+                    channels=client_settings.audio_channels,
+                )
+                self._audio_chunks_sent += 1
+
     async def run(self) -> None:
         """Start all client components."""
         logger.info("ChromaCatch-Go Client starting...")
 
+        if self._audio_capture is not None:
+            self._audio_capture.start()
         self._frame_source.start()
 
         # Run WebSocket connection + frame sender + status reporter concurrently
@@ -138,6 +173,7 @@ class ChromaCatchClient:
             self._frame_ws.connect(),
             self._control_ws.connect(),
             self._frame_sender_loop(),
+            self._audio_sender_loop(),
             self._status_reporter_loop(),
         )
 
@@ -145,6 +181,8 @@ class ChromaCatchClient:
         """Graceful shutdown."""
         await self._frame_ws.disconnect()
         await self._control_ws.disconnect()
+        if self._audio_capture is not None:
+            self._audio_capture.stop()
         self._frame_source.stop()
         await self._esp32.close()
 

@@ -38,6 +38,19 @@ class FrameMetadata(BaseMessage):
     byte_length: int
 
 
+class AudioChunk(BaseMessage):
+    """Metadata sent before a binary PCM audio chunk."""
+
+    type: str = MessageType.AUDIO_CHUNK
+    sequence: int
+    sample_rate: int
+    channels: int
+    sample_format: str = "s16le"
+    capture_timestamp: float
+    sent_timestamp: float | None = None
+    byte_length: int
+
+
 class ClientStatus(BaseMessage):
     """Periodic status update from client."""
 
@@ -54,6 +67,9 @@ class ClientStatus(BaseMessage):
     commands_sent: int = 0
     commands_acked: int = 0
     last_command_rtt_ms: float | None = None
+    audio_enabled: bool = False
+    audio_chunks_captured: int = 0
+    audio_chunks_sent: int = 0
     uptime_seconds: float = 0.0
 
 
@@ -115,6 +131,7 @@ class ErrorMessage(BaseMessage):
 
 _TYPE_MAP: dict[str, type[BaseMessage]] = {
     MessageType.FRAME: FrameMetadata,
+    MessageType.AUDIO_CHUNK: AudioChunk,
     MessageType.CLIENT_STATUS: ClientStatus,
     MessageType.HID_COMMAND: HIDCommandMessage,
     MessageType.COMMAND_ACK: CommandAck,

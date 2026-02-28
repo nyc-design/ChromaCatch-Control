@@ -39,6 +39,7 @@ Automated shiny hunting bot for Pokemon Go using AirPlay screen mirroring, compu
 - **Frames (client → backend)**: Two-message pattern — JSON `FrameMetadata` followed by binary JPEG bytes
 - **Commands (backend → client)**: JSON `HIDCommandMessage` with action + params (+ command id/sequence)
 - **Command ACKs (client → backend)**: JSON `CommandAck` after ESP32 forward attempt
+- **Audio (client → backend)**: JSON `AudioChunk` metadata + binary PCM payload
 - **Status (client → backend)**: Periodic JSON `ClientStatus` updates
 - **Channel split**:
   - `/ws/client` = frame/status channel
@@ -81,7 +82,8 @@ ChromaCatch-Go/
 │   │   │   ├── esp32_forwarder.py           # WS command → ESP32 HTTP bridge (+ ack timing)
 │   │   │   ├── capture/
 │   │   │   │   ├── airplay_manager.py       # UxPlay process management
-│   │   │   │   └── frame_capture.py         # OpenCV GStreamer/FFmpeg frame capture
+│   │   │   │   ├── frame_capture.py         # OpenCV GStreamer/FFmpeg frame capture
+│   │   │   │   └── audio_capture.py         # AirPlay RTP audio capture (PCM chunks)
 │   │   │   ├── sources/
 │   │   │   │   ├── airplay_source.py        # AirPlay/UxPlay source adapter
 │   │   │   │   ├── capture_card_source.py   # USB capture/camera source adapter
@@ -119,7 +121,7 @@ ChromaCatch-Go/
 | ESP32 firmware | C++ / Arduino / PlatformIO |
 | ESP32 comms | WiFi HTTP (REST) |
 | BLE HID | ESP32 BLE HID library (BleCombo) |
-| Testing | pytest, pytest-asyncio (138 tests) |
+| Testing | pytest, pytest-asyncio (147 tests) |
 | Linting | ruff, black, mypy |
 
 ## Phases
@@ -139,6 +141,7 @@ ChromaCatch-Go/
 - [x] GStreamer CLI capture stability fixes (single long-lived pipeline + reliable resolution detection from caps)
 - [x] Dual WebSocket channels (`/ws/client`, `/ws/control`) with command sequencing + ACK telemetry
 - [x] Unified client frame source layer (AirPlay, capture card, desktop capture)
+- [x] Initial AirPlay audio transport (`UxPlay -artp` + backend audio chunk ingestion)
 
 ### Phase 2: Computer Vision
 - [ ] Screen state detection (battle, overworld, menu, etc.)
@@ -200,6 +203,7 @@ CC_CLIENT_API_KEY=your-secret-key
 CC_CLIENT_ESP32_HOST=192.168.1.100
 CC_CLIENT_ESP32_PORT=80
 CC_CLIENT_AIRPLAY_UDP_PORT=5000
+CC_CLIENT_AIRPLAY_AUDIO_UDP_PORT=5002
 CC_CLIENT_AIRPLAY_NAME=ChromaCatch
 CC_CLIENT_CAPTURE_SOURCE=airplay            # airplay | capture | screen
 CC_CLIENT_CAPTURE_DEVICE=0                  # device index/path for capture source
@@ -209,6 +213,10 @@ CC_CLIENT_SCREEN_REGION=                    # optional x,y,width,height
 CC_CLIENT_JPEG_QUALITY=65
 CC_CLIENT_MAX_DIMENSION=720
 CC_CLIENT_FRAME_INTERVAL_MS=33
+CC_CLIENT_AUDIO_ENABLED=true
+CC_CLIENT_AUDIO_SAMPLE_RATE=44100
+CC_CLIENT_AUDIO_CHANNELS=2
+CC_CLIENT_AUDIO_CHUNK_MS=100
 ```
 
 **Backend** (`.env` with `CC_BACKEND_` prefix):
@@ -230,5 +238,6 @@ CC_BACKEND_MAX_FRAME_BYTES=500000
 | POST | `/command` | Send HID command to client(s) |
 | GET | `/clients/{id}/status` | Get client's latest status |
 | GET | `/clients/{id}/frame` | Get latest frame as JPEG |
+| GET | `/clients/{id}/audio` | Get latest audio chunk as WAV snippet |
 | GET | `/stream/{id}` | MJPEG live frame stream |
 | GET | `/dashboard` | Browser dashboard with status + streams |

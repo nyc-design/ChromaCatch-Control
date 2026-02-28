@@ -10,6 +10,7 @@ from backend.config import backend_settings
 from backend.session_manager import ChannelType, ClientSession, SessionManager
 from shared.frame_codec import decode_frame
 from shared.messages import (
+    AudioChunk,
     ClientStatus,
     CommandAck,
     FrameMetadata,
@@ -68,6 +69,7 @@ class WebSocketHandler:
     ) -> None:
         """Process incoming frame-channel messages from the client."""
         expecting_frame_data: FrameMetadata | None = None
+        expecting_audio_data: AudioChunk | None = None
 
         while True:
             message = await websocket.receive()
@@ -82,6 +84,11 @@ class WebSocketHandler:
 
                 if isinstance(msg, FrameMetadata):
                     expecting_frame_data = msg
+                    expecting_audio_data = None
+
+                elif isinstance(msg, AudioChunk):
+                    expecting_audio_data = msg
+                    expecting_frame_data = None
 
                 elif isinstance(msg, ClientStatus):
                     session.last_status = msg
@@ -105,9 +112,28 @@ class WebSocketHandler:
                 jpeg_bytes = message["bytes"]
 
                 if expecting_frame_data is None:
-                    logger.warning(
-                        "Received binary data without frame metadata from %s", client_id
-                    )
+                    if expecting_audio_data is None:
+                        logger.warning(
+                            "Received binary data without media metadata from %s",
+                            client_id,
+                        )
+                        continue
+                    if len(jpeg_bytes) > backend_settings.max_audio_bytes:
+                        logger.warning(
+                            "Audio chunk too large from %s: %d bytes",
+                            client_id,
+                            len(jpeg_bytes),
+                        )
+                        expecting_audio_data = None
+                        continue
+                    session.latest_audio_chunk = jpeg_bytes
+                    session.latest_audio_sequence = expecting_audio_data.sequence
+                    session.latest_audio_sample_rate = expecting_audio_data.sample_rate
+                    session.latest_audio_channels = expecting_audio_data.channels
+                    session.latest_audio_format = expecting_audio_data.sample_format
+                    session.audio_chunks_received += 1
+                    session.last_audio_at = time.time()
+                    expecting_audio_data = None
                     continue
 
                 if len(jpeg_bytes) > backend_settings.max_frame_bytes:

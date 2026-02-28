@@ -44,6 +44,16 @@ class TestCLIParser:
         assert args.api_key is None
         assert args.esp32_host is None
         assert args.esp32_port is None
+        assert args.audio_enabled is None
+
+    def test_audio_flags_parse(self):
+        parser = build_parser()
+        args = parser.parse_args(
+            ["--audio-enabled", "false", "--audio-rate", "48000", "--audio-channels", "1", "run"]
+        )
+        assert args.audio_enabled == "false"
+        assert args.audio_rate == 48000
+        assert args.audio_channels == 1
 
     def test_missing_subcommand_exits(self):
         parser = build_parser()

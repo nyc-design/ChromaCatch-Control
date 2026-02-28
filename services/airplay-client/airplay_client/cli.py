@@ -27,6 +27,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--capture-source", choices=["airplay", "capture", "screen"], help="Capture source to use (overrides CC_CLIENT_CAPTURE_SOURCE)")
     parser.add_argument("--capture-device", help="Capture card/camera device index or path (overrides CC_CLIENT_CAPTURE_DEVICE)")
     parser.add_argument("--capture-fps", type=int, help="Capture FPS target (overrides CC_CLIENT_CAPTURE_FPS)")
+    parser.add_argument("--audio-enabled", choices=["true", "false"], help="Enable/disable audio transport (overrides CC_CLIENT_AUDIO_ENABLED)")
+    parser.add_argument("--audio-rate", type=int, help="Audio sample rate (overrides CC_CLIENT_AUDIO_SAMPLE_RATE)")
+    parser.add_argument("--audio-channels", type=int, help="Audio channels (overrides CC_CLIENT_AUDIO_CHANNELS)")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging (shows UxPlay/FFmpeg output)")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -59,6 +62,12 @@ def apply_cli_overrides(args: argparse.Namespace) -> None:
         client_settings.capture_device = args.capture_device
     if args.capture_fps is not None:
         client_settings.capture_fps = args.capture_fps
+    if args.audio_enabled is not None:
+        client_settings.audio_enabled = args.audio_enabled.lower() == "true"
+    if args.audio_rate is not None:
+        client_settings.audio_sample_rate = args.audio_rate
+    if args.audio_channels is not None:
+        client_settings.audio_channels = args.audio_channels
 
 
 async def cmd_connect(args: argparse.Namespace) -> None:
