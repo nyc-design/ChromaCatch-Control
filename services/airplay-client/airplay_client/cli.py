@@ -120,24 +120,27 @@ def cmd_debug_capture(args: argparse.Namespace) -> None:
     logging.getLogger("airplay_client").setLevel(logging.DEBUG)
 
     print("=== ChromaCatch Debug Capture ===")
-    print("This runs ONLY UxPlay + FFmpeg capture (no backend/ESP32).")
+    print("This runs ONLY UxPlay + frame capture (no backend/ESP32).")
     print()
 
     airplay = AirPlayManager()
-    print(f"[1/3] Starting UxPlay: {' '.join(airplay.build_command())}")
+    capture = FrameCapture()
+
+    print(f"[1/3] Starting frame capture on UDP port {airplay.udp_port}...")
+    print("  (Must listen BEFORE UxPlay — iPhone only sends SPS/PPS+IDR once)")
+    capture.start()
+
+    print(f"\n[2/3] Starting UxPlay: {' '.join(airplay.build_command())}")
     try:
         airplay.start()
         print(f"  UxPlay started (pid={airplay.pid})")
     except RuntimeError as e:
         print(f"  FAILED: {e}")
+        capture.stop()
         return
 
-    print(f"\n[2/3] Starting frame capture on UDP port {airplay.udp_port}...")
-    print("  Connect your iPhone to AirPlay now.")
-    print("  Waiting for FFmpeg to detect the stream...\n")
-
-    capture = FrameCapture()
-    capture.start()
+    print(f"\n  **Connect your iPhone to AirPlay '{airplay.airplay_name}' now.**")
+    print("  Keep the screen active (play a video, scroll, etc).\n")
 
     print("[3/3] Watching for frames (Ctrl+C to stop)...\n")
     frame_count = 0

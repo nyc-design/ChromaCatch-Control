@@ -95,11 +95,14 @@ class ChromaCatchClient:
         """Start all client components."""
         logger.info("ChromaCatch-Go Client starting...")
 
-        # Start AirPlay receiver
-        self._airplay.start()
-
-        # Start frame capture
+        # Start frame capture FIRST — it must be listening on the UDP port
+        # before UxPlay connects, because the iPhone only sends SPS/PPS +
+        # IDR keyframe once at connection time.  If nobody is listening,
+        # those packets are lost and the decoder can never start.
         self._frame_capture.start()
+
+        # Start AirPlay receiver (UxPlay)
+        self._airplay.start()
 
         # Run WebSocket connection + frame sender + status reporter concurrently
         await asyncio.gather(
