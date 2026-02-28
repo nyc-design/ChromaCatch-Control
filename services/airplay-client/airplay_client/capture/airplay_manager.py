@@ -82,12 +82,12 @@ class AirPlayManager:
 
     @staticmethod
     def _drain_stream(stream, name: str) -> None:
-        """Read and discard a stream to prevent pipe buffer blocking."""
+        """Read and log a stream to prevent pipe buffer blocking."""
         try:
-            while True:
-                data = stream.read(4096)
-                if not data:
-                    break
+            for line in stream:
+                text = line.decode("utf-8", errors="replace").rstrip()
+                if text:
+                    logger.debug("[uxplay %s] %s", name, text)
         except Exception:
             pass
         logger.debug("UxPlay %s drain finished", name)

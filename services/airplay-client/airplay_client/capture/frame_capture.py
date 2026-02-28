@@ -114,13 +114,18 @@ class FrameCapture:
         width, height = 0, 0
         deadline = time.time() + 30
         buf = b""
+        logger.debug("FFmpeg pid=%d, waiting up to 30s for resolution...", proc.pid)
         while time.time() < deadline:
             byte = proc.stderr.read(1)
             if not byte:
+                rc = proc.poll()
+                logger.debug("FFmpeg stderr EOF, process exit code: %s", rc)
                 break
             buf += byte
             if byte in (b"\n", b"\r"):
-                line = buf.decode("utf-8", errors="replace")
+                line = buf.decode("utf-8", errors="replace").rstrip()
+                if line:
+                    logger.debug("[ffmpeg] %s", line)
                 match = re.search(r"(\d{3,5})x(\d{3,5})", line)
                 if match and "Video" in line:
                     width, height = int(match.group(1)), int(match.group(2))
@@ -128,6 +133,8 @@ class FrameCapture:
                 buf = b""
 
         if width == 0 or height == 0:
+            rc = proc.poll()
+            logger.warning("FFmpeg failed to detect resolution (exit code: %s)", rc)
             proc.kill()
             raise RuntimeError("Could not detect stream resolution from FFmpeg")
 
@@ -186,7 +193,7 @@ class FrameCapture:
                 self._ffmpeg_proc = proc
                 logger.info("AirPlay stream connected via FFmpeg!")
             except RuntimeError as e:
-                logger.debug("FFmpeg not ready: %s, retrying...", e)
+                logger.info("FFmpeg not ready: %s — retrying in 3s...", e)
                 time.sleep(3)
 
         frame_size = width * height * 3

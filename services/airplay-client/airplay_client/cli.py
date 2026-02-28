@@ -22,10 +22,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--api-key", help="API key for backend auth (overrides CC_CLIENT_API_KEY)")
     parser.add_argument("--esp32-host", help="ESP32 IP address (overrides CC_CLIENT_ESP32_HOST)")
     parser.add_argument("--esp32-port", type=int, help="ESP32 HTTP port (overrides CC_CLIENT_ESP32_PORT)")
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging (shows UxPlay/FFmpeg output)")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("connect", help="Test connectivity to backend and ESP32")
     subparsers.add_parser("run", help="Start the full AirPlay client")
+    subparsers.add_parser("debug-capture", help="Debug: run only UxPlay + FFmpeg capture (no WS/ESP32)")
 
     return parser
 
@@ -107,15 +109,74 @@ def cmd_run(args: argparse.Namespace) -> None:
     run_client()
 
 
+def cmd_debug_capture(args: argparse.Namespace) -> None:
+    """Debug: run only UxPlay + frame capture, no WS or ESP32."""
+    import time
+
+    from airplay_client.capture.airplay_manager import AirPlayManager
+    from airplay_client.capture.frame_capture import FrameCapture
+
+    logging.getLogger().setLevel(logging.DEBUG)
+    logging.getLogger("airplay_client").setLevel(logging.DEBUG)
+
+    print("=== ChromaCatch Debug Capture ===")
+    print("This runs ONLY UxPlay + FFmpeg capture (no backend/ESP32).")
+    print()
+
+    airplay = AirPlayManager()
+    print(f"[1/3] Starting UxPlay: {' '.join(airplay.build_command())}")
+    try:
+        airplay.start()
+        print(f"  UxPlay started (pid={airplay.pid})")
+    except RuntimeError as e:
+        print(f"  FAILED: {e}")
+        return
+
+    print(f"\n[2/3] Starting frame capture on UDP port {airplay.udp_port}...")
+    print("  Connect your iPhone to AirPlay now.")
+    print("  Waiting for FFmpeg to detect the stream...\n")
+
+    capture = FrameCapture()
+    capture.start()
+
+    print("[3/3] Watching for frames (Ctrl+C to stop)...\n")
+    frame_count = 0
+    try:
+        while True:
+            frame = capture.get_frame(timeout=1.0)
+            if frame is not None:
+                frame_count += 1
+                h, w = frame.shape[:2]
+                print(f"  Frame #{frame_count}: {w}x{h}")
+                if frame_count >= 5:
+                    print(f"\n  SUCCESS: Received {frame_count} frames!")
+                    break
+            else:
+                print(f"  ... no frame yet (UxPlay running={airplay.is_running}, "
+                      f"capture running={capture.is_running})")
+    except KeyboardInterrupt:
+        print(f"\n  Stopped. Total frames received: {frame_count}")
+    finally:
+        capture.stop()
+        airplay.stop()
+
+
 def main():
     parser = build_parser()
     args = parser.parse_args()
+
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+        logging.getLogger("airplay_client").setLevel(logging.DEBUG)
+
     apply_cli_overrides(args)
 
     if args.command == "connect":
         asyncio.run(cmd_connect(args))
     elif args.command == "run":
         cmd_run(args)
+    elif args.command == "debug-capture":
+        cmd_debug_capture(args)
 
 
 if __name__ == "__main__":
