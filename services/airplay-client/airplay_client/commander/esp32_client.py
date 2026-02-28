@@ -48,9 +48,13 @@ class ESP32Client:
         self.port = port or settings.esp32_port
         self.timeout = timeout or settings.esp32_timeout
         self._base_url = f"http://{self.host}:{self.port}"
+        limits = httpx.Limits(max_connections=10, max_keepalive_connections=0)
         self._client = httpx.AsyncClient(
             base_url=self._base_url,
             timeout=self.timeout,
+            trust_env=False,
+            headers={"Connection": "close"},
+            limits=limits,
         )
 
     async def send_command(self, command: HIDCommand) -> dict:
