@@ -76,7 +76,12 @@ class ChromaCatchClient:
         """Continuously read frames and send them to the backend."""
         while True:
             interval = client_settings.frame_interval_ms / 1000.0
-            frame = self._frame_source.get_frame(timeout=0.5)
+            # FrameSource.get_frame() is a blocking call (queue read / capture poll).
+            # Run it in a worker thread so the event loop remains responsive for:
+            # - control WS command handling
+            # - ESP32 HTTP forwarding
+            # - status reporting heartbeats
+            frame = await asyncio.to_thread(self._frame_source.get_frame, 0.5)
             if frame is not None:
                 self._frames_captured += 1
                 await self._frame_ws.send_frame(frame)
