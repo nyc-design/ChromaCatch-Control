@@ -60,21 +60,25 @@ class TestFrameCapture:
         assert frames[0][0, 0, 0] == 1
         assert frames[-1][0, 0, 0] == 99
 
-    @patch("cv2.VideoCapture")
-    def test_create_capture_gstreamer(self, mock_cv2_cap, capture):
-        mock_cap = MagicMock()
-        mock_cap.isOpened.return_value = True
-        mock_cv2_cap.return_value = mock_cap
-        cap = capture._create_capture()
-        assert cap.isOpened()
+    def test_sdp_file_content(self, capture):
+        capture.backend = CaptureBackend.FFMPEG
+        path = capture._build_sdp_file()
+        with open(path) as f:
+            content = f.read()
+        assert "m=video 5000 RTP/AVP 96" in content
+        assert "a=rtpmap:96 H264/90000" in content
+        import os
+        os.unlink(path)
 
-    @patch("cv2.VideoCapture")
-    def test_create_capture_fails_if_not_opened(self, mock_cv2_cap, capture):
-        mock_cap = MagicMock()
-        mock_cap.isOpened.return_value = False
-        mock_cv2_cap.return_value = mock_cap
-        with pytest.raises(RuntimeError, match="Failed to open video capture"):
-            capture._create_capture()
+    def test_push_frame_drops_oldest_when_full(self, capture):
+        for i in range(5):
+            capture._push_frame(np.full((10, 10, 3), i, dtype=np.uint8))
+        assert capture.frame_queue.full()
+        capture._push_frame(np.full((10, 10, 3), 99, dtype=np.uint8))
+        frames = []
+        while not capture.frame_queue.empty():
+            frames.append(capture.frame_queue.get_nowait())
+        assert frames[-1][0, 0, 0] == 99
 
     def test_stop_when_not_started(self, capture):
         capture.stop()
