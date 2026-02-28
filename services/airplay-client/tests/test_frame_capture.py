@@ -14,10 +14,17 @@ class TestCaptureBackend:
             backend = FrameCapture._detect_backend()
             assert backend == CaptureBackend.GSTREAMER
 
-    def test_ffmpeg_fallback(self):
+    def test_gstreamer_cli_fallback(self):
         with patch("cv2.getBuildInformation", return_value="  GStreamer:                  NO"):
-            backend = FrameCapture._detect_backend()
-            assert backend == CaptureBackend.FFMPEG
+            with patch("shutil.which", return_value="/opt/homebrew/bin/gst-launch-1.0"):
+                backend = FrameCapture._detect_backend()
+                assert backend == CaptureBackend.GSTREAMER_CLI
+
+    def test_no_backend_raises(self):
+        with patch("cv2.getBuildInformation", return_value="  GStreamer:                  NO"):
+            with patch("shutil.which", return_value=None):
+                with pytest.raises(RuntimeError, match="No capture backend"):
+                    FrameCapture._detect_backend()
 
 
 class TestFrameCapture:
@@ -59,16 +66,6 @@ class TestFrameCapture:
             frames.append(capture.frame_queue.get_nowait())
         assert frames[0][0, 0, 0] == 1
         assert frames[-1][0, 0, 0] == 99
-
-    def test_sdp_file_content(self, capture):
-        capture.backend = CaptureBackend.FFMPEG
-        path = capture._build_sdp_file()
-        with open(path) as f:
-            content = f.read()
-        assert "m=video 5000 RTP/AVP 96" in content
-        assert "a=rtpmap:96 H264/90000" in content
-        import os
-        os.unlink(path)
 
     def test_push_frame_drops_oldest_when_full(self, capture):
         for i in range(5):

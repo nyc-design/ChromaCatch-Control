@@ -1,12 +1,10 @@
 """Captures video frames from the UxPlay RTP stream."""
 
 import logging
-import os
 import queue
 import re
 import shutil
 import subprocess
-import tempfile
 import threading
 import time
 from enum import Enum
@@ -21,15 +19,16 @@ logger = logging.getLogger(__name__)
 
 class CaptureBackend(str, Enum):
     GSTREAMER = "gstreamer"
-    FFMPEG = "ffmpeg"
+    GSTREAMER_CLI = "gstreamer_cli"
 
 
 class FrameCapture:
     """Captures frames from the AirPlay RTP stream.
 
     Supports two backends:
-    - GStreamer: OpenCV VideoCapture with GStreamer pipeline (preferred, Linux)
-    - FFmpeg: FFmpeg subprocess piping raw frames (fallback, macOS)
+    - GStreamer: OpenCV VideoCapture with GStreamer pipeline (Linux with OpenCV GStreamer)
+    - GStreamer CLI: gst-launch-1.0 subprocess piping raw frames (macOS, or any system
+      with GStreamer installed but OpenCV lacking GStreamer support)
 
     Frames are pushed into a thread-safe queue for consumption.
     """
@@ -39,10 +38,9 @@ class FrameCapture:
         self.backend = backend or self._detect_backend()
         self.frame_queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=max_queue_size)
         self._capture: cv2.VideoCapture | None = None
-        self._ffmpeg_proc: subprocess.Popen | None = None
+        self._gst_proc: subprocess.Popen | None = None
         self._thread: threading.Thread | None = None
         self._running = False
-        self._sdp_path: str | None = None
 
 
     @staticmethod
@@ -53,7 +51,13 @@ class FrameCapture:
             for line in build_info.split("\n"):
                 if "GStreamer" in line and "YES" in line:
                     return CaptureBackend.GSTREAMER
-        return CaptureBackend.FFMPEG
+        # Fall back to gst-launch-1.0 CLI subprocess
+        if shutil.which("gst-launch-1.0"):
+            return CaptureBackend.GSTREAMER_CLI
+        raise RuntimeError(
+            "No capture backend available. Install GStreamer: "
+            "brew install gstreamer (macOS) or apt install gstreamer1.0-tools (Linux)"
+        )
 
 
     def _build_gstreamer_pipeline(self) -> str:
@@ -66,77 +70,57 @@ class FrameCapture:
         )
 
 
-    def _build_sdp_file(self) -> str:
-        """Create a temporary SDP file describing the RTP H264 stream."""
-        sdp_content = (
-            "v=0\r\n"
-            "o=- 0 0 IN IP4 127.0.0.1\r\n"
-            "s=UxPlay\r\n"
-            "c=IN IP4 127.0.0.1\r\n"
-            "t=0 0\r\n"
-            f"m=video {self.udp_port} RTP/AVP 96\r\n"
-            "a=rtpmap:96 H264/90000\r\n"
-        )
-        fd, path = tempfile.mkstemp(suffix=".sdp", prefix="chromacatch_")
-        with os.fdopen(fd, "w") as f:
-            f.write(sdp_content)
-        self._sdp_path = path
-        return path
-
-
-    def _start_ffmpeg_process(self) -> tuple[subprocess.Popen, int, int]:
-        """Start FFmpeg subprocess to decode RTP H264 → raw BGR frames.
+    def _start_gst_cli_process(self) -> tuple[subprocess.Popen, int, int]:
+        """Start gst-launch-1.0 subprocess to decode RTP H264 → raw BGR frames.
 
         Returns (process, width, height). Resolution is auto-detected from
-        FFmpeg's stderr output.
+        GStreamer's stderr output (the caps negotiation messages).
         """
-        if not shutil.which("ffmpeg"):
-            raise RuntimeError("ffmpeg not found. Install it: brew install ffmpeg")
+        gst_path = shutil.which("gst-launch-1.0")
+        if not gst_path:
+            raise RuntimeError("gst-launch-1.0 not found. Install GStreamer.")
 
-        sdp_path = self._build_sdp_file()
         cmd = [
-            "ffmpeg",
-            "-loglevel", "info",
-            "-protocol_whitelist", "file,crypto,data,rtp,udp",
-            "-analyzeduration", "10000000",
-            "-probesize", "10000000",
-            "-fflags", "nobuffer",
-            "-flags", "low_delay",
-            "-i", sdp_path,
-            "-f", "rawvideo",
-            "-pix_fmt", "bgr24",
-            "pipe:1",
+            gst_path, "-v",
+            "udpsrc", f"port={self.udp_port}",
+            f'caps=application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000',
+            "!", "rtph264depay", "!", "h264parse", "!", "avdec_h264",
+            "!", "videoconvert", "!", "video/x-raw,format=BGR",
+            "!", "fdsink", "fd=1",
         ]
-        logger.info("Starting FFmpeg subprocess: %s", " ".join(cmd))
+        logger.info("Starting GStreamer CLI: %s", " ".join(cmd))
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=10**8)
 
-        # Read stderr line-by-line until we find the stream resolution
+        # Read stderr line-by-line until we find the negotiated resolution
+        # GStreamer -v outputs caps like: video/x-raw, format=BGR, width=1920, height=1080
         width, height = 0, 0
-        deadline = time.time() + 30
+        deadline = time.time() + 120  # Wait up to 2 minutes for iPhone to connect
         buf = b""
-        logger.debug("FFmpeg pid=%d, waiting up to 30s for resolution...", proc.pid)
-        while time.time() < deadline:
+        logger.info("GStreamer CLI pid=%d, waiting for stream...", proc.pid)
+        while time.time() < deadline and self._running:
             byte = proc.stderr.read(1)
             if not byte:
                 rc = proc.poll()
-                logger.debug("FFmpeg stderr EOF, process exit code: %s", rc)
+                logger.debug("GStreamer stderr EOF, exit code: %s", rc)
                 break
             buf += byte
             if byte in (b"\n", b"\r"):
                 line = buf.decode("utf-8", errors="replace").rstrip()
                 if line:
-                    logger.debug("[ffmpeg] %s", line)
-                match = re.search(r"(\d{3,5})x(\d{3,5})", line)
-                if match and "Video" in line:
-                    width, height = int(match.group(1)), int(match.group(2))
+                    logger.debug("[gst] %s", line)
+                # Look for negotiated caps: width=(int)1920, height=(int)1080
+                w_match = re.search(r"width=\(int\)(\d+)", line)
+                h_match = re.search(r"height=\(int\)(\d+)", line)
+                if w_match and h_match and "BGR" in line:
+                    width, height = int(w_match.group(1)), int(h_match.group(1))
                     break
                 buf = b""
 
         if width == 0 or height == 0:
             rc = proc.poll()
-            logger.warning("FFmpeg failed to detect resolution (exit code: %s)", rc)
+            logger.warning("GStreamer failed to detect resolution (exit code: %s)", rc)
             proc.kill()
-            raise RuntimeError("Could not detect stream resolution from FFmpeg")
+            raise RuntimeError("Could not detect stream resolution from GStreamer")
 
         logger.info("Detected stream resolution: %dx%d", width, height)
 
@@ -148,10 +132,12 @@ class FrameCapture:
 
     @staticmethod
     def _drain_stderr(proc: subprocess.Popen) -> None:
-        """Read and discard stderr to prevent FFmpeg from blocking."""
+        """Read and log stderr to prevent blocking."""
         try:
-            while proc.poll() is None:
-                proc.stderr.read(4096)
+            for line in proc.stderr:
+                text = line.decode("utf-8", errors="replace").rstrip()
+                if text:
+                    logger.debug("[gst] %s", text)
         except Exception:
             pass
 
@@ -182,30 +168,30 @@ class FrameCapture:
         logger.info("GStreamer capture loop stopped")
 
 
-    def _capture_loop_ffmpeg(self) -> None:
-        """Capture loop using FFmpeg subprocess piping raw frames."""
-        logger.info("Waiting for AirPlay stream on port %d (FFmpeg)...", self.udp_port)
+    def _capture_loop_gst_cli(self) -> None:
+        """Capture loop using gst-launch-1.0 subprocess piping raw frames."""
+        logger.info("Waiting for AirPlay stream on port %d (GStreamer CLI)...", self.udp_port)
 
         proc, width, height = None, 0, 0
         while self._running and proc is None:
             try:
-                proc, width, height = self._start_ffmpeg_process()
-                self._ffmpeg_proc = proc
-                logger.info("AirPlay stream connected via FFmpeg!")
+                proc, width, height = self._start_gst_cli_process()
+                self._gst_proc = proc
+                logger.info("AirPlay stream connected via GStreamer CLI!")
             except RuntimeError as e:
-                logger.info("FFmpeg not ready: %s — retrying in 3s...", e)
+                logger.info("GStreamer not ready: %s — retrying in 3s...", e)
                 time.sleep(3)
 
         frame_size = width * height * 3
         while self._running and proc is not None:
             raw = proc.stdout.read(frame_size)
             if len(raw) != frame_size:
-                logger.warning("FFmpeg stream ended (got %d/%d bytes)", len(raw), frame_size)
+                logger.warning("GStreamer stream ended (got %d/%d bytes)", len(raw), frame_size)
                 break
             frame = np.frombuffer(raw, dtype=np.uint8).reshape((height, width, 3))
             self._push_frame(frame)
 
-        logger.info("FFmpeg capture loop stopped")
+        logger.info("GStreamer CLI capture loop stopped")
 
 
     def _push_frame(self, frame: np.ndarray) -> None:
@@ -225,7 +211,10 @@ class FrameCapture:
             return
 
         self._running = True
-        target = self._capture_loop_gstreamer if self.backend == CaptureBackend.GSTREAMER else self._capture_loop_ffmpeg
+        if self.backend == CaptureBackend.GSTREAMER:
+            target = self._capture_loop_gstreamer
+        else:
+            target = self._capture_loop_gst_cli
         self._thread = threading.Thread(target=target, daemon=True)
         self._thread.start()
         logger.info("Frame capture started (backend=%s, port=%d)", self.backend.value, self.udp_port)
@@ -240,13 +229,10 @@ class FrameCapture:
         if self._capture:
             self._capture.release()
             self._capture = None
-        if self._ffmpeg_proc and self._ffmpeg_proc.poll() is None:
-            self._ffmpeg_proc.kill()
-            self._ffmpeg_proc.wait(timeout=3)
-            self._ffmpeg_proc = None
-        if self._sdp_path and os.path.exists(self._sdp_path):
-            os.unlink(self._sdp_path)
-            self._sdp_path = None
+        if self._gst_proc and self._gst_proc.poll() is None:
+            self._gst_proc.kill()
+            self._gst_proc.wait(timeout=3)
+            self._gst_proc = None
         logger.info("Frame capture stopped")
 
 
