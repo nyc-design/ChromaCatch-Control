@@ -100,11 +100,17 @@ class FrameCapture:
         cmd = [
             gst_path,
             "-v",
-            "udpsrc", f"port={self.udp_port}",
+            "udpsrc", f"port={self.udp_port}", "do-timestamp=true",
             "caps=application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000",
+            "!", "rtpjitterbuffer", "latency=50", "drop-on-latency=true",
             "!", "rtph264depay", "!", "h264parse", "!", "avdec_h264",
             "!", "videoconvert", "!", "video/x-raw,format=BGR",
-            "!", "multifilesink", f"location={frame_pattern}", "max-files=30",
+            "!", "multifilesink",
+            f"location={frame_pattern}",
+            "max-files=30",
+            "next-file=buffer",
+            "sync=false",
+            "async=false",
         ]
         logger.info("Starting GStreamer CLI: %s", " ".join(cmd))
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
