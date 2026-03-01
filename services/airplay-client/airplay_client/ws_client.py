@@ -14,6 +14,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import websockets
 from websockets.client import WebSocketClientProtocol
+from websockets.exceptions import InvalidHandshake, InvalidMessage
 
 from airplay_client.config import client_settings
 from shared.constants import make_auth_headers
@@ -91,7 +92,13 @@ class WebSocketClient:
 
                 await self._receive_loop()
 
-            except (websockets.ConnectionClosed, ConnectionRefusedError, OSError) as e:
+            except (
+                websockets.ConnectionClosed,
+                ConnectionRefusedError,
+                OSError,
+                InvalidMessage,
+                InvalidHandshake,
+            ) as e:
                 self._connected = False
                 self._ws = None
                 if not self._running:
