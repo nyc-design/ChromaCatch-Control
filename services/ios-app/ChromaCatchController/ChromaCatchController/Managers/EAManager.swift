@@ -47,10 +47,17 @@ class EAManager: NSObject, ObservableObject, StreamDelegate {
     // MARK: - Session Management
 
     private func findAndOpenSession() {
+        // Diagnostic: verify EA protocol is in the built Info.plist
+        let declared = Bundle.main.object(forInfoDictionaryKey: "UISupportedExternalAccessoryProtocols") as? [String]
+        print("[EA] Info.plist EA protocols: \(declared ?? ["MISSING!"])")
+        log("Info.plist EA protocols: \(declared ?? ["MISSING!"])")
+
         let accessories = EAAccessoryManager.shared().connectedAccessories
+        print("[EA] Found \(accessories.count) connected accessories")
         log("Checking \(accessories.count) connected accessories...")
 
         for acc in accessories {
+            print("[EA]   - \(acc.name) protocols: \(acc.protocolStrings)")
             log("  - \(acc.name) protocols: \(acc.protocolStrings)")
         }
 

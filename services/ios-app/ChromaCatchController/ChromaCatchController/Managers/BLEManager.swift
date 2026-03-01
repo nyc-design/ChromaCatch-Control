@@ -98,17 +98,21 @@ class BLEManager: NSObject, ObservableObject {
 // MARK: - CBCentralManagerDelegate
 extension BLEManager: CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        print("[BLE] centralManagerDidUpdateState: \(central.state.rawValue)")
         switch central.state {
         case .poweredOn:
             log("Bluetooth powered on")
+            print("[BLE] Powered on — starting scan")
             startScanning()
         case .poweredOff:
             log("Bluetooth powered off")
             DispatchQueue.main.async { self.isConnected = false }
         case .unauthorized:
             log("Bluetooth unauthorized — check NSBluetoothAlwaysUsageDescription")
+            print("[BLE] UNAUTHORIZED — user denied Bluetooth permission")
         default:
             log("Bluetooth state: \(central.state.rawValue)")
+            print("[BLE] State: \(central.state.rawValue)")
         }
     }
 
