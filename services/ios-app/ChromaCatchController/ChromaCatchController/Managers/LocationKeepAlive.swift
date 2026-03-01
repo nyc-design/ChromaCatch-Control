@@ -14,14 +14,28 @@ class LocationKeepAlive: NSObject, CLLocationManagerDelegate {
     }
 
     func startBackgroundUpdates() {
-        locationManager.requestAlwaysAuthorization()
+        // iOS requires WhenInUse first, then escalate to Always
+        let status = locationManager.authorizationStatus
+        if status == .notDetermined {
+            locationManager.requestWhenInUseAuthorization()
+            return // Will continue in delegate callback
+        }
+        beginUpdates()
+    }
+
+    private func beginUpdates() {
+        let status = locationManager.authorizationStatus
+        if status == .authorizedWhenInUse {
+            // Escalate to Always for background support
+            locationManager.requestAlwaysAuthorization()
+        }
         locationManager.allowsBackgroundLocationUpdates = true
         locationManager.showsBackgroundLocationIndicator = true
         locationManager.pausesLocationUpdatesAutomatically = false
         locationManager.desiredAccuracy = kCLLocationAccuracyReduced
         locationManager.distanceFilter = kCLDistanceFilterNone
         locationManager.startUpdatingLocation()
-        log("Background location updates started")
+        log("Background location updates started (auth: \(status.rawValue))")
     }
 
     func stop() {

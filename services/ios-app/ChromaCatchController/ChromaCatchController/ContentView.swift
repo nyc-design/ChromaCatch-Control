@@ -24,6 +24,7 @@ struct ContentView: View {
             }
             .navigationTitle("ChromaCatch")
             .navigationBarTitleDisplayMode(.inline)
+            .onTapGesture { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
         }
     }
 }
@@ -158,8 +159,8 @@ struct BroadcastPickerRepresentable: UIViewRepresentable {
 
 struct CoordinateSection: View {
     @EnvironmentObject var coordinator: AppCoordinator
-    @State private var latText = "33.448"
-    @State private var lonText = "-96.789"
+    @State private var coordText = "33.448, -96.789"
+    @FocusState private var isCoordFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -181,26 +182,46 @@ struct CoordinateSection: View {
                 .font(.subheadline)
                 .foregroundColor(.secondary)
 
-            HStack {
-                TextField("Latitude", text: $latText)
-                    .textFieldStyle(.roundedBorder)
-                    .keyboardType(.decimalPad)
-                TextField("Longitude", text: $lonText)
-                    .textFieldStyle(.roundedBorder)
-                    .keyboardType(.decimalPad)
-            }
-
-            Button("Send Location") {
-                if let lat = Double(latText), let lon = Double(lonText) {
-                    coordinator.sendManualLocation(lat: lat, lon: lon)
+            TextField("lat, lon  e.g. (1.2978, 103.813)", text: $coordText)
+                .textFieldStyle(.roundedBorder)
+                .keyboardType(.numbersAndPunctuation)
+                .focused($isCoordFocused)
+                .toolbar {
+                    ToolbarItemGroup(placement: .keyboard) {
+                        Spacer()
+                        Button("Done") { isCoordFocused = false }
+                    }
                 }
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(!coordinator.bleManager.isConnected)
+                .onSubmit { sendParsedCoords() }
+
+            Button("Send Location") { sendParsedCoords() }
+                .buttonStyle(.borderedProminent)
+                .disabled(!coordinator.bleManager.isConnected || parseCoords() == nil)
         }
         .padding()
         .background(Color(.secondarySystemGroupedBackground))
         .cornerRadius(12)
+    }
+
+    private func parseCoords() -> (Double, Double)? {
+        // Strip parentheses and whitespace, then split on comma
+        let cleaned = coordText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "(", with: "")
+            .replacingOccurrences(of: ")", with: "")
+        let parts = cleaned.split(separator: ",").map {
+            $0.trimmingCharacters(in: .whitespaces)
+        }
+        guard parts.count == 2,
+              let lat = Double(parts[0]),
+              let lon = Double(parts[1]) else { return nil }
+        return (lat, lon)
+    }
+
+    private func sendParsedCoords() {
+        guard let (lat, lon) = parseCoords() else { return }
+        coordinator.sendManualLocation(lat: lat, lon: lon)
+        isCoordFocused = false
     }
 }
 
