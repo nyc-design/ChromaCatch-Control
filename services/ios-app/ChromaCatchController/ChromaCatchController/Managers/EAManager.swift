@@ -14,6 +14,7 @@ class EAManager: NSObject, ObservableObject, StreamDelegate {
     private var inputStream: InputStream?
     private var outputStream: OutputStream?
     private let log: (String) -> Void
+    private var lastRetryTime: Date = .distantPast
 
     @Published var isConnected = false
 
@@ -44,17 +45,39 @@ class EAManager: NSObject, ObservableObject, StreamDelegate {
         closeSession()
     }
 
+    /// Called periodically from AppCoordinator to retry if dongle wasn't found at init time.
+    /// Throttled to avoid log spam (retries at most every 5 seconds).
+    func retryConnection() {
+        guard !isConnected else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastRetryTime) >= 5.0 else { return }
+        lastRetryTime = now
+        findAndOpenSession()
+    }
+
     // MARK: - Session Management
 
-    private func findAndOpenSession() {
-        // Diagnostic: verify EA protocol is in the built Info.plist
-        let declared = Bundle.main.object(forInfoDictionaryKey: "UISupportedExternalAccessoryProtocols") as? [String]
-        print("[EA] Info.plist EA protocols: \(declared ?? ["MISSING!"])")
-        log("Info.plist EA protocols: \(declared ?? ["MISSING!"])")
+    private var hasLoggedInitialDiagnostics = false
 
+    private func findAndOpenSession() {
         let accessories = EAAccessoryManager.shared().connectedAccessories
+
+        // Full diagnostics on first call only
+        if !hasLoggedInitialDiagnostics {
+            hasLoggedInitialDiagnostics = true
+            let declared = Bundle.main.object(forInfoDictionaryKey: "UISupportedExternalAccessoryProtocols") as? [String]
+            print("[EA] Info.plist EA protocols: \(declared ?? ["MISSING!"])")
+            log("Info.plist EA protocols: \(declared ?? ["MISSING!"])")
+
+            let bgModes = Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") as? [String]
+            print("[EA] Info.plist UIBackgroundModes: \(bgModes ?? ["MISSING!"])")
+            log("Info.plist UIBackgroundModes: \(bgModes ?? ["MISSING!"])")
+
+            let btDesc = Bundle.main.object(forInfoDictionaryKey: "NSBluetoothAlwaysUsageDescription") as? String
+            print("[EA] Info.plist NSBluetoothAlwaysUsageDescription: \(btDesc != nil ? "present" : "MISSING!")")
+        }
+
         print("[EA] Found \(accessories.count) connected accessories")
-        log("Checking \(accessories.count) connected accessories...")
 
         for acc in accessories {
             print("[EA]   - \(acc.name) protocols: \(acc.protocolStrings)")
@@ -64,7 +87,11 @@ class EAManager: NSObject, ObservableObject, StreamDelegate {
         guard let target = accessories.first(where: {
             $0.protocolStrings.contains(Self.protocolString)
         }) else {
-            log("Dongle not found — pair BT-01414-CORE in iPhone Settings > Bluetooth first")
+            if accessories.isEmpty {
+                log("No EA accessories found — pair BT-01414-CORE in iPhone Settings > Bluetooth")
+            } else {
+                log("Dongle not in \(accessories.count) accessories — need protocol '\(Self.protocolString)'")
+            }
             return
         }
         openSession(with: target)

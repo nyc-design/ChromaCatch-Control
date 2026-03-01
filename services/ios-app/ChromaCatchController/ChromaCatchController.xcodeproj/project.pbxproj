@@ -7,30 +7,28 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		A1000001 /* ChromaCatchControllerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001; };
-		A1000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000002; };
-		A1000003 /* AppCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000003; };
-		A1000004 /* BLEManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000004; };
-		A1000005 /* EAManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000005; };
-		A1000006 /* WebSocketManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000006; };
-		A1000007 /* LocationKeepAlive.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000007; };
-		A1000008 /* NMEAGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000008; };
-		A1000009 /* DongleController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000009; };
-		A100000A /* Messages.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000A; };
-		A100000B /* ESP32HTTPClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000C; };
-		/* Broadcast extension sources */
-		B1000001 /* SampleHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000001; };
-		B1000002 /* H264Encoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000002; };
-		B1000003 /* BroadcastWSClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000003; };
-		B1000004 /* Messages.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000A; };
-		/* Embed extension in app */
-		B1000005 /* ChromaCatchBroadcast.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B3000001; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		A1000001 /* ChromaCatchControllerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001 /* ChromaCatchControllerApp.swift */; };
+		A1000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000002 /* ContentView.swift */; };
+		A1000003 /* AppCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000003 /* AppCoordinator.swift */; };
+		A1000004 /* BLEManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000004 /* BLEManager.swift */; };
+		A1000005 /* EAManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000005 /* EAManager.swift */; };
+		A1000006 /* WebSocketManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000006 /* WebSocketManager.swift */; };
+		A1000007 /* LocationKeepAlive.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000007 /* LocationKeepAlive.swift */; };
+		A1000008 /* NMEAGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000008 /* NMEAGenerator.swift */; };
+		A1000009 /* DongleController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000009 /* DongleController.swift */; };
+		A100000A /* Messages.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000A /* Messages.swift */; };
+		A100000B /* ESP32HTTPClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000C /* ESP32HTTPClient.swift */; };
+		B1000001 /* SampleHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000001 /* SampleHandler.swift */; };
+		B1000002 /* H264Encoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000002 /* H264Encoder.swift */; };
+		B1000003 /* BroadcastWSClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000003 /* BroadcastWSClient.swift */; };
+		B1000004 /* Messages.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000A /* Messages.swift */; };
+		B1000005 /* ChromaCatchBroadcast.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B3000001 /* ChromaCatchBroadcast.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
 		B9000001 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
-			containerPortal = A9000001;
+			containerPortal = A9000001 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = B6000001;
 			remoteInfo = ChromaCatchBroadcast;
@@ -44,7 +42,7 @@
 			dstPath = "";
 			dstSubfolderSpec = 13;
 			files = (
-				B1000005,
+				B1000005 /* ChromaCatchBroadcast.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -66,7 +64,6 @@
 		A200000C /* ESP32HTTPClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ESP32HTTPClient.swift; sourceTree = "<group>"; };
 		A200000D /* ChromaCatchController.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ChromaCatchController.entitlements; sourceTree = "<group>"; };
 		A3000001 /* ChromaCatchController.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ChromaCatchController.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		/* Broadcast extension files */
 		B2000001 /* SampleHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SampleHandler.swift; sourceTree = "<group>"; };
 		B2000002 /* H264Encoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = H264Encoder.swift; sourceTree = "<group>"; };
 		B2000003 /* BroadcastWSClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BroadcastWSClient.swift; sourceTree = "<group>"; };
@@ -180,7 +177,7 @@
 /* Begin PBXNativeTarget section */
 		A6000001 /* ChromaCatchController */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = A8000001;
+			buildConfigurationList = A8000001 /* Build configuration list for PBXNativeTarget "ChromaCatchController" */;
 			buildPhases = (
 				A7000001 /* Sources */,
 				A4000001 /* Frameworks */,
@@ -193,12 +190,12 @@
 			);
 			name = ChromaCatchController;
 			productName = ChromaCatchController;
-			productReference = A3000001;
+			productReference = A3000001 /* ChromaCatchController.app */;
 			productType = "com.apple.product-type.application";
 		};
 		B6000001 /* ChromaCatchBroadcast */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = B8000003;
+			buildConfigurationList = B8000003 /* Build configuration list for PBXNativeTarget "ChromaCatchBroadcast" */;
 			buildPhases = (
 				B7000001 /* Sources */,
 				B4000001 /* Frameworks */,
@@ -209,7 +206,7 @@
 			);
 			name = ChromaCatchBroadcast;
 			productName = ChromaCatchBroadcast;
-			productReference = B3000001;
+			productReference = B3000001 /* ChromaCatchBroadcast.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
@@ -230,7 +227,7 @@
 					};
 				};
 			};
-			buildConfigurationList = A8000003;
+			buildConfigurationList = A8000003 /* Build configuration list for PBXProject "ChromaCatchController" */;
 			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
@@ -239,12 +236,12 @@
 				Base,
 			);
 			mainGroup = A5000001;
-			productRefGroup = A5000006;
+			productRefGroup = A5000006 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				A6000001,
-				B6000001,
+				A6000001 /* ChromaCatchController */,
+				B6000001 /* ChromaCatchBroadcast */,
 			);
 		};
 /* End PBXProject section */
@@ -254,17 +251,17 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A1000001,
-				A1000002,
-				A1000003,
-				A1000004,
-				A1000005,
-				A1000006,
-				A1000007,
-				A1000008,
-				A1000009,
-				A100000A,
-				A100000B,
+				A1000001 /* ChromaCatchControllerApp.swift in Sources */,
+				A1000002 /* ContentView.swift in Sources */,
+				A1000003 /* AppCoordinator.swift in Sources */,
+				A1000004 /* BLEManager.swift in Sources */,
+				A1000005 /* EAManager.swift in Sources */,
+				A1000006 /* WebSocketManager.swift in Sources */,
+				A1000007 /* LocationKeepAlive.swift in Sources */,
+				A1000008 /* NMEAGenerator.swift in Sources */,
+				A1000009 /* DongleController.swift in Sources */,
+				A100000A /* Messages.swift in Sources */,
+				A100000B /* ESP32HTTPClient.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -272,10 +269,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				B1000001,
-				B1000002,
-				B1000003,
-				B1000004,
+				B1000001 /* SampleHandler.swift in Sources */,
+				B1000002 /* H264Encoder.swift in Sources */,
+				B1000003 /* BroadcastWSClient.swift in Sources */,
+				B1000004 /* Messages.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -284,8 +281,8 @@
 /* Begin PBXTargetDependency section */
 		B8000001 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = B6000001;
-			targetProxy = B9000001;
+			target = B6000001 /* ChromaCatchBroadcast */;
+			targetProxy = B9000001 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -298,8 +295,8 @@
 				CODE_SIGN_ENTITLEMENTS = ChromaCatchController/ChromaCatchController.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
-				GENERATE_INFOPLIST_FILE = YES;
+				DEVELOPMENT_TEAM = Y7B2Z6ZKTX;
+				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = ChromaCatchController/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = ChromaCatch;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -328,8 +325,8 @@
 				CODE_SIGN_ENTITLEMENTS = ChromaCatchController/ChromaCatchController.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
-				GENERATE_INFOPLIST_FILE = YES;
+				DEVELOPMENT_TEAM = Y7B2Z6ZKTX;
+				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = ChromaCatchController/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = ChromaCatch;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -403,14 +400,13 @@
 			};
 			name = Release;
 		};
-		/* Broadcast extension build configs */
 		BB000001 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = ChromaCatchBroadcast/ChromaCatchBroadcast.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = Y7B2Z6ZKTX;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = ChromaCatchBroadcast/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
@@ -435,7 +431,7 @@
 				CODE_SIGN_ENTITLEMENTS = ChromaCatchBroadcast/ChromaCatchBroadcast.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = Y7B2Z6ZKTX;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = ChromaCatchBroadcast/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
@@ -460,8 +456,8 @@
 		A8000001 /* Build configuration list for PBXNativeTarget "ChromaCatchController" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				AB000001,
-				AB000002,
+				AB000001 /* Debug */,
+				AB000002 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
@@ -469,8 +465,8 @@
 		A8000003 /* Build configuration list for PBXProject "ChromaCatchController" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				AB000003,
-				AB000004,
+				AB000003 /* Debug */,
+				AB000004 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
@@ -478,14 +474,13 @@
 		B8000003 /* Build configuration list for PBXNativeTarget "ChromaCatchBroadcast" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				BB000001,
-				BB000002,
+				BB000001 /* Debug */,
+				BB000002 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
-
 	};
-	rootObject = A9000001;
+	rootObject = A9000001 /* Project object */;
 }

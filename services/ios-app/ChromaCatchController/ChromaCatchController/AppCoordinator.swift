@@ -192,13 +192,21 @@ class AppCoordinator: ObservableObject {
     }
 
     private func checkConnections() {
-        let eaOk = eaManager.isConnected
-        let bleOk = bleManager.isConnected
+        // BLE and EA are independent connections to different dongle identities:
+        // BT-01414-CORE = EA (Classic BT/MFi), BT-01414-APP = BLE (GATT)
+        // Both must connect independently — BLE should NOT wait for EA.
 
-        // Start BLE scanning once EA is connected
-        if eaOk && !bleOk {
+        // Keep BLE scanning if not yet connected
+        if !bleManager.isConnected {
             bleManager.startScanning()
         }
+
+        // Retry EA session if not connected (dongle may have been paired after app start)
+        if !eaManager.isConnected {
+            eaManager.retryConnection()
+        }
+
+        // DongleController auto-starts via BLEManager.onReady callback
     }
 
     // MARK: - Control Channel Message Handling (Main Backend)

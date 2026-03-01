@@ -33,31 +33,38 @@ class BLEManager: NSObject, ObservableObject {
     var onReady: (() -> Void)?
 
     private let log: (String) -> Void
+    private var isScanning = false
 
     init(log: @escaping (String) -> Void = { print("BLE: \($0)") }) {
         self.log = log
         super.init()
+        print("[BLE] BLEManager init — creating CBCentralManager")
         centralManager = CBCentralManager(
             delegate: self,
             queue: DispatchQueue(label: "ble.queue"),
             options: [CBCentralManagerOptionRestoreIdentifierKey: "iToolsBLECentral"]
         )
+        print("[BLE] CBCentralManager created, waiting for state callback")
     }
 
     func startScanning() {
         guard centralManager.state == .poweredOn else {
-            log("Cannot scan — Bluetooth not powered on (state: \(centralManager.state.rawValue))")
+            // Only log this once, not on every timer tick
             return
         }
+        guard !isScanning else { return }
+        isScanning = true
         centralManager.scanForPeripherals(
             withServices: [Self.serviceUUID],
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
         )
         log("Scanning for BT-01414-APP (service FF12)...")
+        print("[BLE] Started scanning for service FF12")
     }
 
     func stopScanning() {
         centralManager.stopScan()
+        isScanning = false
     }
 
     /// Write data to FF03 (write with response — reliable for NMEA/AT commands)
@@ -98,21 +105,32 @@ class BLEManager: NSObject, ObservableObject {
 // MARK: - CBCentralManagerDelegate
 extension BLEManager: CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
-        print("[BLE] centralManagerDidUpdateState: \(central.state.rawValue)")
+        let stateNames = [
+            0: "unknown", 1: "resetting", 2: "unsupported",
+            3: "unauthorized", 4: "poweredOff", 5: "poweredOn"
+        ]
+        let stateName = stateNames[central.state.rawValue] ?? "rawValue(\(central.state.rawValue))"
+        print("[BLE] centralManagerDidUpdateState: \(stateName) (\(central.state.rawValue))")
+
         switch central.state {
         case .poweredOn:
             log("Bluetooth powered on")
-            print("[BLE] Powered on — starting scan")
+            print("[BLE] Powered on — starting scan for service FF12")
             startScanning()
         case .poweredOff:
             log("Bluetooth powered off")
+            isScanning = false
             DispatchQueue.main.async { self.isConnected = false }
         case .unauthorized:
-            log("Bluetooth unauthorized — check NSBluetoothAlwaysUsageDescription")
-            print("[BLE] UNAUTHORIZED — user denied Bluetooth permission")
+            log("Bluetooth UNAUTHORIZED — check Settings > Privacy > Bluetooth")
+            print("[BLE] UNAUTHORIZED — user denied Bluetooth permission or NSBluetoothAlwaysUsageDescription missing from Info.plist")
+        case .unsupported:
+            log("Bluetooth unsupported on this device")
+        case .resetting:
+            log("Bluetooth resetting...")
+            isScanning = false
         default:
-            log("Bluetooth state: \(central.state.rawValue)")
-            print("[BLE] State: \(central.state.rawValue)")
+            log("Bluetooth state: \(stateName) (\(central.state.rawValue))")
         }
     }
 
@@ -127,6 +145,7 @@ extension BLEManager: CBCentralManagerDelegate {
 
         self.peripheral = peripheral
         centralManager.stopScan()
+        isScanning = false
         centralManager.connect(peripheral, options: nil)
         log("Connecting to \(name)...")
     }
@@ -159,6 +178,7 @@ extension BLEManager: CBCentralManagerDelegate {
                         didFailToConnect peripheral: CBPeripheral,
                         error: Error?) {
         log("Failed to connect: \(error?.localizedDescription ?? "unknown")")
+        isScanning = false
         DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) { [weak self] in
             self?.startScanning()
         }
