@@ -26,6 +26,8 @@ class DongleController: ObservableObject {
     private enum InitPhase {
         case idle, sentCN, waitingCN, sentRP, waitingRP, ready
     }
+    private var cnRetryCount = 0
+    private static let maxCNRetries = 3
 
     init(bleManager: BLEManager, log: @escaping (String) -> Void = { print("Dongle: \($0)") }) {
         self.bleManager = bleManager
@@ -77,11 +79,15 @@ class DongleController: ObservableObject {
     // MARK: - Initialization Sequence
 
     private func startInitSequence() {
-        log("Starting AT+CN initialization...")
+        cnRetryCount = 0
+        sendCNPair()
+    }
+
+    private func sendCNPair() {
+        cnRetryCount += 1
+        log("AT+CN init attempt \(cnRetryCount)/\(Self.maxCNRetries)...")
         initPhase = .sentCN
-        // Send AT+CN twice (as observed in captures)
         bleManager.writeString("AT+CN\r\n")
-        // Second AT+CN after a short delay
         DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) { [weak self] in
             self?.bleManager.writeString("AT+CN\r\n")
             self?.initPhase = .waitingCN
@@ -101,10 +107,18 @@ class DongleController: ObservableObject {
             if trimmed.contains("+CN=01") {
                 log("AT+CN acknowledged (+CN=01)")
                 initPhase = .sentRP
-                // Send initial AT+RP
                 DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) { [weak self] in
                     self?.bleManager.writeString("AT+RP\r\n")
                     self?.initPhase = .waitingRP
+                }
+            } else if trimmed.contains("+CN=00") {
+                log("AT+CN returned +CN=00 (not ready)")
+                if cnRetryCount < Self.maxCNRetries {
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                        self?.sendCNPair()
+                    }
+                } else {
+                    log("AT+CN failed after \(Self.maxCNRetries) attempts — try power cycling the dongle")
                 }
             }
 

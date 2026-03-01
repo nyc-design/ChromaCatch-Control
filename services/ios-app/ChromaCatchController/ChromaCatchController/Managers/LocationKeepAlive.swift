@@ -1,11 +1,13 @@
 import CoreLocation
 import Foundation
 
-/// Uses Core Location background updates to keep the app alive when backgrounded.
-/// This is the most reliable background keepalive mechanism on iOS.
+/// Uses Core Location significant change monitoring to keep the app alive when backgrounded.
+/// Uses significantLocationChanges (not startUpdatingLocation) to avoid competing with
+/// the iTools dongle's spoofed GPS coordinates.
 class LocationKeepAlive: NSObject, CLLocationManagerDelegate {
     private let locationManager = CLLocationManager()
     private let log: (String) -> Void
+    private var isStarted = false
 
     init(log: @escaping (String) -> Void = { print("Location: \($0)") }) {
         self.log = log
@@ -14,57 +16,61 @@ class LocationKeepAlive: NSObject, CLLocationManagerDelegate {
     }
 
     func startBackgroundUpdates() {
-        // iOS requires WhenInUse first, then escalate to Always
+        isStarted = true
         let status = locationManager.authorizationStatus
         if status == .notDetermined {
             locationManager.requestWhenInUseAuthorization()
             return // Will continue in delegate callback
         }
-        beginUpdates()
+        if status == .authorizedWhenInUse {
+            locationManager.requestAlwaysAuthorization()
+            return // Will continue in delegate callback
+        }
+        if status == .authorizedAlways {
+            beginMonitoring()
+        }
     }
 
-    private func beginUpdates() {
-        let status = locationManager.authorizationStatus
-        if status == .authorizedWhenInUse {
-            // Escalate to Always for background support
-            locationManager.requestAlwaysAuthorization()
-        }
+    private func beginMonitoring() {
         locationManager.allowsBackgroundLocationUpdates = true
         locationManager.showsBackgroundLocationIndicator = true
-        locationManager.pausesLocationUpdatesAutomatically = false
-        locationManager.desiredAccuracy = kCLLocationAccuracyReduced
-        locationManager.distanceFilter = kCLDistanceFilterNone
-        locationManager.startUpdatingLocation()
-        log("Background location updates started (auth: \(status.rawValue))")
+        // Use significant change monitoring — keeps app alive in background
+        // without actively polling GPS (which would override dongle's spoofed location)
+        locationManager.startMonitoringSignificantLocationChanges()
+        log("Background keepalive started (significant changes)")
     }
 
     func stop() {
-        locationManager.stopUpdatingLocation()
-        log("Location updates stopped")
+        isStarted = false
+        locationManager.stopMonitoringSignificantLocationChanges()
+        log("Location monitoring stopped")
     }
 
     // MARK: - CLLocationManagerDelegate
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        // Location updates keep the app alive — no action needed
+        // Significant change events keep the app alive — no action needed
     }
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        switch manager.authorizationStatus {
+        let status = manager.authorizationStatus
+        switch status {
         case .authorizedAlways:
             log("Authorization: Always")
+            if isStarted { beginMonitoring() }
         case .authorizedWhenInUse:
-            log("Authorization: When In Use — request Always for background support")
+            log("Authorization: When In Use — requesting Always for background")
+            if isStarted { manager.requestAlwaysAuthorization() }
         case .denied, .restricted:
-            log("Authorization denied/restricted — background mode will not work")
+            log("Authorization denied — enable Location in Settings > Privacy > Location Services")
         case .notDetermined:
-            log("Authorization not determined — requesting...")
+            break
         @unknown default:
             break
         }
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        log("Error: \(error.localizedDescription)")
+        log("Location error: \(error.localizedDescription)")
     }
 }

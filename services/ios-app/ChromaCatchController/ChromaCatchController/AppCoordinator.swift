@@ -53,9 +53,20 @@ class AppCoordinator: ObservableObject {
     private let startTime = Date()
     private let sharedDefaults = UserDefaults(suiteName: "group.com.chromacatch")
 
+    private static let defaultBackendURL = "wss://8000--main--chromacatch-go-agents--nyc-design.apps.coder.tapiavala.com/ws/control"
+    private static let defaultLocationURL = "wss://8001--main--chromacatch-go-agents--nyc-design.apps.coder.tapiavala.com/ws/location"
+
     init() {
-        let savedBackendURL = UserDefaults.standard.string(forKey: "backendURL") ?? "wss://8000--main--chromacatch-go-agents--nyc-design.apps.coder.tapiavala.com/ws/control"
-        let savedLocationURL = UserDefaults.standard.string(forKey: "locationServiceURL") ?? "wss://8001--main--chromacatch-go-agents--nyc-design.apps.coder.tapiavala.com/ws/location"
+        // Migrate stale localhost defaults from older builds
+        if let old = UserDefaults.standard.string(forKey: "backendURL"), old.contains("localhost") {
+            UserDefaults.standard.removeObject(forKey: "backendURL")
+        }
+        if let old = UserDefaults.standard.string(forKey: "locationServiceURL"), old.contains("localhost") {
+            UserDefaults.standard.removeObject(forKey: "locationServiceURL")
+        }
+
+        let savedBackendURL = UserDefaults.standard.string(forKey: "backendURL") ?? Self.defaultBackendURL
+        let savedLocationURL = UserDefaults.standard.string(forKey: "locationServiceURL") ?? Self.defaultLocationURL
         let savedKey = UserDefaults.standard.string(forKey: "apiKey") ?? ""
         let savedESP32Host = UserDefaults.standard.string(forKey: "esp32Host") ?? "192.168.1.100"
         let savedESP32Port = UserDefaults.standard.string(forKey: "esp32Port") ?? "80"
