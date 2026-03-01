@@ -13,11 +13,9 @@ This eliminates the decode->JPEG->encode cycle entirely.
 import asyncio
 import logging
 import re
-import select as sel
 import shutil
-import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from urllib.parse import urlparse
 
 from airplay_client.config import client_settings as settings
@@ -48,7 +46,7 @@ class SRTTransport(MediaTransport):
         self._audio_port = audio_udp_port or settings.airplay_audio_udp_port
         self._srt_url = srt_url or self._build_srt_url()
         self._audio_enabled = audio_enabled if audio_enabled is not None else settings.audio_enabled
-        self._proc: subprocess.Popen | None = None
+        self._proc: asyncio.subprocess.Process | None = None
         self._running = False
         self._connected = False
         self._monitor_task: asyncio.Task | None = None
@@ -129,28 +127,38 @@ class SRTTransport(MediaTransport):
             try:
                 cmd = self._build_gst_pipeline_args()
                 logger.info("Starting SRT transport: %s", " ".join(cmd))
-                self._proc = subprocess.Popen(
-                    cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                self._proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
                 )
                 logger.info("SRT transport pid=%d, target=%s", self._proc.pid, self._srt_url)
 
                 delay = 1.0
                 started_at = time.time()
                 while self._running:
-                    if self._proc.poll() is not None:
+                    if self._proc.returncode is not None:
                         self._connected = False
                         logger.warning("SRT process exited (rc=%d)", self._proc.returncode)
                         break
 
-                    # Read stderr for diagnostics and SRT stats
+                    # Non-blocking stderr read with 1s timeout
                     try:
-                        ready, _, _ = sel.select([self._proc.stderr], [], [], 1.0)
-                        if ready:
-                            line = self._proc.stderr.readline()
+                        line = await asyncio.wait_for(
+                            self._proc.stderr.readline(), timeout=1.0,
+                        )
+                        if line:
                             text = line.decode("utf-8", errors="replace").rstrip()
                             if text:
                                 logger.debug("[srt-gst] %s", text)
                                 self._parse_srt_line(text)
+                        elif self._proc.returncode is not None:
+                            # EOF + process exited
+                            self._connected = False
+                            logger.warning("SRT process exited (rc=%d)", self._proc.returncode)
+                            break
+                    except asyncio.TimeoutError:
+                        pass
                     except (ValueError, OSError):
                         pass
 
@@ -158,8 +166,6 @@ class SRTTransport(MediaTransport):
                     if not self._connected and (time.time() - started_at) > 2.0:
                         self._connected = True
                         logger.info("SRT transport connected to %s", self._srt_url)
-
-                    await asyncio.sleep(0)
 
             except RuntimeError as e:
                 logger.error("SRT transport error: %s", e)
@@ -183,13 +189,13 @@ class SRTTransport(MediaTransport):
             except asyncio.CancelledError:
                 pass
             self._monitor_task = None
-        if self._proc and self._proc.poll() is None:
+        if self._proc and self._proc.returncode is None:
             self._proc.terminate()
             try:
-                await asyncio.to_thread(self._proc.wait, timeout=5)
-            except subprocess.TimeoutExpired:
+                await asyncio.wait_for(self._proc.wait(), timeout=5)
+            except asyncio.TimeoutError:
                 self._proc.kill()
-                await asyncio.to_thread(self._proc.wait, timeout=3)
+                await asyncio.wait_for(self._proc.wait(), timeout=3)
         self._proc = None
         self._connected = False
         logger.info("SRT transport stopped")
