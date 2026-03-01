@@ -77,7 +77,7 @@ class MediaMTXManager:
             for line in self._proc.stdout:
                 text = line.decode("utf-8", errors="replace").rstrip()
                 if text:
-                    logger.debug("[mediamtx] %s", text)
+                    logger.info("[mediamtx] %s", text)
         except Exception:
             pass
 

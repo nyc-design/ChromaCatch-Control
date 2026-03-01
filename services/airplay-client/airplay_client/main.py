@@ -171,9 +171,14 @@ class ChromaCatchClient:
                 audio_port=client_settings.airplay_audio_udp_port,
             )
 
-        # In SRT mode, GStreamer reads directly from RTP — no Python frame source needed.
-        # In WS and failover modes, we need the frame source for JPEG fallback.
-        if client_settings.transport_mode in ("websocket", "srt-failover"):
+        # In SRT mode, GStreamer reads directly from RTP — no Python frame
+        # capture is needed.  But UxPlay must still run so the iPhone can
+        # discover and connect via AirPlay.
+        if client_settings.transport_mode == "srt":
+            if isinstance(self._frame_source, AirPlayFrameSource):
+                self._frame_source._airplay.start()
+        else:
+            # WS and failover modes need the full frame source + audio source.
             if self._audio_source is not None:
                 self._audio_source.start()
             self._frame_source.start()
@@ -191,7 +196,10 @@ class ChromaCatchClient:
         await self._control_ws.disconnect()
         if self._audio_source is not None:
             self._audio_source.stop()
-        if client_settings.transport_mode in ("websocket", "srt-failover"):
+        if client_settings.transport_mode == "srt":
+            if isinstance(self._frame_source, AirPlayFrameSource):
+                self._frame_source._airplay.stop()
+        else:
             self._frame_source.stop()
         await self._esp32.close()
 

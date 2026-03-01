@@ -13,14 +13,13 @@ srtAddress: :8890
 rtsp: yes
 rtspAddress: :8554
 rtspEncryption: "no"
-rtspTransport: tcp
 
 # --- WebRTC for browser dashboard ---
 webrtc: yes
 webrtcAddress: :8889
-webrtcEncryption: "no"
+webrtcEncryption: no
 webrtcICEServers2:
-  - urls: [stun:stun.l.google.com:19302]
+  - url: stun:stun.l.google.com:19302
 
 # Disable unused protocols
 rtmp: no

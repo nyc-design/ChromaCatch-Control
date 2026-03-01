@@ -7,13 +7,10 @@ services:
         shared: ./services/shared
     container_name: chromacatch-backend
     restart: unless-stopped
-    network_mode: bridge
-    ports:
-      - "8000:8000"       # FastAPI (HTTP + WebSocket + dashboard)
-      - "8890:8890/udp"   # SRT ingest from client
-      - "8554:8554"       # RTSP (CV uses localhost internally)
-      - "8889:8889"       # WebRTC/WHEP for dashboard
-      - "8189:8189/udp"   # WebRTC ICE candidates
+    # Share the workspace container's network so ports are reachable via
+    # Coder's port-forwarding proxy (DinD: bridge ports land on Docker host,
+    # not our workspace).
+    network_mode: "container:${CODER_CONTAINER_NAME:-coder-nyc-design-chromacatch-go-agents}"
     environment:
       - CC_BACKEND_API_KEY=${CC_BACKEND_API_KEY:-}
       - CC_BACKEND_MEDIAMTX_ENABLED=true
