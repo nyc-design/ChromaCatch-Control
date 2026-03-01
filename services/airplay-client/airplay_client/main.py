@@ -176,7 +176,10 @@ class ChromaCatchClient:
         # discover and connect via AirPlay.
         if client_settings.transport_mode == "srt":
             if isinstance(self._frame_source, AirPlayFrameSource):
+                logger.info("SRT mode: starting AirPlay receiver (UxPlay) only")
                 self._frame_source._airplay.start()
+            else:
+                logger.info("SRT mode: non-AirPlay source, no UxPlay needed")
         else:
             # WS and failover modes need the full frame source + audio source.
             if self._audio_source is not None:
