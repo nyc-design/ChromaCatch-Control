@@ -1,0 +1,29 @@
+services:
+  backend:
+    build:
+      context: ./services/backend
+      dockerfile: Dockerfile
+      additional_contexts:
+        shared: ./services/shared
+    container_name: chromacatch-backend
+    restart: unless-stopped
+    network_mode: bridge
+    ports:
+      - "8000:8000"       # FastAPI (HTTP + WebSocket + dashboard)
+      - "8890:8890/udp"   # SRT ingest from client
+      - "8554:8554"       # RTSP (CV uses localhost internally)
+      - "8889:8889"       # WebRTC/WHEP for dashboard
+      - "8189:8189/udp"   # WebRTC ICE candidates
+    environment:
+      - CC_BACKEND_API_KEY=${CC_BACKEND_API_KEY:-}
+      - CC_BACKEND_MEDIAMTX_ENABLED=true
+      - CC_BACKEND_MEDIAMTX_BINARY=mediamtx
+      - CC_BACKEND_RTSP_CONSUMER_ENABLED=true
+      - CC_BACKEND_MEDIAMTX_SRT_PORT=8890
+      - CC_BACKEND_MEDIAMTX_RTSP_PORT=8554
+      - CC_BACKEND_MEDIAMTX_WEBRTC_PORT=8889
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3

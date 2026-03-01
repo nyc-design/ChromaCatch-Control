@@ -1,3 +1,7 @@
+# DEV/TEST WORKSPACE ROOT — not a deployable package.
+# Installs the union of all service dependencies so that `poetry run pytest`
+# can exercise backend + client tests in one go.  Each service has its own
+# pyproject.toml for isolated Docker builds and deployments.
 [tool.poetry]
 name = "chromacatch-go"
 version = "0.1.0"
