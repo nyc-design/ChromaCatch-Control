@@ -244,11 +244,9 @@ class H264Capture:
                     f"GStreamer H.264 exited early (rc={proc.returncode})"
                 )
             first_file = os.path.join(au_dir, "au_000000.h264")
-            if os.path.exists(first_file):
-                size = self._read_stable_file(first_file)
-                if size:
-                    logger.info("GStreamer H.264: first AU file written")
-                    return au_dir
+            if os.path.exists(first_file) and os.path.getsize(first_file) > 0:
+                logger.info("GStreamer H.264: first AU file written")
+                return au_dir
             time.sleep(0.5)
 
         if proc.poll() is None:
