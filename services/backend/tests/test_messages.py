@@ -15,6 +15,7 @@ from shared.messages import (
     HeartbeatPing,
     HeartbeatPong,
     HIDCommandMessage,
+    LocationUpdateMessage,
     parse_message,
 )
 
@@ -281,6 +282,38 @@ class TestH264FrameMetadata:
         assert isinstance(parsed, H264FrameMetadata)
         assert parsed.sequence == 5
         assert parsed.is_keyframe is True
+
+
+class TestLocationUpdateMessage:
+    def test_creation(self):
+        msg = LocationUpdateMessage(latitude=33.448, longitude=-96.789)
+        assert msg.type == MessageType.LOCATION_UPDATE
+        assert msg.latitude == 33.448
+        assert msg.longitude == -96.789
+
+    def test_defaults(self):
+        msg = LocationUpdateMessage(latitude=0.0, longitude=0.0)
+        assert msg.altitude == 10.0
+        assert msg.speed_knots == 0.0
+        assert msg.heading == 0.0
+
+    def test_roundtrip_json(self):
+        msg = LocationUpdateMessage(
+            latitude=33.448, longitude=-96.789,
+            altitude=200.0, speed_knots=4.7, heading=180.0,
+        )
+        parsed = LocationUpdateMessage.model_validate_json(msg.model_dump_json())
+        assert parsed.latitude == 33.448
+        assert parsed.longitude == -96.789
+        assert parsed.altitude == 200.0
+        assert parsed.speed_knots == 4.7
+        assert parsed.heading == 180.0
+
+    def test_parse_message_dispatch(self):
+        msg = LocationUpdateMessage(latitude=37.335, longitude=-122.009)
+        parsed = parse_message(msg.model_dump_json())
+        assert isinstance(parsed, LocationUpdateMessage)
+        assert parsed.latitude == 37.335
 
 
 class TestCommandAck:

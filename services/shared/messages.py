@@ -128,6 +128,17 @@ class ConfigUpdate(BaseMessage):
     frame_interval_ms: int | None = None
 
 
+class LocationUpdateMessage(BaseMessage):
+    """GPS coordinates to send to the iTools dongle via iOS app."""
+
+    type: str = MessageType.LOCATION_UPDATE
+    latitude: float
+    longitude: float
+    altitude: float = 10.0
+    speed_knots: float = 0.0
+    heading: float = 0.0
+
+
 # --- Bidirectional ---
 
 
@@ -155,6 +166,7 @@ _TYPE_MAP: dict[str, type[BaseMessage]] = {
     MessageType.HID_COMMAND: HIDCommandMessage,
     MessageType.COMMAND_ACK: CommandAck,
     MessageType.CONFIG_UPDATE: ConfigUpdate,
+    MessageType.LOCATION_UPDATE: LocationUpdateMessage,
     MessageType.PING: HeartbeatPing,
     MessageType.PONG: HeartbeatPong,
     MessageType.ERROR: ErrorMessage,

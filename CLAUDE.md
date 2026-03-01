@@ -22,9 +22,11 @@ Automated shiny hunting bot for Pokemon Go using AirPlay screen mirroring, compu
 └────────────┘
 ```
 
-### Two-Service Architecture
+### Service Architecture
 - **Airplay Client** (`services/airplay-client/`): Runs on the same network as iPhone + ESP32. Manages AirPlay reception, delivers media to the backend (via SRT or WebSocket), and relays HID commands from the backend to the ESP32. Deployed as a CLI tool.
-- **Remote Backend** (`services/backend/`): Runs in the cloud (Cloud Run, VM, etc.). Receives frames (via RTSP from MediaMTX or WebSocket), runs CV analysis, makes decisions, and sends HID commands back through WebSocket.
+- **iOS Controller App** (`services/ios-app/`): Native iPhone app — full drop-in replacement for the CLI airplay-client. Controls iTools BT GPS dongle (EA session + BLE NMEA), relays HID commands to ESP32 via HTTP, and broadcasts screen via ReplayKit (H.264 over WebSocket, same h264-ws protocol as CLI). Connects to both main backend (`/ws/control`) and location service (`/ws/location`).
+- **Location Service** (`services/location_service/`): Standalone FastAPI service on port 8001. Decouples GPS coordinate management from the video/HID pipeline. iOS apps connect via WebSocket to receive coordinates; orchestrator or manual `POST /location` pushes coordinates.
+- **Remote Backend** (`services/backend/`): Runs in the cloud (Cloud Run, VM, etc.). Receives frames (via RTSP from MediaMTX or WebSocket), runs CV analysis, makes decisions, and sends HID commands back through WebSocket control channel.
 - **ESP32 Firmware** (`services/esp32/`): Dumb HID device. Receives mouse commands over HTTP, emits BLE HID events.
 - **Shared** (`services/shared/`): Protocol contract between services — message models, frame codec, constants.
 
@@ -143,6 +145,39 @@ ChromaCatch-Go/
 │   │       ├── test_transport.py            # SRT + WS transport + factory tests
 │   │       ├── test_ws_client.py
 │   │       └── test_cli.py
+│   ├── location_service/                    # REMOTE: GPS coordinate service (port 8001)
+│   │   ├── config.py                        # LocationSettings (CC_LOCATION_ prefix)
+│   │   ├── main.py                          # FastAPI + WS /ws/location + POST/GET /location
+│   │   ├── session_manager.py               # Location-only client session tracking
+│   │   └── tests/
+│   │       └── test_location_api.py         # Location service tests (8 tests)
+│   ├── ios-app/                              # iOS: full client (dongle + screen broadcast + HID relay)
+│   │   └── ChromaCatchController/
+│   │       ├── ChromaCatchController.xcodeproj
+│   │       ├── ChromaCatchController/
+│   │       │   ├── ChromaCatchControllerApp.swift  # @main SwiftUI entry
+│   │       │   ├── ContentView.swift              # UI (status, settings, broadcast, coords, log)
+│   │       │   ├── AppCoordinator.swift           # Central orchestrator (dual WS + ESP32 relay)
+│   │       │   ├── Info.plist                     # EA protocols, background modes, BT/location
+│   │       │   ├── ChromaCatchController.entitlements  # App Group (group.com.chromacatch)
+│   │       │   ├── Managers/
+│   │       │   │   ├── BLEManager.swift           # CoreBluetooth central (FF12 service)
+│   │       │   │   ├── EAManager.swift            # External Accessory session (MFi gate)
+│   │       │   │   ├── WebSocketManager.swift     # URLSessionWebSocketTask (dual WS)
+│   │       │   │   └── LocationKeepAlive.swift    # CLLocationManager background keepalive
+│   │       │   ├── Networking/
+│   │       │   │   └── ESP32HTTPClient.swift      # HTTP POST /command to ESP32 (HID relay)
+│   │       │   ├── Dongle/
+│   │       │   │   ├── NMEAGenerator.swift        # RMC + GGA sentence builder
+│   │       │   │   └── DongleController.swift     # AT+CN/RP init + NMEA loop
+│   │       │   └── Protocol/
+│   │       │       └── Messages.swift             # Swift mirror of shared/messages.py (full protocol)
+│   │       └── ChromaCatchBroadcast/              # ReplayKit Broadcast Upload Extension
+│   │           ├── SampleHandler.swift            # RPBroadcastSampleHandler (screen capture → H.264)
+│   │           ├── H264Encoder.swift              # VideoToolbox encoder (AVCC → Annex-B)
+│   │           ├── BroadcastWSClient.swift        # Simplified WS client (h264-ws protocol)
+│   │           ├── Info.plist                     # Extension config (broadcast-services-upload)
+│   │           └── ChromaCatchBroadcast.entitlements  # App Group (group.com.chromacatch)
 │   └── esp32/                               # ESP32 firmware
 │       ├── platformio.ini
 │       └── src/main.cpp                     # BLE HID + WiFi HTTP server
@@ -171,7 +206,9 @@ ChromaCatch-Go/
 | ESP32 comms | WiFi HTTP (REST, keep-alive) |
 | BLE HID | ESP32 BLE HID library (BleCombo) |
 | H.264 decode | PyAV (av) — FFmpeg wrapper for backend H.264→BGR decode |
-| Testing | pytest, pytest-asyncio (260 tests) |
+| iOS app | Swift, SwiftUI, CoreBluetooth, ExternalAccessory, URLSessionWebSocketTask |
+| GPS spoofing | iTools BT dongle (Beken BK-BLE-1.0, MFi coprocessor, EA protocol) |
+| Testing | pytest, pytest-asyncio (265 tests) |
 | Linting | ruff, black, mypy |
 
 ## Phases
@@ -212,6 +249,21 @@ ChromaCatch-Go/
 - [x] H264Decoder (backend PyAV/FFmpeg streaming H.264 → BGR decode)
 - [x] 260 tests passing (95 new transport + failover + MediaMTX + RTSP + H.264 tests)
 
+### Phase 1.7: Location Spoofing + iOS Full Client [IN PROGRESS]
+- [x] iTools BT dongle protocol reverse-engineered (AT+CN/RP init, NMEA RMC+GGA over BLE FF03)
+- [x] Standalone location service (`services/location_service/`, port 8001) — decoupled from main backend
+- [x] iOS app scaffold (SwiftUI, CoreBluetooth BLEManager, EA EAManager, WebSocket, NMEA generator)
+- [x] Dongle controller (AT+CN init → NMEA loop at 1Hz with RP status monitoring)
+- [x] iOS dual WebSocket (main backend `/ws/control` + location service `/ws/location`)
+- [x] iOS ESP32 HID relay (receive command → HTTP POST to ESP32 → CommandAck back to backend)
+- [x] iOS Protocol/Messages.swift aligned with full Python protocol (CommandAck, H264FrameMetadata, AudioChunkMetadata, ClientStatus)
+- [x] ReplayKit Broadcast Upload Extension (H.264 via VideoToolbox → h264-ws protocol over WebSocket)
+- [x] App Group IPC (shared UserDefaults between main app and broadcast extension)
+- [x] 265 tests passing (8 new location service tests, 7 removed from backend)
+- [ ] On-device testing: verify EA session activates dongle GPS forwarding (RP status `>`)
+- [ ] End-to-end: location service POST /location → iOS app WS → BLE NMEA → iPhone location change
+- [ ] End-to-end: ReplayKit broadcast → H.264 frames on backend dashboard (same stream as CLI)
+
 ### Phase 2: Computer Vision
 - [ ] Screen state detection (battle, overworld, menu, etc.)
 - [ ] Pokemon encounter detection
@@ -230,12 +282,13 @@ ChromaCatch-Go/
 # Install
 poetry install
 
-# Run all tests (260 tests)
+# Run all tests (265 tests)
 poetry run pytest
 
 # Run by suite
 poetry run pytest services/backend/tests/              # Backend + shared + integration
 poetry run pytest services/airplay-client/tests/        # Client component tests
+poetry run pytest services/location_service/tests/      # Location service tests
 poetry run pytest services/backend/tests/integration/   # End-to-end round-trip only
 
 # Start backend (cloud/remote)
@@ -304,6 +357,13 @@ CC_CLIENT_SRT_STREAM_ID=                    # auto-derived from client_id if emp
 CC_CLIENT_SRT_OPUS_BITRATE=128000           # Opus audio bitrate (SRT mode)
 ```
 
+**Location Service** (`.env` with `CC_LOCATION_` prefix):
+```bash
+CC_LOCATION_API_KEY=your-secret-key
+CC_LOCATION_HOST=0.0.0.0
+CC_LOCATION_PORT=8001
+```
+
 **Backend** (`.env` with `CC_BACKEND_` prefix):
 ```bash
 CC_BACKEND_API_KEY=your-secret-key
@@ -336,3 +396,12 @@ CC_BACKEND_RTSP_BASE_URL=rtsp://127.0.0.1:8554
 | POST | `/clients/{id}/rtsp-start` | Start RTSP consumer for SRT client |
 | GET | `/stream/{id}` | MJPEG live frame stream |
 | GET | `/dashboard` | Browser dashboard (WebRTC + MJPEG fallback) |
+
+## Location Service API (port 8001)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| WS | `/ws/location` | Location WebSocket (iOS app connects to receive coordinates) |
+| POST | `/location` | Send GPS coordinates to connected iOS client(s) |
+| GET | `/location` | Get current spoofed location (per client or all) |
+| GET | `/health` | Health check (`role: location-service`) |

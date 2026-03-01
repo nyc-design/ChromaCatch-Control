@@ -24,3 +24,20 @@ services:
       interval: 15s
       timeout: 5s
       retries: 3
+
+  location-service:
+    build:
+      context: ./services/location_service
+      dockerfile: Dockerfile
+      additional_contexts:
+        shared: ./services/shared
+    container_name: chromacatch-location
+    restart: unless-stopped
+    network_mode: "container:${CODER_CONTAINER_NAME:-coder-nyc-design-chromacatch-go-agents}"
+    environment:
+      - CC_LOCATION_API_KEY=${CC_LOCATION_API_KEY:-}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3

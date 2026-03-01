@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- External Accessory Protocol (must match dongle's iAP2 protocol string) -->
+    <key>UISupportedExternalAccessoryProtocols</key>
+    <array>
+        <string>com.feasycom.BLEAssistant</string>
+    </array>
+
+    <!-- Background Modes -->
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>external-accessory</string>
+        <string>bluetooth-central</string>
+        <string>location</string>
+    </array>
+
+    <!-- Bluetooth Usage Descriptions -->
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>ChromaCatch uses Bluetooth to communicate with the iTools GPS dongle for location control.</string>
+
+    <key>NSBluetoothPeripheralUsageDescription</key>
+    <string>ChromaCatch uses Bluetooth to communicate with the iTools GPS dongle.</string>
+
+    <!-- Location Usage Descriptions -->
+    <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+    <string>ChromaCatch needs continuous location access to maintain GPS dongle connectivity in the background.</string>
+
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>ChromaCatch uses location services to work with the GPS dongle.</string>
+
+    <!-- Local Network Access (for ESP32 HTTP relay in future) -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>ChromaCatch connects to local devices for GPS data processing.</string>
+
+    <!-- Allow plain HTTP to local network (ESP32) -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+    </dict>
+</dict>
+</plist>
