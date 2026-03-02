@@ -214,19 +214,12 @@ extension BLEManager: CBCentralManagerDelegate {
     }
 
     // State restoration (background relaunch)
+    // Don't auto-reconnect — user must manually scan and connect via the UI.
     func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
         if let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral],
            let restored = peripherals.first {
-            log("Restored peripheral: \(restored.name ?? "unknown")")
-            self.peripheral = restored
-            restored.delegate = self
-            if restored.state == .connected {
-                DispatchQueue.main.async {
-                    self.isConnected = true
-                    self.connectedDeviceName = restored.name
-                }
-                restored.discoverServices([Self.serviceUUID])
-            }
+            log("Restored peripheral: \(restored.name ?? "unknown") — disconnecting (manual pairing required)")
+            central.cancelPeripheralConnection(restored)
         }
     }
 }

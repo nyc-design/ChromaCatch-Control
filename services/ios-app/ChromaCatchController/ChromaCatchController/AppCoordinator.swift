@@ -46,7 +46,6 @@ class AppCoordinator: ObservableObject {
     }
 
     private var cancellables = Set<AnyCancellable>()
-    private var monitorTimer: Timer?
     private var statusTimer: Timer?
     private var esp32PingTimer: Timer?
     private let startTime = Date()
@@ -166,8 +165,6 @@ class AppCoordinator: ObservableObject {
         dongleController.stop()
         wsManager.disconnect()
         locationWSManager.disconnect()
-        monitorTimer?.invalidate()
-        monitorTimer = nil
         statusTimer?.invalidate()
         statusTimer = nil
         esp32PingTimer?.invalidate()
@@ -178,12 +175,10 @@ class AppCoordinator: ObservableObject {
     // MARK: - Connection Monitoring
 
     private func startMonitoring() {
-        // Monitor EA state and start BLE when EA is up
-        monitorTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.checkConnections()
-            }
-        }
+        // EA session is handled by EAManager's NotificationCenter observers
+        // (.EAAccessoryDidConnect / .EAAccessoryDidDisconnect).
+        // No polling needed — if BT-01414-CORE is paired, EA will fire
+        // the notification when the accessory completes iAP2 auth.
 
         // Send periodic status to backend
         statusTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
@@ -197,15 +192,6 @@ class AppCoordinator: ObservableObject {
             guard let self = self else { return }
             Task { _ = await self.esp32Client.ping() }
         }
-    }
-
-    private func checkConnections() {
-        // Retry EA session if not connected (dongle may have been paired after app start)
-        if !eaManager.isConnected {
-            eaManager.retryConnection()
-        }
-        // BLE connection is user-initiated via "Scan for Dongle" button.
-        // DongleController auto-starts via BLEManager.onReady callback.
     }
 
     // MARK: - Dongle Pairing (user-initiated)
