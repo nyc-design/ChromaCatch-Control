@@ -30,7 +30,7 @@ class LocationMonitor: NSObject, ObservableObject, CLLocationManagerDelegate {
         super.init()
         locationManager.delegate = self
         locationManager.desiredAccuracy = kCLLocationAccuracyBest
-        locationManager.distanceFilter = 5 // Update every 5m of movement
+        locationManager.distanceFilter = kCLDistanceFilterNone // Continuous updates
     }
 
     func startMonitoring() {
@@ -74,6 +74,9 @@ class LocationMonitor: NSObject, ObservableObject, CLLocationManagerDelegate {
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        // kCLErrorLocationUnknown (error 0) is transient — fires during startup before lock
+        let clError = error as? CLError
+        if clError?.code == .locationUnknown { return }
         log("GPS error: \(error.localizedDescription)")
     }
 
