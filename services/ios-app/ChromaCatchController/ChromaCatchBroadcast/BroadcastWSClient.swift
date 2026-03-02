@@ -7,12 +7,16 @@ import Foundation
 /// 2. Binary H.264 AU data message
 class BroadcastWSClient: NSObject, URLSessionWebSocketDelegate {
     private var webSocketTask: URLSessionWebSocketTask?
-    private var session: URLSession!
+    private var session: URLSession?
     private var url: URL
     private var apiKey: String
     private var clientId: String
     private(set) var isConnected = false
     private var sequence: Int = 0
+    /// Set to true by disconnect() to suppress auto-reconnect from the receive
+    /// loop's failure handler. Without this, cancelling the task triggers
+    /// a reconnect attempt that creates a zombie connection.
+    private var intentionalDisconnect = false
     /// Buffers the most recent keyframe so it can be sent immediately on (re)connect.
     /// Without this, the first keyframe is dropped because the WS isn't connected yet.
     private var pendingKeyframe: (data: Data, timestamp: Double)?
@@ -33,6 +37,11 @@ class BroadcastWSClient: NSObject, URLSessionWebSocketDelegate {
     }
 
     func connect() {
+        guard !intentionalDisconnect else {
+            NSLog("[BroadcastWS] connect() ignored — already disconnected")
+            return
+        }
+
         var components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
         var queryItems = components.queryItems ?? []
         if !apiKey.isEmpty {
@@ -46,15 +55,22 @@ class BroadcastWSClient: NSObject, URLSessionWebSocketDelegate {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
 
-        webSocketTask = session.webSocketTask(with: request)
+        webSocketTask = session?.webSocketTask(with: request)
         webSocketTask?.resume()
         startReceiveLoop()
     }
 
     func disconnect() {
+        NSLog("[BroadcastWS] disconnect() called")
+        intentionalDisconnect = true
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
+        webSocketTask = nil
         isConnected = false
         pendingKeyframe = nil
+        // Invalidate the URLSession to break the retain cycle
+        // (URLSession retains its delegate, which is self).
+        session?.invalidateAndCancel()
+        session = nil
     }
 
     /// Send an H.264 Access Unit — exact same protocol as Python `WebSocketClient.send_h264_au()`.
@@ -110,7 +126,7 @@ class BroadcastWSClient: NSObject, URLSessionWebSocketDelegate {
 
     private func startReceiveLoop() {
         webSocketTask?.receive { [weak self] result in
-            guard let self = self else { return }
+            guard let self = self, !self.intentionalDisconnect else { return }
             switch result {
             case .success:
                 // We don't expect incoming messages on the frame channel,
@@ -118,10 +134,12 @@ class BroadcastWSClient: NSObject, URLSessionWebSocketDelegate {
                 self.startReceiveLoop()
             case .failure(let error):
                 self.isConnected = false
+                guard !self.intentionalDisconnect else { return }
                 NSLog("[BroadcastWS] Receive failed: %@, reconnecting in 3s", error.localizedDescription)
                 // Auto-reconnect after 3 seconds
                 DispatchQueue.global().asyncAfter(deadline: .now() + 3.0) { [weak self] in
-                    self?.connect()
+                    guard let self = self, !self.intentionalDisconnect else { return }
+                    self.connect()
                 }
             }
         }
