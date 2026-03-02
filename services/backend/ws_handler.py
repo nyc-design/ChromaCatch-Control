@@ -97,9 +97,18 @@ class WebSocketHandler:
         expecting_frame_data: FrameMetadata | None = None
         expecting_h264_data: H264FrameMetadata | None = None
         expecting_audio_data: AudioChunk | None = None
+        msg_count = 0
 
         while True:
             message = await websocket.receive()
+            msg_count += 1
+            if msg_count <= 5 or msg_count % 300 == 0:
+                msg_type = "text" if "text" in message else "bytes" if "bytes" in message else "other"
+                msg_size = len(message.get("text", message.get("bytes", b"")))
+                logger.info(
+                    "Frame loop msg #%d from %s: type=%s, size=%d",
+                    msg_count, client_id, msg_type, msg_size,
+                )
 
             if "text" in message:
                 raw = message["text"]

@@ -219,10 +219,17 @@ async def get_latest_audio_chunk(client_id: str):
 async def _mjpeg_generator(client_id: str):
     """Yield JPEG frames as a multipart MJPEG stream."""
     last_sequence = -1
+    gone_count = 0
     while True:
         session = session_manager.get_session(client_id)
         if session is None:
-            return
+            gone_count += 1
+            # Wait up to 30s for client to reconnect before giving up
+            if gone_count > 300:
+                return
+            await asyncio.sleep(0.1)
+            continue
+        gone_count = 0
         jpeg_bytes, sequence = session_manager.get_latest_frame_jpeg(client_id)
         if jpeg_bytes is not None and sequence != last_sequence:
             last_sequence = sequence
@@ -324,74 +331,120 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             }
         }
 
+        // Track which clients have active streams to avoid destroying them on refresh
+        let activeClients = new Set();
+
+        function reconnectStream(clientId) {
+            const imgEl = document.getElementById('mjpeg-' + clientId);
+            if (!imgEl) return;
+            // Cache-busting param forces a fresh MJPEG connection
+            imgEl.src = '/stream/' + clientId + '?t=' + Date.now();
+        }
+
+        function buildStatusHtml(s) {
+            if (s.airplay_running === undefined) {
+                return '<div class="status-item"><span class="label">Status</span><br><span class="value">Waiting for report...</span></div>';
+            }
+            return `
+                <div class="status-item"><span class="label">AirPlay</span><br>
+                    <span class="value ${s.airplay_running ? 'ok' : 'fail'}">${s.airplay_running ? 'Running' : 'Stopped'}</span></div>
+                <div class="status-item"><span class="label">ESP32</span><br>
+                    <span class="value ${s.esp32_reachable ? 'ok' : 'fail'}">${s.esp32_reachable ? 'Reachable' : 'Unreachable'}</span></div>
+                <div class="status-item"><span class="label">ESP32 BLE</span><br>
+                    <span class="value ${s.esp32_ble_connected ? 'ok' : 'fail'}">${s.esp32_ble_connected ? 'Connected' : 'Disconnected'}</span></div>
+                <div class="status-item"><span class="label">Frames Sent</span><br>
+                    <span class="value">${s.frames_sent || 0}</span></div>
+                <div class="status-item"><span class="label">Transport</span><br>
+                    <span class="value">${s.transport_mode || s.capture_source || 'websocket'}</span></div>
+                <div class="status-item"><span class="label">Control WS</span><br>
+                    <span class="value ${s.control_channel_connected ? 'ok' : 'fail'}">${s.control_channel_connected ? 'Connected' : 'Disconnected'}</span></div>
+                <div class="status-item"><span class="label">Cmd Ack RTT</span><br>
+                    <span class="value">${s.last_command_rtt_ms ? Math.round(s.last_command_rtt_ms) + ' ms' : 'n/a'}</span></div>
+                <div class="status-item"><span class="label">Audio Chunks</span><br>
+                    <span class="value">${s.audio_chunks_sent || 0}</span></div>
+                <div class="status-item"><span class="label">Audio Source</span><br>
+                    <span class="value">${s.audio_source || 'n/a'}</span></div>
+                <div class="status-item"><span class="label">Frame Latency</span><br>
+                    <span class="value">${s.backend_frame_latency_ms ? Math.round(s.backend_frame_latency_ms) + ' ms' : 'n/a'}</span></div>
+                ${s.srt_rtt_ms != null ? `
+                <div class="status-item"><span class="label">SRT RTT</span><br>
+                    <span class="value">${Math.round(s.srt_rtt_ms)} ms</span></div>
+                <div class="status-item"><span class="label">SRT Bandwidth</span><br>
+                    <span class="value">${s.srt_bandwidth_kbps ? Math.round(s.srt_bandwidth_kbps) + ' kbps' : 'n/a'}</span></div>
+                <div class="status-item"><span class="label">SRT Loss</span><br>
+                    <span class="value ${(s.srt_packet_loss_pct || 0) > 1 ? 'fail' : 'ok'}">${s.srt_packet_loss_pct != null ? s.srt_packet_loss_pct.toFixed(1) + '%' : 'n/a'}</span></div>` : ''}
+                <div class="status-item"><span class="label">Uptime</span><br>
+                    <span class="value">${Math.floor((s.uptime_seconds || 0) / 60)}m ${Math.floor((s.uptime_seconds || 0) % 60)}s</span></div>`;
+        }
+
         async function refresh() {
             try {
                 const resp = await fetch('/status');
                 const data = await resp.json();
                 const container = document.getElementById('clients');
+                const currentClients = new Set(data.connected_clients);
+
                 if (data.total_clients === 0) {
                     container.innerHTML = '<div class="no-clients">No clients connected. Start the airplay client to begin.</div>';
+                    activeClients.clear();
                     return;
                 }
-                let html = '';
+
+                // Remove clients that disconnected
+                for (const old of activeClients) {
+                    if (!currentClients.has(old)) {
+                        const el = document.getElementById('client-' + old);
+                        if (el) el.remove();
+                        activeClients.delete(old);
+                    }
+                }
+
                 for (const clientId of data.connected_clients) {
+                    // Update status for existing clients without touching the stream
+                    let statusEl = document.getElementById('status-' + clientId);
+                    if (statusEl) {
+                        try {
+                            const sResp = await fetch('/clients/' + clientId + '/status');
+                            const s = await sResp.json();
+                            statusEl.innerHTML = buildStatusHtml(s);
+                        } catch(e) {
+                            statusEl.innerHTML = '<div class="status-item"><span class="label">Status</span><br><span class="value fail">Error loading</span></div>';
+                        }
+                        continue;
+                    }
+
+                    // New client — create full layout
                     let statusHtml = '';
                     try {
                         const sResp = await fetch('/clients/' + clientId + '/status');
                         const s = await sResp.json();
-                        if (s.airplay_running !== undefined) {
-                            statusHtml = `
-                                <div class="status-item"><span class="label">AirPlay</span><br>
-                                    <span class="value ${s.airplay_running ? 'ok' : 'fail'}">${s.airplay_running ? 'Running' : 'Stopped'}</span></div>
-                                <div class="status-item"><span class="label">ESP32</span><br>
-                                    <span class="value ${s.esp32_reachable ? 'ok' : 'fail'}">${s.esp32_reachable ? 'Reachable' : 'Unreachable'}</span></div>
-                                <div class="status-item"><span class="label">ESP32 BLE</span><br>
-                                    <span class="value ${s.esp32_ble_connected ? 'ok' : 'fail'}">${s.esp32_ble_connected ? 'Connected' : 'Disconnected'}</span></div>
-                                <div class="status-item"><span class="label">Frames Sent</span><br>
-                                    <span class="value">${s.frames_sent || 0}</span></div>
-                                <div class="status-item"><span class="label">Transport</span><br>
-                                    <span class="value">${s.transport_mode || s.capture_source || 'websocket'}</span></div>
-                                <div class="status-item"><span class="label">Control WS</span><br>
-                                    <span class="value ${s.control_channel_connected ? 'ok' : 'fail'}">${s.control_channel_connected ? 'Connected' : 'Disconnected'}</span></div>
-                                <div class="status-item"><span class="label">Cmd Ack RTT</span><br>
-                                    <span class="value">${s.last_command_rtt_ms ? Math.round(s.last_command_rtt_ms) + ' ms' : 'n/a'}</span></div>
-                                <div class="status-item"><span class="label">Audio Chunks</span><br>
-                                    <span class="value">${s.audio_chunks_sent || 0}</span></div>
-                                <div class="status-item"><span class="label">Audio Source</span><br>
-                                    <span class="value">${s.audio_source || 'n/a'}</span></div>
-                                <div class="status-item"><span class="label">Frame Latency</span><br>
-                                    <span class="value">${s.backend_frame_latency_ms ? Math.round(s.backend_frame_latency_ms) + ' ms' : 'n/a'}</span></div>
-                                ${s.srt_rtt_ms != null ? `
-                                <div class="status-item"><span class="label">SRT RTT</span><br>
-                                    <span class="value">${Math.round(s.srt_rtt_ms)} ms</span></div>
-                                <div class="status-item"><span class="label">SRT Bandwidth</span><br>
-                                    <span class="value">${s.srt_bandwidth_kbps ? Math.round(s.srt_bandwidth_kbps) + ' kbps' : 'n/a'}</span></div>
-                                <div class="status-item"><span class="label">SRT Loss</span><br>
-                                    <span class="value ${(s.srt_packet_loss_pct || 0) > 1 ? 'fail' : 'ok'}">${s.srt_packet_loss_pct != null ? s.srt_packet_loss_pct.toFixed(1) + '%' : 'n/a'}</span></div>` : ''}
-                                <div class="status-item"><span class="label">Uptime</span><br>
-                                    <span class="value">${Math.floor((s.uptime_seconds || 0) / 60)}m ${Math.floor((s.uptime_seconds || 0) % 60)}s</span></div>`;
-                        } else {
-                            statusHtml = '<div class="status-item"><span class="label">Status</span><br><span class="value">Waiting for report...</span></div>';
-                        }
+                        statusHtml = buildStatusHtml(s);
                     } catch(e) {
                         statusHtml = '<div class="status-item"><span class="label">Status</span><br><span class="value fail">Error loading</span></div>';
                     }
-                    html += `
-                        <div class="client">
-                            <h2>Client: ${clientId}</h2>
-                            <div class="status">${statusHtml}</div>
-                            <h3>Live Stream</h3>
-                            <div class="stream-container">
-                                <video id="webrtc-${clientId}" class="stream" autoplay muted playsinline width="640" style="display:none"></video>
-                                <img id="mjpeg-${clientId}" class="stream" src="/stream/${clientId}" alt="Waiting for frames..." width="640">
-                                <span id="badge-${clientId}" class="stream-badge badge-mjpeg">MJPEG</span>
-                            </div>
-                            <button id="unmute-${clientId}" style="display:none; margin-top:8px; padding:6px 16px; border:1px solid #4ecca3; background:transparent; color:#4ecca3; border-radius:4px; cursor:pointer;" onclick="toggleMute('${clientId}')">Unmute Audio</button>
-                        </div>`;
-                }
-                container.innerHTML = html;
-                // Try WebRTC for each client, hide MJPEG fallback on success
-                for (const clientId of data.connected_clients) {
+
+                    // Remove "no clients" placeholder if present
+                    const placeholder = container.querySelector('.no-clients');
+                    if (placeholder) placeholder.remove();
+
+                    const div = document.createElement('div');
+                    div.className = 'client';
+                    div.id = 'client-' + clientId;
+                    div.innerHTML = `
+                        <h2>Client: ${clientId}</h2>
+                        <div id="status-${clientId}" class="status">${statusHtml}</div>
+                        <h3>Live Stream</h3>
+                        <div class="stream-container">
+                            <video id="webrtc-${clientId}" class="stream" autoplay muted playsinline width="640" style="display:none"></video>
+                            <img id="mjpeg-${clientId}" class="stream" src="/stream/${clientId}?t=${Date.now()}" alt="Waiting for frames..." width="640"
+                                 onerror="setTimeout(() => reconnectStream('${clientId}'), 2000)">
+                            <span id="badge-${clientId}" class="stream-badge badge-mjpeg">MJPEG</span>
+                        </div>
+                        <button id="unmute-${clientId}" style="display:none; margin-top:8px; padding:6px 16px; border:1px solid #4ecca3; background:transparent; color:#4ecca3; border-radius:4px; cursor:pointer;" onclick="toggleMute('${clientId}')">Unmute Audio</button>`;
+                    container.appendChild(div);
+                    activeClients.add(clientId);
+
+                    // Try WebRTC, fall back to MJPEG
                     const videoEl = document.getElementById('webrtc-' + clientId);
                     const imgEl = document.getElementById('mjpeg-' + clientId);
                     const badgeEl = document.getElementById('badge-' + clientId);
@@ -410,7 +463,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             }
         }
         refresh();
-        setInterval(refresh, 10000);
+        setInterval(refresh, 5000);
     </script>
 </body>
 </html>"""

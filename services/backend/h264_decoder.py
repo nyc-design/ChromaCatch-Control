@@ -36,32 +36,42 @@ class H264Decoder:
         """
         if not h264_au:
             return None
+        total_attempts = self._frames_decoded + self._decode_errors
         try:
             packet = av.Packet(h264_au)
             frames = self._codec.decode(packet)
-            for frame in frames:
+            frame_list = list(frames)
+            if not frame_list:
+                if total_attempts < 20:
+                    nalu_types = self._parse_nalu_types(h264_au)
+                    logger.warning(
+                        "H.264 decode produced 0 frames: %d bytes, NALUs=%s",
+                        len(h264_au), nalu_types,
+                    )
+                self._decode_errors += 1
+                return None
+            for frame in frame_list:
                 bgr = frame.to_ndarray(format="bgr24")
                 self._frames_decoded += 1
-                if self._frames_decoded == 1:
+                if self._frames_decoded <= 3:
                     logger.info(
-                        "First H.264 frame decoded: %dx%d",
-                        frame.width,
-                        frame.height,
+                        "H.264 frame #%d decoded: %dx%d (%d bytes in)",
+                        self._frames_decoded, frame.width, frame.height,
+                        len(h264_au),
                     )
                 return bgr
         except av.error.InvalidDataError:
-            if self._frames_decoded == 0:
-                # Log diagnostic info for first failures to aid debugging
+            if total_attempts < 20:
                 nalu_types = self._parse_nalu_types(h264_au)
                 logger.warning(
                     "H.264 decode error (invalid data): %d bytes, "
-                    "starts=%s, NALUs=%s",
+                    "starts=%s, NALUs=%s, decoded_so_far=%d",
                     len(h264_au),
                     h264_au[:8].hex() if len(h264_au) >= 8 else h264_au.hex(),
                     nalu_types,
+                    self._frames_decoded,
                 )
-            # After first successful decode, suppress repeated warnings
-            elif self._decode_errors < 3:
+            elif self._decode_errors < 5:
                 logger.warning("H.264 decode error (invalid data): %d bytes", len(h264_au))
             self._decode_errors += 1
         except Exception as e:
