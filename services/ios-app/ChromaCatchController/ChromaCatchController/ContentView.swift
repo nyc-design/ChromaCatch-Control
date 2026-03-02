@@ -1,31 +1,58 @@
 import ReplayKit
 import SwiftUI
 
+// MARK: - Keyboard Dismiss Helper
+
+/// A UIKit-backed gesture that dismisses the keyboard without blocking other taps.
+struct DismissKeyboardGesture: UIViewRepresentable {
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView(frame: .zero)
+        let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.dismiss))
+        tap.cancelsTouchesInView = false  // Don't block buttons/text fields
+        view.addGestureRecognizer(tap)
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {}
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    class Coordinator {
+        @objc func dismiss() {
+            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        }
+    }
+}
+
+// MARK: - Content View
+
 struct ContentView: View {
     @EnvironmentObject var coordinator: AppCoordinator
 
     var body: some View {
         NavigationView {
-            VStack(spacing: 0) {
-                // Connection status
-                StatusBar()
+            ZStack {
+                // Invisible layer to catch taps for keyboard dismiss
+                DismissKeyboardGesture()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                // Main content
-                ScrollView {
-                    VStack(spacing: 16) {
-                        SettingsSection()
-                        DongleSection()
-                        BroadcastSection()
-                        CoordinateSection()
-                        DongleInfoSection()
-                        LogSection()
+                VStack(spacing: 0) {
+                    StatusBar()
+
+                    ScrollView {
+                        VStack(spacing: 16) {
+                            SettingsSection()
+                            DongleSection()
+                            BroadcastSection()
+                            CoordinateSection()
+                            DongleInfoSection()
+                            LogSection()
+                        }
+                        .padding()
                     }
-                    .padding()
                 }
             }
             .navigationTitle("ChromaCatch")
             .navigationBarTitleDisplayMode(.inline)
-            .onTapGesture { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
         }
     }
 }
@@ -91,12 +118,14 @@ struct SettingsSection: View {
             .font(.system(.caption, design: .monospaced))
             .autocapitalization(.none)
             .disableAutocorrection(true)
+            .submitLabel(.done)
 
             HStack(spacing: 8) {
                 TextField("ESP32 Host", text: $coordinator.esp32Host)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.caption, design: .monospaced))
                     .autocapitalization(.none)
+                    .submitLabel(.done)
                 TextField("Port", text: $coordinator.esp32Port)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.caption, design: .monospaced))
@@ -122,7 +151,7 @@ struct SettingsSection: View {
     }
 }
 
-// MARK: - Dongle Section
+// MARK: - Dongle Section (BLE Pairing)
 
 struct DongleSection: View {
     @EnvironmentObject var coordinator: AppCoordinator
@@ -130,24 +159,24 @@ struct DongleSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("iTools Dongle")
+            Text("Dongle")
                 .font(.headline)
 
-            if coordinator.bleManager.isConnected, let name = coordinator.bleManager.connectedDeviceName {
+            if coordinator.bleManager.isConnected {
                 HStack {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundColor(.green)
-                    Text(name)
+                    Text(coordinator.bleManager.connectedDeviceName ?? "Connected")
                         .font(.system(.body, design: .monospaced))
                     Spacer()
                     Button("Disconnect") {
                         coordinator.disconnectDongle()
                     }
-                    .font(.caption)
-                    .foregroundColor(.red)
+                    .buttonStyle(.bordered)
+                    .tint(.red)
                 }
             } else {
-                Text("Scan for nearby iTools dongles to pair.")
+                Text("Scan to find and connect to your iTools BT dongle.")
                     .font(.caption)
                     .foregroundColor(.secondary)
 
@@ -156,7 +185,6 @@ struct DongleSection: View {
                     showScanner = true
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(.blue)
             }
         }
         .padding()
@@ -178,14 +206,15 @@ struct DongleScannerSheet: View {
     var body: some View {
         NavigationView {
             List {
-                if coordinator.bleManager.discoveredDevices.isEmpty {
+                if coordinator.bleManager.discoveredDevices.isEmpty && coordinator.bleManager.isScanning {
                     HStack {
                         ProgressView()
                             .padding(.trailing, 8)
-                        Text("Scanning for BT-01414 devices...")
+                        Text("Searching for BT-01414 devices...")
                             .foregroundColor(.secondary)
                     }
                 }
+
                 ForEach(coordinator.bleManager.discoveredDevices) { device in
                     Button {
                         coordinator.connectToDongle(device)
@@ -194,16 +223,16 @@ struct DongleScannerSheet: View {
                         HStack {
                             VStack(alignment: .leading) {
                                 Text(device.name)
-                                    .font(.body)
-                                    .foregroundColor(.primary)
-                                Text("RSSI: \(device.rssi) dBm")
-                                    .font(.caption)
+                                    .font(.system(.body, design: .monospaced))
+                                Text(device.id.uuidString.prefix(8) + "...")
+                                    .font(.caption2)
                                     .foregroundColor(.secondary)
                             }
                             Spacer()
-                            signalIcon(rssi: device.rssi)
+                            SignalStrength(rssi: device.rssi)
                         }
                     }
+                    .foregroundColor(.primary)
                 }
             }
             .navigationTitle("Select Dongle")
@@ -215,18 +244,24 @@ struct DongleScannerSheet: View {
             }
         }
     }
+}
 
-    private func signalIcon(rssi: Int) -> some View {
-        let bars: Int
-        if rssi > -50 { bars = 3 }
-        else if rssi > -70 { bars = 2 }
-        else { bars = 1 }
+struct SignalStrength: View {
+    let rssi: Int
 
-        return HStack(spacing: 2) {
-            ForEach(1...3, id: \.self) { i in
+    var bars: Int {
+        if rssi > -50 { return 4 }
+        if rssi > -65 { return 3 }
+        if rssi > -80 { return 2 }
+        return 1
+    }
+
+    var body: some View {
+        HStack(spacing: 1) {
+            ForEach(1...4, id: \.self) { bar in
                 RoundedRectangle(cornerRadius: 1)
-                    .fill(i <= bars ? Color.green : Color.gray.opacity(0.3))
-                    .frame(width: 4, height: CGFloat(i * 6))
+                    .fill(bar <= bars ? Color.green : Color.gray.opacity(0.3))
+                    .frame(width: 4, height: CGFloat(bar * 4 + 2))
             }
         }
     }
@@ -257,7 +292,6 @@ struct BroadcastSection: View {
 struct BroadcastPickerRepresentable: UIViewRepresentable {
     func makeUIView(context: Context) -> RPSystemBroadcastPickerView {
         let picker = RPSystemBroadcastPickerView(frame: CGRect(x: 0, y: 0, width: 44, height: 44))
-        // Set to our broadcast extension bundle ID
         picker.preferredExtension = "com.chromacatch.controller.broadcast"
         picker.showsMicrophoneButton = false
         return picker
@@ -271,7 +305,6 @@ struct BroadcastPickerRepresentable: UIViewRepresentable {
 struct CoordinateSection: View {
     @EnvironmentObject var coordinator: AppCoordinator
     @State private var coordText = "33.448, -96.789"
-    @FocusState private var isCoordFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -296,13 +329,7 @@ struct CoordinateSection: View {
             TextField("lat, lon  e.g. (1.2978, 103.813)", text: $coordText)
                 .textFieldStyle(.roundedBorder)
                 .keyboardType(.numbersAndPunctuation)
-                .focused($isCoordFocused)
-                .toolbar {
-                    ToolbarItemGroup(placement: .keyboard) {
-                        Spacer()
-                        Button("Done") { isCoordFocused = false }
-                    }
-                }
+                .submitLabel(.send)
                 .onSubmit { sendParsedCoords() }
 
             Button("Send Location") { sendParsedCoords() }
@@ -315,7 +342,6 @@ struct CoordinateSection: View {
     }
 
     private func parseCoords() -> (Double, Double)? {
-        // Strip parentheses and whitespace, then split on comma
         let cleaned = coordText
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "(", with: "")
@@ -332,7 +358,6 @@ struct CoordinateSection: View {
     private func sendParsedCoords() {
         guard let (lat, lon) = parseCoords() else { return }
         coordinator.sendManualLocation(lat: lat, lon: lon)
-        isCoordFocused = false
     }
 }
 
