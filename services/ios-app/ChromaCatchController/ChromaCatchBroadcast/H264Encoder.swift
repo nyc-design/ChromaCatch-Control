@@ -13,19 +13,19 @@ class H264Encoder {
     /// Parameters: (annexBData, isKeyframe, captureTimestamp)
     var onEncodedAU: ((Data, Bool, Double) -> Void)?
 
-    private let maxDimension: Int32
     private let bitrate: Int32
     private let keyframeInterval: Int32
 
-    /// Encoder dimensions are determined from the first frame to match the actual
-    /// screen aspect ratio (portrait vs landscape). maxDimension caps the long edge.
-    init(maxDimension: Int32 = 1280, bitrate: Int32 = 2_000_000, keyframeInterval: Int32 = 60) {
-        self.maxDimension = maxDimension
+    init(bitrate: Int32 = 2_000_000, keyframeInterval: Int32 = 60) {
         self.bitrate = bitrate
         self.keyframeInterval = keyframeInterval
     }
 
-    private func createSession(width: Int32, height: Int32) -> Bool {
+    /// Create the compression session at the given dimensions.
+    /// Call this once before sending frames to `encode()`.
+    func start(width: Int32, height: Int32) -> Bool {
+        NSLog("[H264Encoder] Creating session at %dx%d", width, height)
+
         var status = VTCompressionSessionCreate(
             allocator: nil,
             width: width,
@@ -39,8 +39,12 @@ class H264Encoder {
             compressionSessionOut: &session
         )
 
-        guard status == noErr, let session = session else { return false }
+        guard status == noErr, let session = session else {
+            NSLog("[H264Encoder] VTCompressionSessionCreate failed: %d", status)
+            return false
+        }
 
+        // Configure for real-time, low-latency encoding
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_H264_Baseline_AutoLevel)
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: bitrate as CFNumber)
@@ -48,44 +52,23 @@ class H264Encoder {
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
 
         status = VTCompressionSessionPrepareToEncodeFrames(session)
+        if status == noErr {
+            NSLog("[H264Encoder] Session ready at %dx%d", width, height)
+        } else {
+            NSLog("[H264Encoder] PrepareToEncodeFrames failed: %d", status)
+        }
         return status == noErr
     }
 
-    /// Calculate encode dimensions that preserve aspect ratio and fit within maxDimension.
-    private func encodeDimensions(sourceWidth: Int, sourceHeight: Int) -> (Int32, Int32) {
-        let longEdge = max(sourceWidth, sourceHeight)
-        let shortEdge = min(sourceWidth, sourceHeight)
-
-        if longEdge <= maxDimension {
-            // Already small enough — use source dimensions (rounded to even)
-            return (Int32(sourceWidth & ~1), Int32(sourceHeight & ~1))
-        }
-
-        let scale = Double(maxDimension) / Double(longEdge)
-        var newW = Int(Double(sourceWidth) * scale)
-        var newH = Int(Double(sourceHeight) * scale)
-        // H.264 requires even dimensions
-        newW = newW & ~1
-        newH = newH & ~1
-        return (Int32(newW), Int32(newH))
-    }
-
     func encode(_ sampleBuffer: CMSampleBuffer) {
-        guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-
-        // Lazy init: create session on first frame with actual screen dimensions
-        if session == nil {
-            let srcW = CVPixelBufferGetWidth(imageBuffer)
-            let srcH = CVPixelBufferGetHeight(imageBuffer)
-            let (encW, encH) = encodeDimensions(sourceWidth: srcW, sourceHeight: srcH)
-            guard createSession(width: encW, height: encH) else { return }
-        }
+        guard let session = session,
+              let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
 
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         let duration = CMSampleBufferGetDuration(sampleBuffer)
 
         VTCompressionSessionEncodeFrame(
-            session!,
+            session,
             imageBuffer: imageBuffer,
             presentationTimeStamp: pts,
             duration: duration,
@@ -186,6 +169,18 @@ class H264Encoder {
         }
 
         return data
+    }
+
+    /// Calculate encode dimensions that preserve aspect ratio within a max dimension.
+    static func scaledDimensions(screenWidth: Int, screenHeight: Int, maxDimension: Int = 1280) -> (Int32, Int32) {
+        let longEdge = max(screenWidth, screenHeight)
+        if longEdge <= maxDimension {
+            return (Int32(screenWidth & ~1), Int32(screenHeight & ~1))
+        }
+        let scale = Double(maxDimension) / Double(longEdge)
+        let w = Int(Double(screenWidth) * scale) & ~1
+        let h = Int(Double(screenHeight) * scale) & ~1
+        return (Int32(w), Int32(h))
     }
 }
 

@@ -1,4 +1,5 @@
 import ReplayKit
+import UIKit
 
 /// ReplayKit Broadcast Upload Extension sample handler.
 /// Captures the iPhone screen and sends H.264 frames to the ChromaCatch backend
@@ -17,9 +18,18 @@ class SampleHandler: RPBroadcastSampleHandler {
         let apiKey = defaults?.string(forKey: "apiKey") ?? ""
         let clientId = defaults?.string(forKey: "clientId") ?? "ios-broadcast"
 
-        // Initialize H.264 encoder — session created lazily on first frame
-        // to detect actual screen dimensions (portrait vs landscape)
-        encoder = H264Encoder(maxDimension: 1280, bitrate: 2_000_000, keyframeInterval: 60)
+        // Detect actual screen dimensions (portrait-native on iPhone)
+        let screenSize = UIScreen.main.nativeBounds.size
+        let (encWidth, encHeight) = H264Encoder.scaledDimensions(
+            screenWidth: Int(screenSize.width),
+            screenHeight: Int(screenSize.height),
+            maxDimension: 1280
+        )
+        NSLog("[SampleHandler] Screen native: %.0fx%.0f → Encode: %dx%d",
+              screenSize.width, screenSize.height, encWidth, encHeight)
+
+        // Initialize H.264 encoder at detected dimensions
+        encoder = H264Encoder(bitrate: 2_000_000, keyframeInterval: 60)
 
         // Initialize WebSocket client for /ws/client (frame channel)
         guard let url = URL(string: backendURL.replacingOccurrences(of: "/ws/control", with: "/ws/client")) else {
@@ -34,6 +44,12 @@ class SampleHandler: RPBroadcastSampleHandler {
         // Wire encoder output to WebSocket
         encoder?.onEncodedAU = { [weak self] data, isKeyframe, captureTimestamp in
             self?.wsClient?.sendH264AU(data, isKeyframe: isKeyframe, captureTimestamp: captureTimestamp)
+        }
+
+        guard encoder?.start(width: encWidth, height: encHeight) == true else {
+            finishBroadcastWithError(NSError(domain: "ChromaCatch", code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Failed to start H.264 encoder at \(encWidth)x\(encHeight)"]))
+            return
         }
     }
 

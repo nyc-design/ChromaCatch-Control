@@ -22,6 +22,7 @@ class H264Decoder:
     def __init__(self) -> None:
         self._codec = av.CodecContext.create("h264", "r")
         self._frames_decoded = 0
+        self._decode_errors = 0
 
     def decode(self, h264_au: bytes) -> np.ndarray | None:
         """Decode an H.264 Access Unit to a BGR numpy array.
@@ -33,23 +34,62 @@ class H264Decoder:
             BGR numpy array, or None if the AU didn't produce a frame
             (e.g., SPS/PPS only, or decoder still buffering).
         """
+        if not h264_au:
+            return None
         try:
             packet = av.Packet(h264_au)
             frames = self._codec.decode(packet)
             for frame in frames:
                 bgr = frame.to_ndarray(format="bgr24")
                 self._frames_decoded += 1
+                if self._frames_decoded == 1:
+                    logger.info(
+                        "First H.264 frame decoded: %dx%d",
+                        frame.width,
+                        frame.height,
+                    )
                 return bgr
-        except av.error.InvalidDataError as e:
-            logger.warning("H.264 decode error (invalid data): %s", e)
+        except av.error.InvalidDataError:
+            if self._frames_decoded == 0:
+                # Log diagnostic info for first failures to aid debugging
+                nalu_types = self._parse_nalu_types(h264_au)
+                logger.warning(
+                    "H.264 decode error (invalid data): %d bytes, "
+                    "starts=%s, NALUs=%s",
+                    len(h264_au),
+                    h264_au[:8].hex() if len(h264_au) >= 8 else h264_au.hex(),
+                    nalu_types,
+                )
+            # After first successful decode, suppress repeated warnings
+            elif self._decode_errors < 3:
+                logger.warning("H.264 decode error (invalid data): %d bytes", len(h264_au))
+            self._decode_errors += 1
         except Exception as e:
             logger.error("H.264 decode error: %s", e)
         return None
+
+    @staticmethod
+    def _parse_nalu_types(data: bytes) -> list[int]:
+        """Extract NALU type codes from Annex-B data for diagnostics."""
+        types = []
+        i = 0
+        while i < len(data) - 4:
+            # Look for start codes (00 00 00 01 or 00 00 01)
+            if data[i:i+4] == b'\x00\x00\x00\x01':
+                types.append(data[i+4] & 0x1F)
+                i += 4
+            elif data[i:i+3] == b'\x00\x00\x01':
+                types.append(data[i+3] & 0x1F)
+                i += 3
+            else:
+                i += 1
+        return types
 
     def reset(self) -> None:
         """Reset the decoder state (e.g., after stream restart)."""
         self._codec = av.CodecContext.create("h264", "r")
         self._frames_decoded = 0
+        self._decode_errors = 0
         logger.debug("H.264 decoder reset")
 
     @property
