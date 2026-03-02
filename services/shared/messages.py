@@ -139,6 +139,18 @@ class LocationUpdateMessage(BaseMessage):
     heading: float = 0.0
 
 
+class LocationStatusMessage(BaseMessage):
+    """GPS verification status from iOS app — actual vs spoofed position."""
+
+    type: str = MessageType.LOCATION_STATUS
+    spoofed_latitude: float
+    spoofed_longitude: float
+    actual_latitude: float
+    actual_longitude: float
+    drift_meters: float
+    is_accurate: bool
+
+
 # --- Bidirectional ---
 
 
@@ -167,6 +179,7 @@ _TYPE_MAP: dict[str, type[BaseMessage]] = {
     MessageType.COMMAND_ACK: CommandAck,
     MessageType.CONFIG_UPDATE: ConfigUpdate,
     MessageType.LOCATION_UPDATE: LocationUpdateMessage,
+    MessageType.LOCATION_STATUS: LocationStatusMessage,
     MessageType.PING: HeartbeatPing,
     MessageType.PONG: HeartbeatPong,
     MessageType.ERROR: ErrorMessage,

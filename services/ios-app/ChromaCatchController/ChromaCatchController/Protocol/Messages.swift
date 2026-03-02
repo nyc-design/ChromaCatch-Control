@@ -11,6 +11,7 @@ enum MessageType {
     static let commandAck = "command_ack"
     static let configUpdate = "config_update"
     static let locationUpdate = "location_update"
+    static let locationStatus = "location_status"
     static let error = "error"
     static let ping = "ping"
     static let pong = "pong"
@@ -198,6 +199,8 @@ struct ClientStatus: Codable {
     let dongleForwarding: Bool
     let currentLatitude: Double?
     let currentLongitude: Double?
+    let gpsAccurate: Bool?
+    let gpsDriftMeters: Double?
     let timestamp: Double
     let protocolVersion: String
 
@@ -226,6 +229,8 @@ struct ClientStatus: Codable {
         case dongleForwarding = "dongle_forwarding"
         case currentLatitude = "current_latitude"
         case currentLongitude = "current_longitude"
+        case gpsAccurate = "gps_accurate"
+        case gpsDriftMeters = "gps_drift_meters"
         case protocolVersion = "protocol_version"
     }
 
@@ -237,6 +242,7 @@ struct ClientStatus: Codable {
          lastCommandRttMs: Double? = nil,
          audioChunksCaptured: Int = 0, audioChunksSent: Int = 0,
          currentLatitude: Double? = nil, currentLongitude: Double? = nil,
+         gpsAccurate: Bool? = nil, gpsDriftMeters: Double? = nil,
          uptimeSeconds: Double = 0) {
         self.type = MessageType.clientStatus
         self.airplayRunning = false  // iOS doesn't use AirPlay
@@ -262,6 +268,8 @@ struct ClientStatus: Codable {
         self.dongleForwarding = dongleForwarding
         self.currentLatitude = currentLatitude
         self.currentLongitude = currentLongitude
+        self.gpsAccurate = gpsAccurate
+        self.gpsDriftMeters = gpsDriftMeters
         self.timestamp = Date().timeIntervalSince1970
         self.protocolVersion = "1.0"
     }
@@ -274,6 +282,44 @@ struct HeartbeatPong: Codable {
     init() {
         self.type = MessageType.pong
         self.timestamp = Date().timeIntervalSince1970
+    }
+}
+
+/// GPS verification status — sent to location service to report actual vs spoofed position.
+struct LocationStatusMessage: Codable {
+    let type: String
+    let spoofedLatitude: Double
+    let spoofedLongitude: Double
+    let actualLatitude: Double
+    let actualLongitude: Double
+    let driftMeters: Double
+    let isAccurate: Bool
+    let timestamp: Double
+    let protocolVersion: String
+
+    enum CodingKeys: String, CodingKey {
+        case type, timestamp
+        case spoofedLatitude = "spoofed_latitude"
+        case spoofedLongitude = "spoofed_longitude"
+        case actualLatitude = "actual_latitude"
+        case actualLongitude = "actual_longitude"
+        case driftMeters = "drift_meters"
+        case isAccurate = "is_accurate"
+        case protocolVersion = "protocol_version"
+    }
+
+    init(spoofedLat: Double, spoofedLon: Double,
+         actualLat: Double, actualLon: Double,
+         driftMeters: Double, isAccurate: Bool) {
+        self.type = MessageType.locationStatus
+        self.spoofedLatitude = spoofedLat
+        self.spoofedLongitude = spoofedLon
+        self.actualLatitude = actualLat
+        self.actualLongitude = actualLon
+        self.driftMeters = driftMeters
+        self.isAccurate = isAccurate
+        self.timestamp = Date().timeIntervalSince1970
+        self.protocolVersion = "1.0"
     }
 }
 

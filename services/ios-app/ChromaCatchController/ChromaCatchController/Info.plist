@@ -57,6 +57,10 @@
     <key>NSBluetoothPeripheralUsageDescription</key>
     <string>ChromaCatch uses Bluetooth to communicate with the iTools GPS dongle.</string>
 
+    <!-- Location Usage (GPS verification — compare actual vs spoofed position) -->
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>ChromaCatch reads your GPS location to verify the spoofed coordinates are being applied correctly.</string>
+
     <!-- Local Network Access (for ESP32 HTTP relay) -->
     <key>NSLocalNetworkUsageDescription</key>
     <string>ChromaCatch connects to local devices for GPS data processing.</string>

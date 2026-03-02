@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from location_service.config import location_settings
 from location_service.session_manager import LocationSessionManager
 from shared.constants import MessageType, setup_logging
-from shared.messages import LocationUpdateMessage, parse_message
+from shared.messages import LocationStatusMessage, LocationUpdateMessage, parse_message
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -22,6 +22,9 @@ session_manager = LocationSessionManager()
 
 # In-memory store for current spoofed location per client
 _current_locations: dict[str, LocationUpdateMessage] = {}
+
+# In-memory store for latest GPS verification status per client
+_gps_verification: dict[str, LocationStatusMessage] = {}
 
 app = FastAPI(
     title="ChromaCatch-Go Location Service",
@@ -64,6 +67,14 @@ async def websocket_location(
                     from shared.messages import HeartbeatPong
 
                     await websocket.send_text(HeartbeatPong().model_dump_json())
+                elif msg.type == MessageType.LOCATION_STATUS:
+                    _gps_verification[cid] = msg  # type: ignore[assignment]
+                    logger.info(
+                        "GPS verification from %s: drift=%.0fm accurate=%s",
+                        cid,
+                        msg.drift_meters,  # type: ignore[attr-defined]
+                        msg.is_accurate,  # type: ignore[attr-defined]
+                    )
             except Exception:
                 logger.debug("Unhandled location WS message: %s", text[:100])
     except WebSocketDisconnect:
@@ -117,10 +128,22 @@ async def send_location(req: SendLocationRequest):
 
 @app.get("/location")
 async def get_location(client_id: str = Query(default=None)):
-    """Get the most recently sent spoofed location."""
+    """Get the most recently sent spoofed location, plus GPS verification if available."""
     if client_id:
         loc = _current_locations.get(client_id)
         if loc is None:
             raise HTTPException(status_code=404, detail="No location set for client")
-        return loc.model_dump()
-    return {cid: loc.model_dump() for cid, loc in _current_locations.items()}
+        result = loc.model_dump()
+        gps = _gps_verification.get(client_id)
+        if gps is not None:
+            result["gps_verification"] = gps.model_dump()
+        return result
+
+    results = {}
+    for cid, loc in _current_locations.items():
+        entry = loc.model_dump()
+        gps = _gps_verification.get(cid)
+        if gps is not None:
+            entry["gps_verification"] = gps.model_dump()
+        results[cid] = entry
+    return results

@@ -46,6 +46,7 @@ class MessageType:
     COMMAND_ACK = "command_ack"
     CONFIG_UPDATE = "config_update"
     LOCATION_UPDATE = "location_update"
+    LOCATION_STATUS = "location_status"
 
     # Bidirectional
     ERROR = "error"

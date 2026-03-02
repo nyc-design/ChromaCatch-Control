@@ -46,6 +46,11 @@ struct StatusBar: View {
                 connected: coordinator.dongleController.isForwarding,
                 activeColor: .orange
             )
+            StatusBadge(
+                label: "GPS",
+                connected: coordinator.gpsAccurate,
+                activeColor: .cyan
+            )
         }
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity)
@@ -285,12 +290,40 @@ struct CoordinateSection: View {
 
             if coordinator.dongleController.currentLat != 0 {
                 HStack {
-                    Text("Current:")
+                    Text("Target:")
                         .foregroundColor(.secondary)
                     Text(String(format: "%.6f, %.6f",
                                 coordinator.dongleController.currentLat,
                                 coordinator.dongleController.currentLon))
                     .font(.system(.body, design: .monospaced))
+                }
+            }
+
+            if coordinator.iosReportedLat != 0 {
+                HStack {
+                    Text("iOS GPS:")
+                        .foregroundColor(.secondary)
+                    Text(String(format: "%.6f, %.6f",
+                                coordinator.iosReportedLat,
+                                coordinator.iosReportedLon))
+                    .font(.system(.body, design: .monospaced))
+                }
+
+                HStack {
+                    Text("Drift:")
+                        .foregroundColor(.secondary)
+                    Text(String(format: "%.0fm", coordinator.gpsDriftMeters))
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundColor(coordinator.gpsAccurate ? .green : .red)
+                    if coordinator.gpsAccurate {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                            .font(.caption)
+                    } else {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.red)
+                            .font(.caption)
+                    }
                 }
             }
 
