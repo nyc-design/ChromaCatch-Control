@@ -145,6 +145,42 @@ ChromaCatch-Go/
 │   │       ├── test_transport.py            # SRT + WS transport + factory tests
 │   │       ├── test_ws_client.py
 │   │       └── test_cli.py
+│   ├── cv-toolkit/                            # CV toolkit (isolated vision library)
+│   │   ├── cv_toolkit/                        # Python package
+│   │   │   ├── __init__.py                    # Package root, exports run_tool + models
+│   │   │   ├── models.py                      # ToolInput, ToolResult, Region, LocateMatch, CompositeInput
+│   │   │   ├── registry.py                    # @register_tool decorator + run_tool dispatcher
+│   │   │   ├── _utils.py                      # Faux-pixel grid, region extraction, color conversion, waterfill, NMS
+│   │   │   └── tools/                         # 25 registered CV tools in 3 categories
+│   │   │       ├── confirm/                   # 15 tools: "Does this match?" → score + match bool
+│   │   │       │   ├── grid_similarity.py     # Faux-pixel absolute color comparison
+│   │   │       │   ├── grid_structure.py      # Lighting-invariant relative color structure
+│   │   │       │   ├── histogram_similarity.py # Color histogram distribution comparison
+│   │   │       │   ├── color_presence.py      # HSV range pixel ratio
+│   │   │       │   ├── dominant_colors.py     # K-means CIELAB color extraction
+│   │   │       │   ├── contour_detect.py      # Contour isolation + Hu moment matching
+│   │   │       │   ├── object_detect.py       # Connected component detection (waterfill)
+│   │   │       │   ├── ocr_read.py            # Color-filtered OCR via pytesseract
+│   │   │       │   ├── brightness_check.py    # Luminosity analysis
+│   │   │       │   ├── edge_density.py        # Canny edge pixel ratio
+│   │   │       │   ├── motion_detect.py       # Frame-to-frame RMSD change detection
+│   │   │       │   ├── color_distance.py      # Delta-E CIELAB color comparison
+│   │   │       │   ├── exact_match.py         # Brightness-scaled RMSD with alpha masking
+│   │   │       │   ├── ssim_compare.py        # Structural Similarity Index (SSIM)
+│   │   │       │   └── composite.py           # Multi-tool aggregator (AND/OR/majority/weighted)
+│   │   │       ├── locate/                    # 7 tools: "Where is this?" → bounding boxes
+│   │   │       │   ├── locate_template.py     # PA's waterfill-then-RMSD localization
+│   │   │       │   ├── locate_color.py        # Find colored blobs by HSV range
+│   │   │       │   ├── locate_text.py         # Find text on screen via OCR
+│   │   │       │   ├── locate_contour.py      # Find shapes via Hu moment matching
+│   │   │       │   ├── locate_feature.py      # ORB/AKAZE keypoint matching
+│   │   │       │   ├── locate_multi_scale.py  # Multi-scale template matching (NCC)
+│   │   │       │   └── locate_sub_object.py   # PA's sub-feature spatial inference
+│   │   │       └── extract/                   # 3 tools: "What's here?" → structured data
+│   │   │           ├── read_text.py           # Multi-filter OCR with voting
+│   │   │           ├── read_number.py         # Waterfill-isolated digit reading
+│   │   │           └── read_bar.py            # Progress bar fill ratio
+│   │   └── tests/                             # CV toolkit tests (260 tests)
 │   ├── location_service/                    # REMOTE: GPS coordinate service (port 8001)
 │   │   ├── config.py                        # LocationSettings (CC_LOCATION_ prefix)
 │   │   ├── main.py                          # FastAPI + WS /ws/location + POST/GET /location
@@ -203,6 +239,7 @@ ChromaCatch-Go/
 | Media transport (fallback) | WebSocket (websockets library, JPEG + PCM) |
 | Media router | MediaMTX (SRT ingest, RTSP local, WebRTC/WHEP dashboard) |
 | CV | OpenCV (with GStreamer support), numpy |
+| CV Toolkit | OpenCV, numpy, scikit-learn, scipy, pytesseract |
 | Frame encoding | JPEG via OpenCV (720px max, quality 65 default — WS mode only) |
 | Audio encoding | Opus via GStreamer opusenc (128kbps — SRT mode) |
 | AirPlay | UxPlay (C, installed separately) |
@@ -213,7 +250,7 @@ ChromaCatch-Go/
 | H.264 decode | PyAV (av) — FFmpeg wrapper for backend H.264→BGR decode |
 | iOS app | Swift, SwiftUI, CoreBluetooth, ExternalAccessory, URLSessionWebSocketTask |
 | GPS spoofing | iTools BT dongle (Beken BK-BLE-1.0, MFi coprocessor, EA protocol) |
-| Testing | pytest, pytest-asyncio (265 tests) |
+| Testing | pytest, pytest-asyncio (525 tests) |
 | Linting | ruff, black, mypy |
 
 ## Phases
@@ -271,11 +308,23 @@ ChromaCatch-Go/
 - [ ] End-to-end: location service POST /location → iOS app WS → BLE NMEA → iPhone location change
 - [ ] End-to-end: ReplayKit broadcast → H.264 frames on backend dashboard (same stream as CLI)
 
-### Phase 2: Computer Vision
+### Phase 2: Computer Vision [IN PROGRESS]
+- [x] CV Toolkit — isolated library of 25 composable vision tools in 3 categories (260 tests)
+  - **Confirm (15)**: grid_similarity, grid_structure (lighting-invariant), histogram_similarity, color_presence, dominant_colors, color_distance, brightness_check, contour_detect, object_detect (waterfill), ocr_read, edge_density, motion_detect, exact_match (brightness-scaled RMSD), ssim_compare, composite
+  - **Locate (7)**: locate_template (waterfill-then-RMSD), locate_color, locate_text, locate_contour, locate_feature (ORB/AKAZE), locate_multi_scale, locate_sub_object
+  - **Extract (3)**: read_text (multi-filter OCR with voting), read_number (waterfill-isolated digits), read_bar (progress bar fill ratio)
+  - Uniform interface: image + reference + region + threshold → score + match + details
+  - Faux-pixel grid system for resolution-invariant comparison
+  - All tools registered via decorator, dispatched by name via run_tool()
+  - Locate tools return normalized bounding boxes for click targets
+  - Extract tools return structured data (text, numbers, fill ratios)
 - [ ] Screen state detection (battle, overworld, menu, etc.)
 - [ ] Pokemon encounter detection
 - [ ] Shiny detection (color comparison techniques)
 - [ ] UI element recognition (buttons, prompts)
+- [ ] Flow graph engine (JSON-defined automation DAGs using toolkit tools)
+- [ ] Reference image manager (PokeAPI sprites, user-submitted screenshots)
+- [ ] Backend CV integration layer (bridge toolkit → WebSocket frames → orchestrator)
 
 ### Phase 3: Shiny Hunt Automation
 - [ ] Hunt loop state machine
@@ -289,12 +338,13 @@ ChromaCatch-Go/
 # Install
 poetry install
 
-# Run all tests (265 tests)
+# Run all tests (525 tests)
 poetry run pytest
 
 # Run by suite
 poetry run pytest services/backend/tests/              # Backend + shared + integration
 poetry run pytest services/airplay-client/tests/        # Client component tests
+poetry run pytest services/cv-toolkit/tests/            # CV toolkit tests
 poetry run pytest services/location_service/tests/      # Location service tests
 poetry run pytest services/backend/tests/integration/   # End-to-end round-trip only
 
