@@ -359,7 +359,7 @@ void executeCommand(JsonDocument& doc, JsonDocument& response) {
 // ============================================================
 String inputModeStr()      { return currentInput == INPUT_WIFI ? "wifi" : "serial"; }
 String outputDeliveryStr() { return currentOutput == OUTPUT_BLUETOOTH ? "bluetooth" : "wired"; }
-String outputModeStr()     { return currentOutputMode == OUTPUT_MOUSE_KB ? "mouse_kb" : "gamepad"; }
+String outputModeStr()     { return currentOutputMode == OUTPUT_MOUSE_KB ? "mouse_keyboard" : "gamepad"; }
 
 // ============================================================
 // HTTP Handlers
