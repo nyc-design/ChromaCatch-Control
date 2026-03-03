@@ -144,6 +144,24 @@ class ESP32Client:
         except httpx.HTTPError:
             return await asyncio.to_thread(self._urllib_request, "GET", "/status", None)
 
+    async def get_mode(self) -> dict:
+        """Get ESP32 current mode (input, output delivery, output mode)."""
+        try:
+            response = await self._client.get("/mode")
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError:
+            return await asyncio.to_thread(self._urllib_request, "GET", "/mode", None)
+
+    async def set_mode(self, **kwargs: str) -> dict:
+        """Set ESP32 mode. Accepted keys: input_mode, output_delivery, output_mode."""
+        try:
+            response = await self._client.post("/mode", json=kwargs)
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError:
+            return await asyncio.to_thread(self._urllib_request, "POST", "/mode", kwargs)
+
     async def close(self) -> None:
         await self._client.aclose()
 

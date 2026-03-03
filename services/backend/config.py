@@ -28,6 +28,12 @@ class BackendSettings(BaseSettings):
     rtsp_consumer_enabled: bool = False  # set True when MediaMTX is running
     rtsp_base_url: str = "rtsp://127.0.0.1:8554"
 
+    # RTP+FEC receiver (lowest-latency UDP transport)
+    rtp_fec_enabled: bool = False  # set True to enable RTP+FEC receiver
+    rtp_fec_bind_host: str = "0.0.0.0"
+    rtp_fec_bind_port: int = 7000
+    rtp_fec_client_id: str = "rtp-fec"  # client_id for session manager
+
     model_config = {"env_file": ".env", "env_prefix": "CC_BACKEND_"}
 
 

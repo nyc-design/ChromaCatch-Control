@@ -60,9 +60,9 @@ class ChromaCatchClient:
                 name="frame",
             )
 
-        # H.264 capture is only needed for h264-ws mode
+        # H.264 capture is needed for h264-ws and rtp-fec modes
         self._h264_capture: H264Capture | None = None
-        if client_settings.transport_mode == "h264-ws":
+        if client_settings.transport_mode in ("h264-ws", "rtp-fec"):
             self._h264_capture = H264Capture()
 
         self._transport: MediaTransport = create_media_transport(
@@ -184,10 +184,10 @@ class ChromaCatchClient:
                 audio_port=client_settings.airplay_audio_udp_port,
             )
 
-        # In SRT and H.264-WS modes, GStreamer reads directly from RTP — no
+        # In passthrough modes, GStreamer reads directly from RTP — no
         # Python frame decode is needed.  But UxPlay must still run so the
         # iPhone can discover and connect via AirPlay.
-        if client_settings.transport_mode in ("srt", "webrtc", "h264-ws"):
+        if client_settings.transport_mode in ("rtp-fec", "srt", "webrtc", "h264-ws"):
             if isinstance(self._frame_source, AirPlayFrameSource):
                 logger.info(
                     "%s mode: starting AirPlay receiver (UxPlay) only",
@@ -225,7 +225,7 @@ class ChromaCatchClient:
             self._audio_source.stop()
         if self._h264_capture is not None:
             self._h264_capture.stop()
-        if client_settings.transport_mode in ("srt", "webrtc", "h264-ws"):
+        if client_settings.transport_mode in ("rtp-fec", "srt", "webrtc", "h264-ws"):
             if isinstance(self._frame_source, AirPlayFrameSource):
                 self._frame_source._airplay.stop()
         else:

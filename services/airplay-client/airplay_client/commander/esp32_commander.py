@@ -21,6 +21,7 @@ class ESP32Commander(Commander):
     def __init__(self, esp32_client: ESP32Client | None = None) -> None:
         self._esp32 = esp32_client or ESP32Client()
         self._connected = False
+        self._esp32_mode: dict | None = None
 
     async def send_command(self, action: str, params: dict) -> CommandResult:
         forwarded_at = time.time()
@@ -45,6 +46,12 @@ class ESP32Commander(Commander):
         self._connected = await self._esp32.ping()
         if self._connected:
             logger.info("ESP32 commander connected to %s:%d", self._esp32.host, self._esp32.port)
+            try:
+                self._esp32_mode = await self._esp32.get_mode()
+                logger.info("ESP32 mode: %s", self._esp32_mode)
+            except Exception as e:
+                logger.warning("Could not query ESP32 mode: %s", e)
+                self._esp32_mode = None
         else:
             logger.warning("ESP32 not reachable at %s:%d", self._esp32.host, self._esp32.port)
 
@@ -61,5 +68,12 @@ class ESP32Commander(Commander):
         return "esp32"
 
     @property
+    def esp32_mode(self) -> dict | None:
+        """Current ESP32 mode settings, or None if not queried yet."""
+        return self._esp32_mode
+
+    @property
     def supported_command_types(self) -> list[str]:
+        if self._esp32_mode and self._esp32_mode.get("output_mode") == "gamepad":
+            return ["gamepad"]
         return ["mouse", "keyboard"]

@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from backend.config import backend_settings
 from backend.mediamtx_manager import MediaMTXManager
+from backend.rtp_fec_receiver import RTPFECReceiver
 from backend.rtsp_consumer import RTSPFrameConsumer
 from backend.session_manager import SessionManager
 from backend.ws_handler import WebSocketHandler
@@ -26,6 +27,12 @@ session_manager = SessionManager()
 ws_handler = WebSocketHandler(session_manager)
 mediamtx_manager = MediaMTXManager()
 rtsp_consumer = RTSPFrameConsumer(session_manager)
+rtp_fec_receiver = RTPFECReceiver(
+    session_manager,
+    bind_host=backend_settings.rtp_fec_bind_host,
+    bind_port=backend_settings.rtp_fec_bind_port,
+    client_id=backend_settings.rtp_fec_client_id,
+)
 
 
 @asynccontextmanager
@@ -33,8 +40,12 @@ async def lifespan(app: FastAPI):
     logger.info("ChromaCatch-Go backend starting")
     # Start MediaMTX if enabled
     mediamtx_manager.start()
+    # Start RTP+FEC receiver if enabled
+    if backend_settings.rtp_fec_enabled:
+        await rtp_fec_receiver.start()
     yield
     # Shutdown
+    await rtp_fec_receiver.stop()
     await rtsp_consumer.stop()
     mediamtx_manager.stop()
     logger.info("ChromaCatch-Go backend shutting down")

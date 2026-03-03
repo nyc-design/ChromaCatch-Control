@@ -23,7 +23,7 @@ class ClientSettings(BaseSettings):
     api_key: str = ""
 
     # Commander (input target)
-    commander_mode: str = "esp32"  # esp32 | sysbotbase | luma3ds | virtual-gamepad
+    commander_mode: str = "esp32"  # esp32 | sysbotbase | luma3ds | virtual-gamepad | dsu
     commander_host: str = ""  # Target host (defaults to esp32_host for esp32 mode)
     commander_port: int = 0  # Target port (defaults to esp32_port for esp32 mode)
 
@@ -50,6 +50,11 @@ class ClientSettings(BaseSettings):
     target_fps: int = 30
     screen_monitor: int = 1
     screen_region: str = ""  # x,y,width,height
+    # SysDVR source (modded Switch)
+    sysdvr_url: str = ""  # e.g. rtsp://192.168.1.50:6666/video
+    # NTR source (modded 3DS)
+    ntr_host: str = "0.0.0.0"  # bind address for NTR UDP listener
+    ntr_port: int = 8000  # NTR top screen UDP port
     airplay_reconnect_timeout_s: float = 8.0
 
     # Frame encoding for transport
@@ -66,8 +71,9 @@ class ClientSettings(BaseSettings):
     audio_input_backend: str = "auto"  # auto | avfoundation | pulse | dshow
     audio_input_device: str = ""  # backend-specific input selector
 
-    # Transport mode: "webrtc" | "srt" | "srt-failover" | "h264-ws" | "websocket" | "webrtc-failover"
-    # webrtc: H.264 passthrough via GStreamer WHIP to MediaMTX (lowest latency, UDP)
+    # Transport mode: "rtp-fec" | "webrtc" | "srt" | "srt-failover" | "h264-ws" | "websocket" | "webrtc-failover"
+    # rtp-fec: Custom RTP + Reed-Solomon FEC over UDP (lowest latency, ~3-5ms LAN)
+    # webrtc: H.264 passthrough via GStreamer WHIP to MediaMTX (low latency, UDP)
     # h264-ws: H.264 passthrough over WebSocket (Cloud Run compatible, near-SRT efficiency)
     transport_mode: str = "websocket"  # default to websocket until backend is configured
 
@@ -77,6 +83,10 @@ class ClientSettings(BaseSettings):
     webrtc_turn_server: str = ""  # optional TURN relay for symmetric NATs
     webrtc_turn_username: str = ""
     webrtc_turn_password: str = ""
+
+    # RTP+FEC transport settings (used when transport_mode="rtp-fec")
+    rtp_fec_dest_host: str = ""  # Backend host for UDP delivery (auto-derived from WS URL if empty)
+    rtp_fec_dest_port: int = 7000  # Backend UDP port for RTP+FEC
 
     # SRT transport settings (used when transport_mode="srt")
     srt_backend_url: str = ""  # e.g. srt://host:8890

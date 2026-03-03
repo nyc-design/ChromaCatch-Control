@@ -34,8 +34,12 @@ def create_commander() -> Commander:
         from airplay_client.commander.virtual_gamepad import VirtualGamepadCommander
         logger.info("Using virtual gamepad commander (OS-level)")
         return VirtualGamepadCommander()
+    elif mode == "dsu":
+        from airplay_client.commander.dsu_commander import DSUCommander
+        logger.info("Using DSU (Cemuhook) commander (emulator UDP)")
+        return DSUCommander()
     else:
         raise ValueError(
             f"Unknown commander mode: {mode!r}. "
-            "Use 'esp32', 'sysbotbase', 'luma3ds', or 'virtual-gamepad'."
+            "Use 'esp32', 'sysbotbase', 'luma3ds', 'virtual-gamepad', or 'dsu'."
         )

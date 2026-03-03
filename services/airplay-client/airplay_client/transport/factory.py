@@ -31,7 +31,13 @@ def create_media_transport(
     """
     mode = client_settings.transport_mode.lower()
 
-    if mode == "srt":
+    if mode == "rtp-fec":
+        from airplay_client.transport.rtp_fec_transport import RTPFECTransport
+        if h264_capture is None:
+            raise ValueError("RTP+FEC transport requires an h264_capture instance")
+        logger.info("Using RTP+FEC media transport (lowest latency UDP + Reed-Solomon FEC)")
+        return RTPFECTransport(h264_capture=h264_capture)
+    elif mode == "srt":
         from airplay_client.transport.srt_transport import SRTTransport
         logger.info("Using SRT media transport (H.264 passthrough + Opus audio)")
         return SRTTransport(audio_enabled=audio_source is not None)
@@ -84,5 +90,5 @@ def create_media_transport(
     else:
         raise ValueError(
             f"Unknown transport mode: {mode!r}. "
-            "Use 'srt', 'srt-failover', 'webrtc', 'webrtc-failover', 'h264-ws', or 'websocket'."
+            "Use 'rtp-fec', 'srt', 'srt-failover', 'webrtc', 'webrtc-failover', 'h264-ws', or 'websocket'."
         )

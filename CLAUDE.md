@@ -29,14 +29,21 @@ Automated shiny hunting bot for Pokemon Go using AirPlay screen mirroring, compu
 - **iOS Controller App** (`services/ios-app/`): Native iPhone app — full drop-in replacement for the CLI airplay-client. Controls iTools BT GPS dongle (EA session + BLE NMEA), relays HID commands to ESP32 via HTTP, and broadcasts screen via ReplayKit (H.264 over WebSocket, same h264-ws protocol as CLI). Connects to both main backend (`/ws/control`) and location service (`/ws/location`).
 - **Location Service** (`services/location_service/`): Standalone FastAPI service on port 8001. Decouples GPS coordinate management from the video/HID pipeline. iOS apps connect via WebSocket to receive coordinates; orchestrator or manual `POST /location` pushes coordinates.
 - **Remote Backend** (`services/backend/`): Runs in the cloud (Cloud Run, VM, etc.). Receives frames (via RTSP from MediaMTX or WebSocket), runs CV analysis, makes decisions, and sends HID commands back through WebSocket control channel.
-- **ESP32 Firmware** (`services/esp32/`): Dumb HID device. Receives mouse commands over HTTP, emits BLE HID events.
+- **ESP32 Firmware** (`services/esp32/`): Multi-mode HID device with e-ink display menu. Supports BLE Mouse+Keyboard, BLE Gamepad, and USB HID (wired) output modes. Receives commands over WiFi HTTP or USB Serial. On-device button menu for mode selection. Mode discovery via `GET /mode` and remote configuration via `POST /mode`.
 - **Shared** (`services/shared/`): Protocol contract between services — message models, frame codec, constants.
 
 ### Media Transport Modes
 
 The client supports multiple transport modes for video/audio delivery, configurable via `CC_CLIENT_TRANSPORT_MODE`:
 
-**WebRTC Mode** (`transport_mode=webrtc`) — Lowest latency, recommended for game streaming:
+**RTP+FEC Mode** (`transport_mode=rtp-fec`) — Absolute lowest latency (~3-5ms LAN):
+1. UxPlay decrypts AirPlay H.264 stream → RTP over localhost UDP
+2. GStreamer extracts H.264 AUs (no decode) → Python RTP packetizer + zfec Reed-Solomon FEC
+3. Sends RTP+FEC packets over UDP directly to backend (no intermediary)
+4. Backend asyncio UDP receiver + FEC block recovery → H264Decoder (PyAV) → SessionManager
+5. 30% FEC overhead (10 data + 3 parity shards), graceful loss recovery
+
+**WebRTC Mode** (`transport_mode=webrtc`) — Lowest latency with NAT traversal:
 1. UxPlay decrypts AirPlay H.264 stream → RTP over localhost UDP
 2. GStreamer subprocess with `whipclientsink` forwards H.264 + Opus via WHIP to MediaMTX
 3. MediaMTX serves as RTSP (for CV pipeline) and WebRTC/WHEP (for dashboard)
@@ -85,10 +92,11 @@ The client uses a pluggable `Commander` interface to route commands to different
 
 | Commander | Target | Protocol | Platform |
 |-----------|--------|----------|----------|
-| `esp32` | ESP32 → BLE HID | HTTP POST | Any (existing) |
+| `esp32` | ESP32 → BLE HID (mouse/kb/gamepad) | HTTP POST + mode API | Any (existing) |
 | `sysbotbase` | sys-botbase on Switch | TCP port 6000 (text) | Modded Switch |
 | `luma3ds` | Luma3DS input redirect | UDP port 4950 (binary) | Modded 3DS |
 | `virtual-gamepad` | OS-level gamepad (uinput/ViGEm) | OS API | Emulators |
+| `dsu` | DSU/Cemuhook protocol | UDP port 26760 (binary) | Cemu, Dolphin, Citra |
 
 - `CommandForwarder` (formerly `ESP32Forwarder`) translates `HIDCommandMessage` or `GameCommandMessage` → `Commander.send_command(action, params)` → `CommandAck`
 - `GameCommandMessage` supports command types: `mouse`, `keyboard`, `gamepad`, `touch`
@@ -105,7 +113,8 @@ ChromaCatch-Go/
 │   ├── shared/                              # Protocol contract between services
 │   │   ├── constants.py                     # Message types, defaults
 │   │   ├── messages.py                      # Pydantic models for all WS messages
-│   │   └── frame_codec.py                  # JPEG encode/decode with resize
+│   │   ├── frame_codec.py                  # JPEG encode/decode with resize
+│   │   └── rtp_fec_protocol.py             # RTP+FEC packet format, FEC params, header builders
 │   ├── backend/                             # REMOTE: CV brain + command dispatch
 │   │   ├── config.py                        # BackendSettings (CC_BACKEND_ prefix)
 │   │   ├── main.py                          # FastAPI + WS endpoints + dashboard
@@ -114,6 +123,7 @@ ChromaCatch-Go/
 │   │   ├── session_manager.py               # Dual-channel client session tracking
 │   │   ├── mediamtx_manager.py              # MediaMTX subprocess lifecycle
 │   │   ├── rtsp_consumer.py                 # RTSP frame consumer (reads from MediaMTX for CV)
+│   │   ├── rtp_fec_receiver.py              # RTP+FEC receiver (asyncio UDP + zfec RS recovery)
 │   │   ├── mediamtx/
 │   │   │   └── mediamtx.yml                 # MediaMTX config (SRT/RTSP/WebRTC ports)
 │   │   ├── cv/                              # Phase 2: computer vision
@@ -138,10 +148,11 @@ ChromaCatch-Go/
 │   │   │   │   ├── base.py                  # MediaTransport ABC
 │   │   │   │   ├── srt_transport.py         # SRT publisher (GStreamer→srtsink) + stats
 │   │   │   │   ├── webrtc_transport.py      # WebRTC publisher (GStreamer→whipclientsink)
+│   │   │   │   ├── rtp_fec_transport.py     # RTP+FEC sender (zfec RS + asyncio UDP, lowest latency)
 │   │   │   │   ├── ws_transport.py          # WebSocket transport (JPEG frames + PCM)
 │   │   │   │   ├── h264_ws_transport.py     # H.264 passthrough WS transport (raw AUs + PCM)
 │   │   │   │   ├── failover_transport.py    # Primary→WS auto-failover with recovery
-│   │   │   │   └── factory.py               # Transport factory (webrtc | srt | *-failover | h264-ws | ws)
+│   │   │   │   └── factory.py               # Transport factory (rtp-fec | webrtc | srt | *-failover | h264-ws | ws)
 │   │   │   ├── audio/
 │   │   │   │   ├── factory.py               # Runtime audio source selection
 │   │   │   │   ├── airplay_audio_source.py  # AirPlay RTP audio source adapter
@@ -157,23 +168,28 @@ ChromaCatch-Go/
 │   │   │   │   ├── airplay_source.py        # AirPlay/UxPlay source adapter
 │   │   │   │   ├── capture_card_source.py   # USB capture/camera source adapter
 │   │   │   │   ├── screen_source.py         # Desktop/window capture source adapter
+│   │   │   │   ├── sysdvr_source.py         # SysDVR source (modded Switch, RTSP)
+│   │   │   │   ├── ntr_source.py            # NTR source (modded 3DS, UDP JPEG)
 │   │   │   │   └── factory.py               # Runtime source selection
 │   │   │   └── commander/
 │   │   │       ├── base.py                  # Commander ABC + CommandResult
-│   │   │       ├── factory.py               # Commander factory (esp32 | sysbotbase | luma3ds | virtual-gamepad)
-│   │   │       ├── esp32_client.py          # HTTP client for ESP32 commands
-│   │   │       ├── esp32_commander.py       # ESP32Commander (wraps esp32_client)
+│   │   │       ├── factory.py               # Commander factory (esp32 | sysbotbase | luma3ds | virtual-gamepad | dsu)
+│   │   │       ├── esp32_client.py          # HTTP client for ESP32 commands + mode API
+│   │   │       ├── esp32_commander.py       # ESP32Commander (wraps esp32_client, mode discovery)
 │   │   │       ├── sysbotbase_client.py     # sys-botbase TCP (Switch, port 6000)
 │   │   │       ├── luma3ds_client.py        # Luma3DS input redirect (3DS, UDP 4950)
+│   │   │       ├── dsu_commander.py         # DSU/Cemuhook protocol (emulators, UDP 26760)
 │   │   │       └── virtual_gamepad.py       # Virtual gamepad (Linux uinput / Windows ViGEm)
 │   │   └── tests/                           # Client tests
 │   │       ├── test_airplay_manager.py
 │   │       ├── test_esp32_client.py
 │   │       ├── test_esp32_forwarder.py      # ESP32Forwarder backward compat tests
-│   │       ├── test_commander.py            # Commander ABC + ESP32Commander + factory
+│   │       ├── test_commander.py            # All commanders + factory + mode discovery + DSU
 │   │       ├── test_command_forwarder.py    # CommandForwarder with GameCommandMessage
 │   │       ├── test_stub_commanders.py      # sys-botbase, Luma3DS, virtual gamepad
 │   │       ├── test_webrtc_transport.py     # WebRTC transport + factory tests
+│   │       ├── test_rtp_fec_transport.py    # RTP+FEC protocol + transport + receiver (71 tests)
+│   │       ├── test_sources.py              # SysDVR, NTR, source factory (17 tests)
 │   │       ├── test_frame_capture.py
 │   │       ├── test_h264_capture.py         # H264AUParser + keyframe detection tests
 │   │       ├── test_h264_transport.py       # H264WebSocketTransport + factory tests
@@ -200,7 +216,8 @@ ChromaCatch-Go/
 │   │       │   │   ├── EAManager.swift            # External Accessory session (MFi gate)
 │   │       │   │   ├── WebSocketManager.swift     # URLSessionWebSocketTask (dual WS)
 │   │       │   │   ├── LocationMonitor.swift      # CLLocationManager GPS verification + drift recovery
-│   │       │   │   └── DNSFilterManager.swift     # NETunnelProviderManager DNS sinkhole toggle
+│   │       │   │   ├── DNSFilterManager.swift     # NETunnelProviderManager DNS sinkhole toggle
+│   │       │   │   └── BLEHIDCommander.swift      # BLE HID peripheral (mouse/kb/gamepad to non-Apple hosts)
 │   │       │   ├── Networking/
 │   │       │   │   └── ESP32HTTPClient.swift      # HTTP POST /command to ESP32 (HID relay)
 │   │       │   ├── Dongle/
@@ -218,9 +235,9 @@ ChromaCatch-Go/
 │   │           ├── PacketTunnelProvider.swift      # DNS sinkhole for Apple location domains
 │   │           ├── Info.plist                     # Extension config (packet-tunnel)
 │   │           └── ChromaCatchDNS.entitlements    # packet-tunnel-provider + App Group
-│   └── esp32/                               # ESP32 firmware
-│       ├── platformio.ini
-│       └── src/main.cpp                     # BLE HID + WiFi HTTP server
+│   └── esp32/                               # ESP32 firmware (v2: multi-mode HID)
+│       ├── platformio.ini                   # BLE Mouse/KB/Gamepad + GxEPD2 + AceButton
+│       └── src/main.cpp                     # Multi-mode HID + e-ink menu + WiFi/Serial
 └── scripts/
     ├── start.sh                             # Dev: run both services locally
     ├── start_client.sh                      # Launch client locally
@@ -243,19 +260,19 @@ ChromaCatch-Go/
 | Audio encoding | Opus via GStreamer opusenc (128kbps — SRT mode) |
 | AirPlay | UxPlay (C, installed separately) |
 | Frame capture | GStreamer pipe (fdsink) or OpenCV GStreamer pipeline |
-| ESP32 firmware | C++ / Arduino / PlatformIO |
-| ESP32 comms | WiFi HTTP (REST, keep-alive) |
-| BLE HID | ESP32 BLE HID library (BleCombo) |
+| ESP32 firmware | C++ / Arduino / PlatformIO, GxEPD2 e-ink, AceButton |
+| ESP32 comms | WiFi HTTP (REST, keep-alive) or USB Serial (wired) |
+| BLE HID | ESP32 NimBLE Mouse + BLE Keyboard + BLE Gamepad |
 | H.264 decode | PyAV (av) — FFmpeg wrapper for backend H.264→BGR decode |
 | iOS app | Swift, SwiftUI, CoreBluetooth, ExternalAccessory, URLSessionWebSocketTask |
 | GPS spoofing | iTools BT dongle (Beken BK-BLE-1.0, MFi coprocessor, EA protocol) |
-| Testing | pytest, pytest-asyncio (357 tests) |
+| Testing | pytest, pytest-asyncio (491 tests) |
 | Linting | ruff, black, mypy |
 
 ## Phases
 
 ### Phase 1: Connectivity [COMPLETE]
-- [x] ESP32 BLE HID firmware with WiFi command server
+- [x] ESP32 BLE HID firmware v2 (multi-mode: Mouse+KB, Gamepad; e-ink menu; WiFi HTTP + USB Serial input; mode discovery API)
 - [x] AirPlay receiver management (UxPlay wrapper)
 - [x] Frame capture service (GStreamer RTP → OpenCV)
 - [x] Shared protocol (messages, frame codec)
@@ -307,27 +324,28 @@ ChromaCatch-Go/
 - [ ] End-to-end: location service POST /location → iOS app WS → BLE NMEA → iPhone location change
 - [ ] End-to-end: ReplayKit broadcast → H.264 frames on backend dashboard (same stream as CLI)
 
-### Phase 2A: Universal Source / Transport / Input [IN PROGRESS]
+### Phase 2A: Universal Source / Transport / Input [COMPLETE]
 - [x] Commander ABC + CommandResult model (`commander/base.py`)
-- [x] ESP32Commander adapter wrapping existing ESP32Client
+- [x] ESP32Commander adapter wrapping existing ESP32Client (with mode discovery via GET /mode)
 - [x] Commander factory (`commander/factory.py`) — mode-based creation
 - [x] GameCommandMessage type in shared protocol (supports mouse/keyboard/gamepad/touch)
 - [x] CommandForwarder generalized from ESP32Forwarder — routes via Commander interface
 - [x] WebRTC transport (`webrtc_transport.py`) — GStreamer whipclientsink to MediaMTX WHIP
-- [x] Transport factory updated for webrtc + webrtc-failover modes
+- [x] Transport factory updated for webrtc + webrtc-failover + rtp-fec modes
 - [x] SysBotbaseCommander — sys-botbase TCP for modded Switch (text commands)
 - [x] Luma3DSCommander — Luma3DS input redirect for modded 3DS (UDP binary packets)
 - [x] VirtualGamepadCommander — uinput (Linux) / ViGEm (Windows) for emulators
-- [x] 357 tests passing (92 new commander + WebRTC + forwarder tests)
-- [ ] RTP+FEC transport (custom UDP + Reed-Solomon FEC via zfec — lowest latency, game-streaming-grade)
-- [ ] RTP+FEC receiver (backend asyncio UDP + FEC recovery + AU reassembly)
-- [ ] SysDVR frame source (H.264 from modded Switch via TCP/RTSP)
-- [ ] NTR frame source (TurboJPEG over UDP from modded 3DS)
-- [ ] ESP32 e-ink display + buttons for mode selection (input: WiFi/wired, output: BT/wired, mode: mouse+kb/gamepad)
-- [ ] ESP32 gamepad firmware mode (ESP32-BLE-Gamepad)
-- [ ] iOS BLE HID commander (CBPeripheralManager with expanded 128-bit UUID — act as BLE mouse/kb/gamepad to non-Apple hosts)
-- [ ] iOS WebRTC transport (WebRTC.framework)
-- [ ] DSU/Cemuhook commander for emulator motion input
+- [x] DSUCommander — Cemuhook/DSU protocol for emulators (Cemu, Dolphin, Citra)
+- [x] RTP+FEC transport (`rtp_fec_transport.py`) — custom UDP + Reed-Solomon FEC via zfec, lowest latency (~3-5ms LAN)
+- [x] RTP+FEC receiver (`rtp_fec_receiver.py`) — backend asyncio UDP + FEC recovery + AU reassembly → H264Decoder
+- [x] Shared RTP+FEC protocol (`shared/rtp_fec_protocol.py`) — packet format, FEC parameters, header builders
+- [x] SysDVR frame source (`sysdvr_source.py`) — RTSP capture from modded Switch via OpenCV
+- [x] NTR frame source (`ntr_source.py`) — UDP JPEG listener from modded 3DS with multi-packet reassembly
+- [x] Source factory updated for sysdvr + ntr modes
+- [x] ESP32 firmware v2 — e-ink display menu + buttons, BLE Mouse+KB/Gamepad modes, WiFi HTTP + USB Serial input, GET/POST /mode API
+- [x] ESP32Client updated with get_mode() and set_mode() for mode discovery/configuration
+- [x] iOS BLE HID commander (`BLEHIDCommander.swift`) — CBPeripheralManager with expanded 128-bit UUID, mouse/kb/gamepad profiles
+- [x] 491 tests passing (226 new tests across all sprints)
 
 ### Phase 2: Computer Vision
 - [ ] Screen state detection (battle, overworld, menu, etc.)
@@ -347,7 +365,7 @@ ChromaCatch-Go/
 # Install
 poetry install
 
-# Run all tests (357 tests)
+# Run all tests (491 tests)
 poetry run pytest
 
 # Run by suite
@@ -414,11 +432,13 @@ CC_CLIENT_AUDIO_CHUNK_MS=100
 CC_CLIENT_AUDIO_INPUT_BACKEND=auto          # auto | avfoundation | pulse | dshow
 CC_CLIENT_AUDIO_INPUT_DEVICE=               # backend-specific input selector
 # Commander (input target)
-CC_CLIENT_COMMANDER_MODE=esp32              # esp32 | sysbotbase | luma3ds | virtual-gamepad
+CC_CLIENT_COMMANDER_MODE=esp32              # esp32 | sysbotbase | luma3ds | virtual-gamepad | dsu
 CC_CLIENT_COMMANDER_HOST=192.168.1.100      # Target host (ESP32, Switch, 3DS)
 CC_CLIENT_COMMANDER_PORT=0                  # Target port (0 = use default per commander)
 # Transport settings
-CC_CLIENT_TRANSPORT_MODE=websocket          # webrtc | srt | webrtc-failover | srt-failover | h264-ws | websocket
+CC_CLIENT_TRANSPORT_MODE=websocket          # rtp-fec | webrtc | srt | *-failover | h264-ws | websocket
+CC_CLIENT_RTP_FEC_DEST_HOST=               # Backend host for UDP delivery (auto-derived if empty)
+CC_CLIENT_RTP_FEC_DEST_PORT=7000           # Backend UDP port for RTP+FEC receiver
 CC_CLIENT_SRT_BACKEND_URL=                  # srt://host:8890 (auto-derived from WS URL if empty)
 CC_CLIENT_SRT_LATENCY_MS=50                 # SRT latency buffer
 CC_CLIENT_SRT_PASSPHRASE=                   # optional SRT encryption
@@ -453,6 +473,11 @@ CC_BACKEND_MEDIAMTX_RTSP_PORT=8554
 CC_BACKEND_MEDIAMTX_WEBRTC_PORT=8889
 CC_BACKEND_RTSP_CONSUMER_ENABLED=false      # Enable RTSP frame consumer for CV pipeline
 CC_BACKEND_RTSP_BASE_URL=rtsp://127.0.0.1:8554
+# RTP+FEC receiver (lowest-latency UDP transport)
+CC_BACKEND_RTP_FEC_ENABLED=false            # Enable RTP+FEC receiver
+CC_BACKEND_RTP_FEC_BIND_HOST=0.0.0.0
+CC_BACKEND_RTP_FEC_BIND_PORT=7000
+CC_BACKEND_RTP_FEC_CLIENT_ID=rtp-fec       # client_id for session manager
 ```
 
 ## Backend API
