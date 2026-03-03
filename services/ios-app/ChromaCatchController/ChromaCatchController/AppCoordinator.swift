@@ -102,7 +102,16 @@ class AppCoordinator: ObservableObject {
         let savedESP32Port = UserDefaults.standard.string(forKey: "esp32Port") ?? "80"
         let savedClientId = UserDefaults.standard.string(forKey: "clientId") ?? "ios-app"
         let savedDNSFilter = UserDefaults.standard.bool(forKey: "dnsFilterEnabled")
-        let savedUseBLEHID = UserDefaults.standard.bool(forKey: "useBLEHID")
+
+        // Migration: reset BLE HID after v1 crash fix (old impl crashed permanently)
+        let savedUseBLEHID: Bool
+        if UserDefaults.standard.bool(forKey: "useBLEHID") && !UserDefaults.standard.bool(forKey: "bleHIDFixedV2") {
+            UserDefaults.standard.set(false, forKey: "useBLEHID")
+            UserDefaults.standard.set(true, forKey: "bleHIDFixedV2")
+            savedUseBLEHID = false
+        } else {
+            savedUseBLEHID = UserDefaults.standard.bool(forKey: "useBLEHID")
+        }
 
         self.backendURL = savedBackendURL
         self.dnsFilterEnabled = savedDNSFilter
@@ -165,6 +174,12 @@ class AppCoordinator: ObservableObject {
     }
 
     private func setupCallbacks() {
+        // Forward nested ObservableObject changes to trigger SwiftUI re-render
+        bleHIDCommander.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+
         // Main backend WS: HID commands + pings
         wsManager.onMessage = { [weak self] text in
             guard let self = self else { return }
