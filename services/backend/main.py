@@ -11,6 +11,7 @@ from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from backend.config import backend_settings
+from backend.cv_tester import router as cv_tester_router
 from backend.mediamtx_manager import MediaMTXManager
 from backend.rtsp_consumer import RTSPFrameConsumer
 from backend.session_manager import SessionManager
@@ -46,6 +47,7 @@ app = FastAPI(
     version="0.2.0",
     lifespan=lifespan,
 )
+app.include_router(cv_tester_router)
 
 
 # --- WebSocket Endpoint --- $TODO: REORG: move to separate router file

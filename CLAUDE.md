@@ -92,10 +92,12 @@ ChromaCatch-Go/
 │   │   ├── rtsp_consumer.py                 # RTSP frame consumer (reads from MediaMTX for CV)
 │   │   ├── mediamtx/
 │   │   │   └── mediamtx.yml                 # MediaMTX config (SRT/RTSP/WebRTC ports)
+│   │   ├── cv_tester.py                     # Visual CV tool tester (overlay MJPEG + dashboard)
 │   │   ├── cv/                              # Phase 2: computer vision
 │   │   ├── orchestrator/                    # Phase 3: state machine
 │   │   └── tests/                           # Backend tests
 │   │       ├── test_backend_api.py
+│   │       ├── test_cv_tester.py            # CV tester endpoint tests
 │   │       ├── test_session_manager.py
 │   │       ├── test_ws_handler.py
 │   │       ├── test_h264_decoder.py         # H264Decoder (PyAV) tests
@@ -250,7 +252,7 @@ ChromaCatch-Go/
 | H.264 decode | PyAV (av) — FFmpeg wrapper for backend H.264→BGR decode |
 | iOS app | Swift, SwiftUI, CoreBluetooth, ExternalAccessory, URLSessionWebSocketTask |
 | GPS spoofing | iTools BT dongle (Beken BK-BLE-1.0, MFi coprocessor, EA protocol) |
-| Testing | pytest, pytest-asyncio (525 tests) |
+| Testing | pytest, pytest-asyncio (540 tests) |
 | Linting | ruff, black, mypy |
 
 ## Phases
@@ -338,7 +340,7 @@ ChromaCatch-Go/
 # Install
 poetry install
 
-# Run all tests (525 tests)
+# Run all tests (540 tests)
 poetry run pytest
 
 # Run by suite
@@ -453,6 +455,13 @@ CC_BACKEND_RTSP_BASE_URL=rtsp://127.0.0.1:8554
 | POST | `/clients/{id}/rtsp-start` | Start RTSP consumer for SRT client |
 | GET | `/stream/{id}` | MJPEG live frame stream |
 | GET | `/dashboard` | Browser dashboard (WebRTC + MJPEG fallback) |
+| GET | `/test/cv` | Visual CV tool tester dashboard |
+| GET | `/test/cv/tools` | List available tools by category |
+| GET | `/test/cv/config` | Get current test configuration |
+| POST | `/test/cv/config` | Configure tool, threshold, params, reference path |
+| POST | `/test/cv/reference` | Upload reference image for testing |
+| GET | `/test/cv/stream/{id}` | MJPEG stream with CV tool overlay (bboxes) |
+| POST | `/test/cv/run` | Run tool on single uploaded image, return annotated JPEG |
 
 ## Location Service API (port 8001)
 
