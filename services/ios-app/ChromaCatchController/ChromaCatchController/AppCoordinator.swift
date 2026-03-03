@@ -22,7 +22,10 @@ class AppCoordinator: ObservableObject {
     let dnsFilterManager: DNSFilterManager
 
     @Published var logs: [LogEntry] = []
-    @Published var isRunning = false
+    @Published var isBackendRunning = false
+    @Published var isLocationRunning = false
+    var isRunning: Bool { isBackendRunning || isLocationRunning }
+
     @Published var commandsSent: Int = 0
     @Published var commandsAcked: Int = 0
 
@@ -47,13 +50,19 @@ class AppCoordinator: ObservableObject {
 
     // Configuration (set from UI or stored in UserDefaults)
     @Published var backendURL: String {
-        didSet { UserDefaults.standard.set(backendURL, forKey: "backendURL") }
+        didSet {
+            UserDefaults.standard.set(backendURL, forKey: "backendURL")
+            sharedDefaults?.set(backendURL, forKey: "backendURL")
+        }
     }
     @Published var locationServiceURL: String {
         didSet { UserDefaults.standard.set(locationServiceURL, forKey: "locationServiceURL") }
     }
     @Published var apiKey: String {
-        didSet { UserDefaults.standard.set(apiKey, forKey: "apiKey") }
+        didSet {
+            UserDefaults.standard.set(apiKey, forKey: "apiKey")
+            sharedDefaults?.set(apiKey, forKey: "apiKey")
+        }
     }
     @Published var esp32Host: String {
         didSet { UserDefaults.standard.set(esp32Host, forKey: "esp32Host") }
@@ -71,7 +80,7 @@ class AppCoordinator: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var statusTimer: Timer?
     private var esp32PingTimer: Timer?
-    private let startTime = Date()
+    let startTime = Date()
     private let sharedDefaults = UserDefaults(suiteName: "group.com.chromacatch")
 
     private static let defaultBackendURL = "wss://8000--main--chromacatch-go-agents--nyc-design.apps.coder.tapiavala.com/ws/control"
@@ -214,10 +223,24 @@ class AppCoordinator: ObservableObject {
 
     // MARK: - Lifecycle
 
+    /// Convenience: start all subsystems at once.
     func start() {
-        guard !isRunning else { return }
-        isRunning = true
-        addLog("Starting ChromaCatch Controller...")
+        startBackend()
+        startLocation()
+    }
+
+    /// Convenience: stop all subsystems at once.
+    func stop() {
+        stopBackend()
+        stopLocation()
+    }
+
+    // MARK: - Backend Subsystem (Video + Commands)
+
+    func startBackend() {
+        guard !isBackendRunning else { return }
+        isBackendRunning = true
+        addLog("Starting backend connection...")
 
         // Update ESP32 endpoint from current settings
         esp32Client.updateEndpoint(host: esp32Host, port: Int(esp32Port) ?? 80)
@@ -231,44 +254,8 @@ class AppCoordinator: ObservableObject {
             addLog("BLE HID commander started (combo profile)")
         }
 
-        // Start background keepalive (keeps app alive so timers fire in background)
-        locationKeepAlive.start()
-
-        // Start GPS verification polling
-        locationMonitor.startMonitoring()
-
-        // Monitor EA state
-        startMonitoring()
-
-        // Connect both WebSockets
+        // Connect backend WS
         wsManager.connect()
-        locationWSManager.connect()
-
-        addLog("Waiting for connections...")
-    }
-
-    func stop() {
-        isRunning = false
-        dongleController.stop()
-        bleHIDCommander.stop()
-        locationKeepAlive.stop()
-        locationMonitor.stopMonitoring()
-        wsManager.disconnect()
-        locationWSManager.disconnect()
-        statusTimer?.invalidate()
-        statusTimer = nil
-        esp32PingTimer?.invalidate()
-        esp32PingTimer = nil
-        addLog("Stopped")
-    }
-
-    // MARK: - Connection Monitoring
-
-    private func startMonitoring() {
-        // EA session is handled by EAManager's NotificationCenter observers
-        // (.EAAccessoryDidConnect / .EAAccessoryDidDisconnect).
-        // No polling needed — if BT-01414-CORE is paired, EA will fire
-        // the notification when the accessory completes iAP2 auth.
 
         // Send periodic status to backend
         statusTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
@@ -277,13 +264,66 @@ class AppCoordinator: ObservableObject {
             }
         }
 
-        // Periodic ESP32 ping — only when a real host is configured (not default placeholder)
+        // Periodic ESP32 ping — only when a real host is configured
         if !esp32Host.isEmpty && esp32Host != "192.168.1.100" {
             esp32PingTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
                 guard let self = self else { return }
                 Task { _ = await self.esp32Client.ping() }
             }
         }
+
+        startSharedSubsystems()
+        addLog("Backend connection started")
+    }
+
+    func stopBackend() {
+        guard isBackendRunning else { return }
+        isBackendRunning = false
+
+        bleHIDCommander.stop()
+        wsManager.disconnect()
+        statusTimer?.invalidate()
+        statusTimer = nil
+        esp32PingTimer?.invalidate()
+        esp32PingTimer = nil
+
+        if !isLocationRunning { stopSharedSubsystems() }
+        addLog("Backend stopped")
+    }
+
+    // MARK: - Location Subsystem (Spoofing)
+
+    func startLocation() {
+        guard !isLocationRunning else { return }
+        isLocationRunning = true
+        addLog("Starting location connection...")
+
+        locationWSManager.connect()
+        startSharedSubsystems()
+        addLog("Location connection started")
+    }
+
+    func stopLocation() {
+        guard isLocationRunning else { return }
+        isLocationRunning = false
+
+        dongleController.stop()
+        locationWSManager.disconnect()
+
+        if !isBackendRunning { stopSharedSubsystems() }
+        addLog("Location stopped")
+    }
+
+    // MARK: - Shared Subsystems
+
+    private func startSharedSubsystems() {
+        locationKeepAlive.start()
+        locationMonitor.startMonitoring()
+    }
+
+    private func stopSharedSubsystems() {
+        locationKeepAlive.stop()
+        locationMonitor.stopMonitoring()
     }
 
     // MARK: - Dongle Pairing (user-initiated)

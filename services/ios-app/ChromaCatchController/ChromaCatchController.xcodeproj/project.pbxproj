@@ -27,6 +27,15 @@ A1000008 /* NMEAGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A
 		C1000002 /* DNSFilterManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000004 /* DNSFilterManager.swift */; };
 		A100000C /* LocationKeepAlive.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000E /* LocationKeepAlive.swift */; };
 		C1000003 /* ChromaCatchDNS.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = C3000001 /* ChromaCatchDNS.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		D1000001 /* BLEHIDCommander.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000001 /* BLEHIDCommander.swift */; };
+		D1000002 /* CardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000002 /* CardView.swift */; };
+		D1000003 /* DongleScannerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000003 /* DongleScannerSheet.swift */; };
+		D1000004 /* LogView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000004 /* LogView.swift */; };
+		D1000005 /* DashboardTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000005 /* DashboardTab.swift */; };
+		D1000006 /* VideoTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000006 /* VideoTab.swift */; };
+		D1000007 /* InputTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000007 /* InputTab.swift */; };
+		D1000008 /* SpoofTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000008 /* SpoofTab.swift */; };
+		D1000009 /* SettingsTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000009 /* SettingsTab.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -88,6 +97,15 @@ A2000008 /* NMEAGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType 
 		C2000003 /* ChromaCatchDNS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ChromaCatchDNS.entitlements; sourceTree = "<group>"; };
 		C2000004 /* DNSFilterManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DNSFilterManager.swift; sourceTree = "<group>"; };
 		C3000001 /* ChromaCatchDNS.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ChromaCatchDNS.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		D2000001 /* BLEHIDCommander.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEHIDCommander.swift; sourceTree = "<group>"; };
+		D2000002 /* CardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CardView.swift; sourceTree = "<group>"; };
+		D2000003 /* DongleScannerSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DongleScannerSheet.swift; sourceTree = "<group>"; };
+		D2000004 /* LogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogView.swift; sourceTree = "<group>"; };
+		D2000005 /* DashboardTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardTab.swift; sourceTree = "<group>"; };
+		D2000006 /* VideoTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoTab.swift; sourceTree = "<group>"; };
+		D2000007 /* InputTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputTab.swift; sourceTree = "<group>"; };
+		D2000008 /* SpoofTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpoofTab.swift; sourceTree = "<group>"; };
+		D2000009 /* SettingsTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsTab.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -133,6 +151,7 @@ A2000008 /* NMEAGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType 
 				A2000003 /* AppCoordinator.swift */,
 				A200000B /* Info.plist */,
 				A200000D /* ChromaCatchController.entitlements */,
+				D5000001 /* Views */,
 				A5000003 /* Managers */,
 				A5000004 /* Dongle */,
 				A5000005 /* Protocol */,
@@ -145,6 +164,7 @@ A2000008 /* NMEAGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType 
 			isa = PBXGroup;
 			children = (
 				A2000004 /* BLEManager.swift */,
+				D2000001 /* BLEHIDCommander.swift */,
 				A2000005 /* EAManager.swift */,
 				A2000006 /* WebSocketManager.swift */,
 				A2000007 /* LocationMonitor.swift */,
@@ -209,6 +229,37 @@ A2000008 /* NMEAGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType 
 				C2000003 /* ChromaCatchDNS.entitlements */,
 			);
 			path = ChromaCatchDNS;
+			sourceTree = "<group>";
+		};
+		D5000001 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				D5000002 /* Tabs */,
+				D5000003 /* Components */,
+				D2000004 /* LogView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		D5000002 /* Tabs */ = {
+			isa = PBXGroup;
+			children = (
+				D2000005 /* DashboardTab.swift */,
+				D2000006 /* VideoTab.swift */,
+				D2000007 /* InputTab.swift */,
+				D2000008 /* SpoofTab.swift */,
+				D2000009 /* SettingsTab.swift */,
+			);
+			path = Tabs;
+			sourceTree = "<group>";
+		};
+		D5000003 /* Components */ = {
+			isa = PBXGroup;
+			children = (
+				D2000002 /* CardView.swift */,
+				D2000003 /* DongleScannerSheet.swift */,
+			);
+			path = Components;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -324,6 +375,15 @@ A1000008 /* NMEAGenerator.swift in Sources */,
 				A1000007 /* LocationMonitor.swift in Sources */,
 				A100000C /* LocationKeepAlive.swift in Sources */,
 				C1000002 /* DNSFilterManager.swift in Sources */,
+				D1000001 /* BLEHIDCommander.swift in Sources */,
+				D1000002 /* CardView.swift in Sources */,
+				D1000003 /* DongleScannerSheet.swift in Sources */,
+				D1000004 /* LogView.swift in Sources */,
+				D1000005 /* DashboardTab.swift in Sources */,
+				D1000006 /* VideoTab.swift in Sources */,
+				D1000007 /* InputTab.swift in Sources */,
+				D1000008 /* SpoofTab.swift in Sources */,
+				D1000009 /* SettingsTab.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
