@@ -11,3 +11,5 @@ sys.path.insert(0, str(_root / "services"))
 sys.path.insert(0, str(_root / "services" / "airplay-client"))
 # location_service package lives under services/location_service/
 sys.path.insert(0, str(_root / "services" / "location_service"))
+# cv_toolkit package lives under services/cv-toolkit/
+sys.path.insert(0, str(_root / "services" / "cv-toolkit"))

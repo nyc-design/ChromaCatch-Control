@@ -51,11 +51,14 @@ COPY --from=mediamtx-dl /opt/mediamtx/mediamtx /usr/local/bin/mediamtx
 # Shared protocol code (from additional build context)
 COPY --from=shared . /app/services/shared/
 
+# CV toolkit (from additional build context)
+COPY --from=cv-toolkit . /app/services/cv-toolkit/
+
 # Backend application code (from primary build context)
 COPY . /app/services/backend/
 
 ENV PATH="/app/.venv/bin:$PATH"
-ENV PYTHONPATH="/app/services"
+ENV PYTHONPATH="/app/services:/app/services/cv-toolkit"
 ENV PYTHONUNBUFFERED=1
 
 # Default config for container
