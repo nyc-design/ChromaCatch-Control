@@ -143,7 +143,7 @@ void initBLE() {
 
     // Configure NimBLE security for iOS HID pairing
     NimBLEDevice::setSecurityAuth(true, false, true);   // bonding, no MITM, secure connections
-    NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_NO_OUTPUT);  // "Just Works" pairing
+    NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);  // "Just Works" pairing
 
     if (currentOutputMode == OUTPUT_MOUSE_KB) {
         bleMouse    = new BleMouse(DEVICE_NAME, "ChromaCatch", 100);
