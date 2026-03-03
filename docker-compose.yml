@@ -5,6 +5,7 @@ services:
       dockerfile: Dockerfile
       additional_contexts:
         shared: ./services/shared
+        cv-toolkit: ./services/cv-toolkit
     container_name: chromacatch-backend
     restart: unless-stopped
     # Share the workspace container's network so ports are reachable via
