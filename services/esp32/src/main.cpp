@@ -24,8 +24,7 @@
 #include <WebServer.h>
 #include <ArduinoJson.h>
 #include <NimBLEDevice.h>
-#include <BleMouse.h>
-#include <BleKeyboard.h>
+#include <BleCombo.h>
 #include <BleGamepad.h>
 // E-ink includes would be: #include <GxEPD2_BW.h> -- stubbed for now
 
@@ -68,9 +67,9 @@ enum OutputMode     { OUTPUT_MOUSE_KB, OUTPUT_GAMEPAD };
 WebServer server(HTTP_PORT);
 
 // BLE devices (only one active set at a time)
-BleMouse*    bleMouse    = nullptr;
-BleKeyboard* bleKeyboard = nullptr;
-BleGamepad*  bleGamepad  = nullptr;
+BleComboKeyboard* bleComboKb    = nullptr;
+BleComboMouse*    bleComboMouse = nullptr;
+BleGamepad*       bleGamepad    = nullptr;
 
 // Current mode
 InputMode      currentInput      = INPUT_WIFI;
@@ -132,26 +131,20 @@ void displayStatus(const char* line1, const char* line2) {
 // ============================================================
 void initBLE() {
     // Clean up previous instances
-    if (bleMouse)    { delete bleMouse;    bleMouse = nullptr; }
-    if (bleKeyboard) { delete bleKeyboard; bleKeyboard = nullptr; }
-    if (bleGamepad)  { delete bleGamepad;  bleGamepad = nullptr; }
+    if (bleComboMouse) { delete bleComboMouse; bleComboMouse = nullptr; }
+    if (bleComboKb)    { delete bleComboKb;    bleComboKb = nullptr; }
+    if (bleGamepad)    { delete bleGamepad;    bleGamepad = nullptr; }
 
     if (currentOutput != OUTPUT_BLUETOOTH) {
         Serial.println("BLE disabled (wired output mode)");
         return;
     }
 
-    // Configure NimBLE security for iOS HID pairing
-    NimBLEDevice::setSecurityAuth(true, false, true);   // bonding, no MITM, secure connections
-    NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);  // "Just Works" pairing
-
     if (currentOutputMode == OUTPUT_MOUSE_KB) {
-        bleMouse = new BleMouse(DEVICE_NAME, "ChromaCatch", 100);
-        bleMouse->begin();
-        // Note: BleKeyboard disabled — separate NimBLE HID libraries can't share
-        // the server callback, so mouse loses connection notifications. Keyboard
-        // support will require a combined HID library.
-        Serial.println("BLE Mouse started (keyboard disabled)");
+        bleComboKb = new BleComboKeyboard(DEVICE_NAME, "ChromaCatch", 100);
+        bleComboMouse = new BleComboMouse(bleComboKb);
+        bleComboKb->begin();  // Starts single HID service with mouse+keyboard+media
+        Serial.println("BLE Mouse+Keyboard started (combo)");
     } else {
         bleGamepad = new BleGamepad(DEVICE_NAME, "ChromaCatch", 100);
         BleGamepadConfiguration cfg;
@@ -169,7 +162,7 @@ void initBLE() {
 bool isBLEConnected() {
     if (currentOutput != OUTPUT_BLUETOOTH) return false;
     if (currentOutputMode == OUTPUT_MOUSE_KB) {
-        return bleMouse && bleMouse->isConnected();
+        return bleComboKb && bleComboKb->isConnected();
     }
     return bleGamepad && bleGamepad->isConnected();
 }
@@ -178,16 +171,16 @@ bool isBLEConnected() {
 // Command execution: Mouse + Keyboard
 // ============================================================
 void executeMouseCommand(const String& action, JsonDocument& doc, JsonDocument& response) {
-    if (!bleMouse || !bleMouse->isConnected()) {
+    if (!bleComboKb || !bleComboKb->isConnected()) {
         response["status"] = "error";
-        response["error"]  = "BLE mouse not connected";
+        response["error"]  = "BLE combo not connected";
         return;
     }
 
     if (action == "move") {
         int dx = doc["dx"] | 0;
         int dy = doc["dy"] | 0;
-        bleMouse->move(dx, dy);
+        bleComboMouse->move(dx, dy);
         response["status"] = "ok";
         response["dx"] = dx;
         response["dy"] = dy;
@@ -195,10 +188,9 @@ void executeMouseCommand(const String& action, JsonDocument& doc, JsonDocument& 
     else if (action == "click") {
         int x = doc["x"] | 0;
         int y = doc["y"] | 0;
-        // Move to position then click
-        bleMouse->move(x, y);
+        bleComboMouse->move(x, y);
         delay(10);
-        bleMouse->click(MOUSE_LEFT);
+        bleComboMouse->click(MOUSE_LEFT);
         response["status"] = "ok";
         response["x"] = x;
         response["y"] = y;
@@ -213,48 +205,38 @@ void executeMouseCommand(const String& action, JsonDocument& doc, JsonDocument& 
         int stepX = (x2 - x1) / steps;
         int stepY = (y2 - y1) / steps;
 
-        bleMouse->move(x1, y1);
+        bleComboMouse->move(x1, y1);
         delay(10);
-        bleMouse->press(MOUSE_LEFT);
+        bleComboMouse->press(MOUSE_LEFT);
         for (int i = 0; i < steps; i++) {
-            bleMouse->move(stepX, stepY);
+            bleComboMouse->move(stepX, stepY);
             delay(10);
         }
-        bleMouse->release(MOUSE_LEFT);
+        bleComboMouse->release(MOUSE_LEFT);
         response["status"] = "ok";
         response["steps"] = steps;
     }
     else if (action == "press") {
-        bleMouse->press(MOUSE_LEFT);
+        bleComboMouse->press(MOUSE_LEFT);
         response["status"] = "ok";
     }
     else if (action == "release") {
-        bleMouse->release(MOUSE_LEFT);
+        bleComboMouse->release(MOUSE_LEFT);
         response["status"] = "ok";
     }
     else if (action == "key_press") {
-        if (bleKeyboard && bleKeyboard->isConnected()) {
-            String key = doc["key"].as<String>();
-            if (key.length() == 1) {
-                bleKeyboard->press(key[0]);
-            }
-            response["status"] = "ok";
-        } else {
-            response["status"] = "error";
-            response["error"]  = "BLE keyboard not connected";
+        String key = doc["key"].as<String>();
+        if (key.length() == 1) {
+            bleComboKb->press(key[0]);
         }
+        response["status"] = "ok";
     }
     else if (action == "key_release") {
-        if (bleKeyboard && bleKeyboard->isConnected()) {
-            String key = doc["key"].as<String>();
-            if (key.length() == 1) {
-                bleKeyboard->release(key[0]);
-            }
-            response["status"] = "ok";
-        } else {
-            response["status"] = "error";
-            response["error"]  = "BLE keyboard not connected";
+        String key = doc["key"].as<String>();
+        if (key.length() == 1) {
+            bleComboKb->release(key[0]);
         }
+        response["status"] = "ok";
     }
     else {
         response["status"] = "error";
