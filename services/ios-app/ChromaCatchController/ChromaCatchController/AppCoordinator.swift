@@ -423,6 +423,9 @@ class AppCoordinator: ObservableObject {
         case .gameCommand:
             addLog("Warning: game command on location channel (ignoring)")
 
+        case .setHidMode:
+            addLog("Warning: HID mode change on location channel (ignoring)")
+
         case .unknown(let type):
             addLog("Unhandled location type: \(type)")
         }
