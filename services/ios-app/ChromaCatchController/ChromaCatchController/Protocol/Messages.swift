@@ -8,6 +8,7 @@ enum MessageType {
     static let audioChunk = "audio_chunk"
     static let clientStatus = "client_status"
     static let hidCommand = "hid_command"
+    static let gameCommand = "game_command"
     static let commandAck = "command_ack"
     static let configUpdate = "config_update"
     static let locationUpdate = "location_update"
@@ -50,6 +51,67 @@ struct HIDCommandMessage: Codable {
         case commandId = "command_id"
         case commandSequence = "command_sequence"
         case dispatchedAtBackend = "dispatched_at_backend"
+    }
+}
+
+/// Universal game input command — supports gamepad, touch, and other input types.
+/// Mirrors Python GameCommandMessage.
+struct GameCommandMessage: Codable {
+    let type: String
+    let commandType: String  // "mouse", "keyboard", "gamepad", "touch"
+    let action: String       // "button_press", "button_release", "stick", "tap", etc.
+    let params: [String: AnyCodableValue]?
+    let commandId: String?
+    let commandSequence: Int?
+    let dispatchedAtBackend: Double?
+    let timestamp: Double
+
+    enum CodingKeys: String, CodingKey {
+        case type, action, params, timestamp
+        case commandType = "command_type"
+        case commandId = "command_id"
+        case commandSequence = "command_sequence"
+        case dispatchedAtBackend = "dispatched_at_backend"
+    }
+}
+
+/// Wrapper for heterogeneous JSON values in params dictionaries.
+enum AnyCodableValue: Codable, Equatable {
+    case int(Int)
+    case double(Double)
+    case string(String)
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let v = try? container.decode(Int.self) { self = .int(v) }
+        else if let v = try? container.decode(Double.self) { self = .double(v) }
+        else if let v = try? container.decode(String.self) { self = .string(v) }
+        else { self = .string("") }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .int(let v): try container.encode(v)
+        case .double(let v): try container.encode(v)
+        case .string(let v): try container.encode(v)
+        }
+    }
+
+    var doubleValue: Double {
+        switch self {
+        case .int(let v): return Double(v)
+        case .double(let v): return v
+        case .string(let v): return Double(v) ?? 0
+        }
+    }
+
+    var stringValue: String {
+        switch self {
+        case .int(let v): return String(v)
+        case .double(let v): return String(v)
+        case .string(let v): return v
+        }
     }
 }
 
@@ -328,6 +390,7 @@ struct LocationStatusMessage: Codable {
 enum IncomingMessage {
     case locationUpdate(LocationUpdateMessage)
     case hidCommand(HIDCommandMessage)
+    case gameCommand(GameCommandMessage)
     case ping(HeartbeatPing)
     case unknown(String)
 
@@ -348,6 +411,9 @@ enum IncomingMessage {
         case MessageType.hidCommand:
             guard let msg = try? decoder.decode(HIDCommandMessage.self, from: data) else { return nil }
             return .hidCommand(msg)
+        case MessageType.gameCommand:
+            guard let msg = try? decoder.decode(GameCommandMessage.self, from: data) else { return nil }
+            return .gameCommand(msg)
         case MessageType.ping:
             guard let msg = try? decoder.decode(HeartbeatPing.self, from: data) else { return nil }
             return .ping(msg)

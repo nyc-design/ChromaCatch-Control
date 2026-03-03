@@ -1,13 +1,13 @@
 import Combine
 import Foundation
 
-/// Central orchestrator that coordinates EA, BLE, WebSockets, ESP32, and the NMEA dongle controller.
+/// Central orchestrator that coordinates EA, BLE, WebSockets, ESP32, BLE HID, and the NMEA dongle controller.
 ///
 /// Dual WebSocket architecture:
 /// - `wsManager` connects to main backend `/ws/control` (HID commands, status, pings)
 /// - `locationWSManager` connects to location service `/ws/location` (GPS coordinates)
 ///
-/// HID command flow: backend → wsManager → ESP32HTTPClient → CommandAck back to backend
+/// Command routing: backend → wsManager → (ESP32 HTTP or BLE HID) → CommandAck back to backend
 @MainActor
 class AppCoordinator: ObservableObject {
     let eaManager: EAManager
@@ -16,6 +16,7 @@ class AppCoordinator: ObservableObject {
     let wsManager: WebSocketManager         // Main backend (HID + status)
     let locationWSManager: WebSocketManager  // Location service (GPS coords)
     let esp32Client: ESP32HTTPClient
+    let bleHIDCommander: BLEHIDCommander    // BLE HID peripheral (mouse/kb/gamepad → target)
     let locationMonitor: LocationMonitor
     let locationKeepAlive: LocationKeepAlive
     let dnsFilterManager: DNSFilterManager
@@ -24,6 +25,14 @@ class AppCoordinator: ObservableObject {
     @Published var isRunning = false
     @Published var commandsSent: Int = 0
     @Published var commandsAcked: Int = 0
+
+    // ESP32 mode discovery
+    @Published var esp32Mode = ESP32Mode.unknown
+
+    // BLE HID — when enabled, commands route to BLE HID instead of ESP32
+    @Published var useBLEHID: Bool {
+        didSet { UserDefaults.standard.set(useBLEHID, forKey: "useBLEHID") }
+    }
 
     // GPS verification — mirrored from LocationMonitor for SwiftUI binding
     @Published var gpsAccurate: Bool = false
@@ -84,9 +93,11 @@ class AppCoordinator: ObservableObject {
         let savedESP32Port = UserDefaults.standard.string(forKey: "esp32Port") ?? "80"
         let savedClientId = UserDefaults.standard.string(forKey: "clientId") ?? "ios-app"
         let savedDNSFilter = UserDefaults.standard.bool(forKey: "dnsFilterEnabled")
+        let savedUseBLEHID = UserDefaults.standard.bool(forKey: "useBLEHID")
 
         self.backendURL = savedBackendURL
         self.dnsFilterEnabled = savedDNSFilter
+        self.useBLEHID = savedUseBLEHID
         self.locationServiceURL = savedLocationURL
         self.apiKey = savedKey
         self.esp32Host = savedESP32Host
@@ -123,6 +134,7 @@ class AppCoordinator: ObservableObject {
             port: Int(savedESP32Port) ?? 80,
             log: logFn
         )
+        bleHIDCommander = BLEHIDCommander()
         locationMonitor = LocationMonitor(log: logFn)
         locationKeepAlive = LocationKeepAlive(log: logFn)
         dnsFilterManager = DNSFilterManager(log: logFn)
@@ -210,6 +222,15 @@ class AppCoordinator: ObservableObject {
         // Update ESP32 endpoint from current settings
         esp32Client.updateEndpoint(host: esp32Host, port: Int(esp32Port) ?? 80)
 
+        // Query ESP32 mode on startup
+        Task { await queryESP32Mode() }
+
+        // Start BLE HID if enabled
+        if useBLEHID {
+            bleHIDCommander.start(profile: .combo)
+            addLog("BLE HID commander started (combo profile)")
+        }
+
         // Start background keepalive (keeps app alive so timers fire in background)
         locationKeepAlive.start()
 
@@ -229,6 +250,7 @@ class AppCoordinator: ObservableObject {
     func stop() {
         isRunning = false
         dongleController.stop()
+        bleHIDCommander.stop()
         locationKeepAlive.stop()
         locationMonitor.stopMonitoring()
         wsManager.disconnect()
@@ -296,6 +318,9 @@ class AppCoordinator: ObservableObject {
         case .hidCommand(let cmd):
             handleHIDCommand(cmd)
 
+        case .gameCommand(let cmd):
+            handleGameCommand(cmd)
+
         case .locationUpdate:
             // Location updates should come from location service, not control channel
             addLog("Warning: location update on control channel (ignoring)")
@@ -331,32 +356,60 @@ class AppCoordinator: ObservableObject {
         case .hidCommand:
             addLog("Warning: HID command on location channel (ignoring)")
 
+        case .gameCommand:
+            addLog("Warning: game command on location channel (ignoring)")
+
         case .unknown(let type):
             addLog("Unhandled location type: \(type)")
         }
     }
 
-    // MARK: - HID Command → ESP32 Forwarding
+    // MARK: - ESP32 Mode Discovery
+
+    func queryESP32Mode() async {
+        if let mode = await esp32Client.getMode() {
+            esp32Mode = mode
+            addLog("ESP32 mode: \(mode.inputMode)/\(mode.outputDelivery)/\(mode.outputMode)")
+        } else {
+            addLog("ESP32 mode query failed (device may be offline)")
+        }
+    }
+
+    // MARK: - BLE HID Control
+
+    func toggleBLEHID() {
+        useBLEHID.toggle()
+        if useBLEHID {
+            bleHIDCommander.start(profile: .combo)
+            addLog("BLE HID: enabled (combo profile)")
+        } else {
+            bleHIDCommander.stop()
+            addLog("BLE HID: disabled")
+        }
+    }
+
+    // MARK: - HID Command → ESP32 or BLE HID Forwarding
 
     private func handleHIDCommand(_ cmd: HIDCommandMessage) {
         let receivedAt = Date().timeIntervalSince1970
         commandsSent += 1
-        addLog("HID: \(cmd.action) → ESP32")
+        let target = useBLEHID ? "BLE HID" : "ESP32"
+        addLog("HID: \(cmd.action) → \(target)")
 
         Task {
             let forwardedAt = Date().timeIntervalSince1970
-            let result = await esp32Client.sendCommand(
-                action: cmd.action,
-                params: cmd.params ?? [:]
-            )
+            let result: (success: Bool, completedAt: Double, error: String?)
 
-            await MainActor.run {
-                if result.success {
-                    self.commandsAcked += 1
-                }
+            if useBLEHID {
+                result = routeHIDToBLEHID(action: cmd.action, params: cmd.params ?? [:])
+            } else {
+                result = await esp32Client.sendCommand(action: cmd.action, params: cmd.params ?? [:])
             }
 
-            // Send CommandAck back to backend
+            await MainActor.run {
+                if result.success { self.commandsAcked += 1 }
+            }
+
             let ack = CommandAckMessage(
                 commandId: cmd.commandId ?? "",
                 commandSequence: cmd.commandSequence,
@@ -366,10 +419,116 @@ class AppCoordinator: ObservableObject {
                 success: result.success,
                 error: result.error
             )
-            await MainActor.run {
-                self.wsManager.sendJSON(ack)
-            }
+            await MainActor.run { self.wsManager.sendJSON(ack) }
         }
+    }
+
+    // MARK: - Game Command → ESP32 or BLE HID Forwarding
+
+    private func handleGameCommand(_ cmd: GameCommandMessage) {
+        let receivedAt = Date().timeIntervalSince1970
+        commandsSent += 1
+        let target = useBLEHID ? "BLE HID" : "ESP32"
+        addLog("Game: \(cmd.commandType)/\(cmd.action) → \(target)")
+
+        // Convert AnyCodableValue params to [String: Double] for ESP32
+        var doubleParams: [String: Double] = [:]
+        if let params = cmd.params {
+            for (k, v) in params { doubleParams[k] = v.doubleValue }
+        }
+
+        Task {
+            let forwardedAt = Date().timeIntervalSince1970
+            let result: (success: Bool, completedAt: Double, error: String?)
+
+            if useBLEHID {
+                result = routeGameToBLEHID(commandType: cmd.commandType, action: cmd.action, params: doubleParams)
+            } else {
+                result = await esp32Client.sendCommand(action: cmd.action, params: doubleParams)
+            }
+
+            await MainActor.run {
+                if result.success { self.commandsAcked += 1 }
+            }
+
+            let ack = CommandAckMessage(
+                commandId: cmd.commandId ?? "",
+                commandSequence: cmd.commandSequence,
+                receivedAt: receivedAt,
+                forwardedAt: forwardedAt,
+                completedAt: result.completedAt,
+                success: result.success,
+                error: result.error
+            )
+            await MainActor.run { self.wsManager.sendJSON(ack) }
+        }
+    }
+
+    // MARK: - BLE HID Routing
+
+    private func routeHIDToBLEHID(action: String, params: [String: Double]) -> (success: Bool, completedAt: Double, error: String?) {
+        guard bleHIDCommander.isConnected else {
+            return (false, Date().timeIntervalSince1970, "BLE HID not connected")
+        }
+        switch action {
+        case "move":
+            let dx = Int8(clamping: Int(params["dx"] ?? 0))
+            let dy = Int8(clamping: Int(params["dy"] ?? 0))
+            bleHIDCommander.mouseMove(dx: dx, dy: dy)
+        case "click":
+            bleHIDCommander.mouseClick()
+        case "press":
+            bleHIDCommander.mouseButton(buttons: 0x01)
+        case "release":
+            bleHIDCommander.mouseButton(buttons: 0x00)
+        default:
+            return (false, Date().timeIntervalSince1970, "Unknown HID action: \(action)")
+        }
+        return (true, Date().timeIntervalSince1970, nil)
+    }
+
+    private func routeGameToBLEHID(commandType: String, action: String, params: [String: Double]) -> (success: Bool, completedAt: Double, error: String?) {
+        guard bleHIDCommander.isConnected else {
+            return (false, Date().timeIntervalSince1970, "BLE HID not connected")
+        }
+
+        switch commandType {
+        case "gamepad":
+            switch action {
+            case "button_press":
+                let idx = Int(params["button_index"] ?? 0)
+                bleHIDCommander.gamepadButtonPress(buttonIndex: idx)
+            case "button_release":
+                let idx = Int(params["button_index"] ?? 0)
+                bleHIDCommander.gamepadButtonRelease(buttonIndex: idx)
+            case "stick":
+                let left = Int(params["stick_id"] ?? 0) == 0  // 0=left, 1=right
+                let x = UInt8(clamping: Int(params["x"] ?? 128))
+                let y = UInt8(clamping: Int(params["y"] ?? 128))
+                bleHIDCommander.gamepadSetStick(left: left, x: x, y: y)
+            case "dpad":
+                let dir = UInt8(clamping: Int(params["direction"] ?? 0x0F))
+                bleHIDCommander.gamepadSetHat(dir)
+            default:
+                return (false, Date().timeIntervalSince1970, "Unknown gamepad action: \(action)")
+            }
+        case "mouse":
+            return routeHIDToBLEHID(action: action, params: params)
+        case "keyboard":
+            switch action {
+            case "key_press":
+                let key = UInt8(clamping: Int(params["key"] ?? 0))
+                let mod = UInt8(clamping: Int(params["modifier"] ?? 0))
+                bleHIDCommander.keyPress(modifier: mod, keys: [key])
+            case "key_release":
+                bleHIDCommander.keyRelease()
+            default:
+                return (false, Date().timeIntervalSince1970, "Unknown keyboard action: \(action)")
+            }
+        default:
+            return (false, Date().timeIntervalSince1970, "Unknown command type: \(commandType)")
+        }
+        return (true, Date().timeIntervalSince1970, nil)
     }
 
     // MARK: - Status Reporting

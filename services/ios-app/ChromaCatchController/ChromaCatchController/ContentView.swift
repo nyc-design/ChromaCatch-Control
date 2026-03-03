@@ -14,6 +14,8 @@ struct ContentView: View {
                 ScrollView {
                     VStack(spacing: 16) {
                         SettingsSection()
+                        ESP32ModeSection()
+                        BLEHIDSection()
                         DongleSection()
                         BroadcastSection()
                         CoordinateSection()
@@ -42,6 +44,7 @@ struct StatusBar: View {
             StatusBadge(label: "CTL", connected: coordinator.wsManager.isConnected)
             StatusBadge(label: "LOC", connected: coordinator.locationWSManager.isConnected, activeColor: .blue)
             StatusBadge(label: "ESP", connected: coordinator.esp32Client.isReachable, activeColor: .purple)
+            StatusBadge(label: "HID", connected: coordinator.bleHIDCommander.isConnected, activeColor: .mint)
             StatusBadge(
                 label: "FWD",
                 connected: coordinator.dongleController.isForwarding,
@@ -126,6 +129,82 @@ struct SettingsSection: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(coordinator.isRunning ? .red : .green)
+            }
+        }
+        .padding()
+        .background(Color(.secondarySystemGroupedBackground))
+        .cornerRadius(12)
+    }
+}
+
+// MARK: - ESP32 Mode Section
+
+struct ESP32ModeSection: View {
+    @EnvironmentObject var coordinator: AppCoordinator
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("ESP32 Mode")
+                    .font(.headline)
+                Spacer()
+                Button("Refresh") {
+                    Task { await coordinator.queryESP32Mode() }
+                }
+                .font(.caption)
+                .buttonStyle(.bordered)
+            }
+
+            if coordinator.esp32Mode == ESP32Mode.unknown {
+                Text("Not connected — tap Refresh to query ESP32 mode.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            } else {
+                InfoRow(label: "Input", value: coordinator.esp32Mode.inputMode)
+                InfoRow(label: "Output", value: coordinator.esp32Mode.outputDelivery)
+                InfoRow(label: "Mode", value: coordinator.esp32Mode.outputMode)
+            }
+        }
+        .padding()
+        .background(Color(.secondarySystemGroupedBackground))
+        .cornerRadius(12)
+    }
+}
+
+// MARK: - BLE HID Section
+
+struct BLEHIDSection: View {
+    @EnvironmentObject var coordinator: AppCoordinator
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("BLE HID Commander")
+                .font(.headline)
+
+            Text("Route commands directly via Bluetooth HID instead of ESP32. Works with Switch, 3DS, PC.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            Toggle("Use BLE HID", isOn: Binding(
+                get: { coordinator.useBLEHID },
+                set: { _ in coordinator.toggleBLEHID() }
+            ))
+
+            if coordinator.useBLEHID {
+                HStack {
+                    Text("Advertising:")
+                        .foregroundColor(.secondary)
+                    Text(coordinator.bleHIDCommander.isAdvertising ? "Yes" : "No")
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundColor(coordinator.bleHIDCommander.isAdvertising ? .green : .secondary)
+                }
+                HStack {
+                    Text("Connected:")
+                        .foregroundColor(.secondary)
+                    Text(coordinator.bleHIDCommander.connectedDeviceName ?? (coordinator.bleHIDCommander.isConnected ? "Yes" : "No"))
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundColor(coordinator.bleHIDCommander.isConnected ? .green : .secondary)
+                }
             }
         }
         .padding()
@@ -421,6 +500,10 @@ struct DongleInfoSection: View {
             InfoRow(label: "Forwarding", value: coordinator.dongleController.isForwarding ? "Active" : "Inactive")
             InfoRow(label: "Cmds Sent", value: "\(coordinator.commandsSent)")
             InfoRow(label: "Cmds Acked", value: "\(coordinator.commandsAcked)")
+            InfoRow(label: "Cmd Target", value: coordinator.useBLEHID ? "BLE HID" : "ESP32")
+            if coordinator.esp32Mode != ESP32Mode.unknown {
+                InfoRow(label: "ESP32 Mode", value: coordinator.esp32Mode.outputMode)
+            }
         }
         .padding()
         .background(Color(.secondarySystemGroupedBackground))
