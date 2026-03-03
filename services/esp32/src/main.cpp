@@ -23,6 +23,7 @@
 #include <ESPmDNS.h>
 #include <WebServer.h>
 #include <ArduinoJson.h>
+#include <NimBLEDevice.h>
 #include <BleMouse.h>
 #include <BleKeyboard.h>
 #include <BleGamepad.h>
@@ -139,6 +140,10 @@ void initBLE() {
         Serial.println("BLE disabled (wired output mode)");
         return;
     }
+
+    // Configure NimBLE security for iOS HID pairing
+    NimBLEDevice::setSecurityAuth(true, false, true);   // bonding, no MITM, secure connections
+    NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_NO_OUTPUT);  // "Just Works" pairing
 
     if (currentOutputMode == OUTPUT_MOUSE_KB) {
         bleMouse    = new BleMouse(DEVICE_NAME, "ChromaCatch", 100);
