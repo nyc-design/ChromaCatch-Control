@@ -7,10 +7,11 @@ services:
         shared: ./services/shared
     container_name: chromacatch-backend
     restart: unless-stopped
-    # Share the workspace container's network so ports are reachable via
-    # Coder's port-forwarding proxy (DinD: bridge ports land on Docker host,
-    # not our workspace).
-    network_mode: "container:${CODER_CONTAINER_NAME:-coder-nyc-design-chromacatch-go-agents}"
+    ports:
+      - 8000:8000
+      - 8554:8554
+      - 8890:8890
+      - 8889:8889
     environment:
       - CC_BACKEND_API_KEY=${CC_BACKEND_API_KEY:-}
       - CC_BACKEND_MEDIAMTX_ENABLED=true
