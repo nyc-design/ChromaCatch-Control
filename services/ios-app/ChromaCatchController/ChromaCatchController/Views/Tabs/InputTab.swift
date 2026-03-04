@@ -50,6 +50,7 @@ struct InputTab: View {
                             )) {
                                 Text("Mouse + Keyboard").tag(HIDProfile.combo)
                                 Text("Gamepad").tag(HIDProfile.gamepad)
+                                Text("Switch Pro (Exp)").tag(HIDProfile.switchPro)
                             }
                             .pickerStyle(.segmented)
 
@@ -127,7 +128,7 @@ struct InputTab: View {
                                 .font(.caption)
                                 .foregroundColor(.secondary)
 
-                            if coordinator.bleHIDPreferredProfile == .gamepad {
+                            if coordinator.bleHIDPreferredProfile == .gamepad || coordinator.bleHIDPreferredProfile == .switchPro {
                                 GamepadControlPane()
                             } else {
                                 MouseKeyboardPane(manualText: $manualText)

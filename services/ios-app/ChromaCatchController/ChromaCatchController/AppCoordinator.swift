@@ -525,6 +525,7 @@ class AppCoordinator: ObservableObject {
             let esp32OutputMode: String
             switch profile {
             case .gamepad: esp32OutputMode = "gamepad"
+            case .switchPro: esp32OutputMode = "gamepad"
             case .combo, .mouse, .keyboard: esp32OutputMode = "mouse_keyboard"
             }
             addLog("HID mode change → ESP32: \(esp32OutputMode)")
