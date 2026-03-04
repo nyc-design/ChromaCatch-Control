@@ -15,6 +15,7 @@ import os
 // MARK: - BLE UUIDs (expanded 128-bit to bypass Apple's short-form blocklist)
 
 private let kHIDServiceUUID = CBUUID(string: "00001812-0000-1000-8000-00805F9B34FB")
+private let kHIDServiceShortUUID = CBUUID(string: "1812")
 private let kHIDInfoUUID = CBUUID(string: "00002A4A-0000-1000-8000-00805F9B34FB")
 private let kHIDReportMapUUID = CBUUID(string: "00002A4B-0000-1000-8000-00805F9B34FB")
 private let kHIDControlPointUUID = CBUUID(string: "00002A4C-0000-1000-8000-00805F9B34FB")
@@ -1256,20 +1257,12 @@ final class BLEHIDCommander: NSObject, ObservableObject {
     private func startAdvertising() {
         guard let pm = peripheralManager else { return }
         let localName: String = (activeProfile == .switchPro) ? "Pro Controller" : "ChromaCatch HID"
-        var payload: [String: Any] = [
+        let serviceUUIDs: [CBUUID] = (activeProfile == .switchPro) ? [kHIDServiceShortUUID] : [kHIDServiceUUID]
+        let payload: [String: Any] = [
             CBAdvertisementDataLocalNameKey: localName,
-            CBAdvertisementDataServiceUUIDsKey: [kHIDServiceUUID],
+            CBAdvertisementDataServiceUUIDsKey: serviceUUIDs,
         ]
-
-        if activeProfile == .switchPro {
-            // Nintendo-like manufacturer marker to improve discoverability on host scans
-            // that filter using mfg data in addition to HID service UUID.
-            // Format (little-endian): company ID 0x057E + product/version hint bytes.
-            payload[CBAdvertisementDataManufacturerDataKey] = Data([0x7E, 0x05, 0x09, 0x20, 0x01, 0x01])
-            payload[CBAdvertisementDataOverflowServiceUUIDsKey] = [kHIDServiceUUID, kBatteryServiceUUID]
-        }
-
-        hidLog.info("Starting advertising name=\(localName, privacy: .public), switchProfile=\(self.activeProfile == .switchPro)")
+        hidLog.info("Starting advertising name=\(localName, privacy: .public), switchProfile=\(self.activeProfile == .switchPro), uuid=\(serviceUUIDs.first?.uuidString ?? "?")")
         pm.startAdvertising(payload)
     }
 
