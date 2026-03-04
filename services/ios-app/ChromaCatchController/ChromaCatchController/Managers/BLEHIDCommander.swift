@@ -33,6 +33,7 @@ private let kBatteryLevelUUID = CBUUID(string: "00002A19-0000-1000-8000-00805F9B
 private let kDeviceInfoServiceUUID = CBUUID(string: "0000180A-0000-1000-8000-00805F9B34FB")
 private let kManufacturerNameUUID = CBUUID(string: "00002A29-0000-1000-8000-00805F9B34FB")
 private let kModelNumberUUID = CBUUID(string: "00002A24-0000-1000-8000-00805F9B34FB")
+private let kPnPIDUUID = CBUUID(string: "00002A50-0000-1000-8000-00805F9B34FB")
 
 private let kReportReferenceUUID = CBUUID(string: "00002908-0000-1000-8000-00805F9B34FB")
 
@@ -251,6 +252,7 @@ final class BLEHIDCommander: NSObject, ObservableObject {
     private var switchOutputReport10Characteristic: CBMutableCharacteristic?
     private var switchOutputReport11Characteristic: CBMutableCharacteristic?
     private var switchOutputReport12Characteristic: CBMutableCharacteristic?
+    private var switchInputStreamingTimer: DispatchSourceTimer?
 
     // Thread-safe central tracking.
     private var subscribedCentrals: [CBCentral] = []
@@ -379,6 +381,7 @@ final class BLEHIDCommander: NSObject, ObservableObject {
         switchOutputReport10Characteristic = nil
         switchOutputReport11Characteristic = nil
         switchOutputReport12Characteristic = nil
+        stopSwitchInputStreaming()
 
         pm.stopAdvertising()
         pm.removeAllServices()
@@ -558,7 +561,7 @@ final class BLEHIDCommander: NSObject, ObservableObject {
     /// Report: [0x03, buttonsLo, buttonsHi, hat, lx, ly, rx, ry] = 8 bytes.
     private func sendGamepadReport() {
         if activeProfile == .switchPro {
-            sendSwitchInputReport30()
+            sendCurrentSwitchInputReport()
             return
         }
         let lo = UInt8(gamepadButtons & 0xFF)
@@ -575,6 +578,44 @@ final class BLEHIDCommander: NSObject, ObservableObject {
         var report = Data([0x30])
         report.append(Data(payload))
         sendReport(report)
+    }
+
+    private func sendSwitchInputReport3F() {
+        var payload = [UInt8](repeating: 0, count: 11)
+        let buttonBytes = switchButtonStatusBytes()
+        payload[0] = buttonBytes.0
+        payload[1] = buttonBytes.2
+        payload[2] = (gamepadHat <= 7) ? gamepadHat : 0x0F
+
+        func axis16(_ v: UInt8) -> (UInt8, UInt8) {
+            let value = UInt16((Int(v) * 65535) / 255)
+            return (UInt8(value & 0xFF), UInt8((value >> 8) & 0xFF))
+        }
+
+        let (lx0, lx1) = axis16(gamepadLeftX)
+        let (ly0, ly1) = axis16(gamepadLeftY)
+        let (rx0, rx1) = axis16(gamepadRightX)
+        let (ry0, ry1) = axis16(gamepadRightY)
+        payload[3] = lx0
+        payload[4] = lx1
+        payload[5] = ly0
+        payload[6] = ly1
+        payload[7] = rx0
+        payload[8] = rx1
+        payload[9] = ry0
+        payload[10] = ry1
+
+        var report = Data([0x3F])
+        report.append(Data(payload))
+        sendReport(report)
+    }
+
+    private func sendCurrentSwitchInputReport() {
+        if switchInputMode == 0x3F {
+            sendSwitchInputReport3F()
+        } else {
+            sendSwitchInputReport30()
+        }
     }
 
     private func sendSwitchSubcommandReply(ack: UInt8, subcommand: UInt8, extraData: [UInt8] = []) {
@@ -596,9 +637,34 @@ final class BLEHIDCommander: NSObject, ObservableObject {
         for idx in 0 ..< count {
             DispatchQueue.main.asyncAfter(deadline: .now() + (Double(idx) / 15.0)) { [weak self] in
                 guard let self, self.activeProfile == .switchPro else { return }
-                self.sendSwitchInputReport30()
+                self.sendCurrentSwitchInputReport()
             }
         }
+    }
+
+    private func startSwitchInputStreamingIfNeeded() {
+        guard activeProfile == .switchPro else { return }
+        guard switchInputStreamingTimer == nil else { return }
+
+        lock.lock()
+        let hasSubscribers = !subscribedCentrals.isEmpty
+        lock.unlock()
+        guard hasSubscribers else { return }
+
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + .milliseconds(10), repeating: .milliseconds(8), leeway: .milliseconds(2)) // ~125Hz
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            guard self.activeProfile == .switchPro else { return }
+            self.sendCurrentSwitchInputReport()
+        }
+        switchInputStreamingTimer = timer
+        timer.resume()
+    }
+
+    private func stopSwitchInputStreaming() {
+        switchInputStreamingTimer?.cancel()
+        switchInputStreamingTimer = nil
     }
 
     private func applySwitchStandardInput(to payload: inout [UInt8]) {
@@ -666,8 +732,8 @@ final class BLEHIDCommander: NSObject, ObservableObject {
         set(6, in: &left, bit: 0x80) // ZL
 
         // Shared buttons
-        set(8, in: &shared, bit: 0x01) // Minus
-        set(9, in: &shared, bit: 0x02) // Plus
+        set(8, in: &shared, bit: 0x02) // Minus
+        set(9, in: &shared, bit: 0x01) // Plus
         set(11, in: &shared, bit: 0x04) // R stick click
         set(10, in: &shared, bit: 0x08) // L stick click
         set(12, in: &shared, bit: 0x10) // Home
@@ -772,6 +838,7 @@ final class BLEHIDCommander: NSObject, ObservableObject {
         case 0x03: // Set mode
             if let mode = data.first { switchInputMode = mode }
             sendSwitchSubcommandReply(ack: 0x80, subcommand: 0x03)
+            sendCurrentSwitchInputReport()
         case 0x04: // Trigger buttons elapsed time
             sendSwitchSubcommandReply(ack: 0x83, subcommand: 0x04)
         case 0x40: // Toggle IMU
@@ -800,7 +867,7 @@ final class BLEHIDCommander: NSObject, ObservableObject {
             sendSwitchSubcommandReply(ack: 0xA0, subcommand: 0x21, extraData: extra)
         default:
             // Match NXBT behavior: ignore unknown subcommands and keep full input stream going.
-            sendSwitchInputReport30()
+            sendCurrentSwitchInputReport()
         }
     }
 
@@ -821,28 +888,30 @@ final class BLEHIDCommander: NSObject, ObservableObject {
 
     private func handleSwitchOutputReportWrite(reportID: UInt8, data: Data) {
         let parsed = parseSwitchOutputWrite(fallbackReportID: reportID, data: data)
+        hidLog.info("Switch output write: report=0x\(String(parsed.reportID, radix: 16, uppercase: true), privacy: .public), len=\(parsed.payload.count)")
         switch parsed.reportID {
         case 0x10:
             switchVibrationEnabled = true
             lastSwitchOutputReport10 = normalized(Data(parsed.payload), length: 0x30)
-            sendSwitchInputReport30()
+            sendCurrentSwitchInputReport()
         case 0x11:
             lastSwitchOutputReport11 = normalized(Data(parsed.payload), length: 0x30)
-            sendSwitchInputReport30()
+            sendCurrentSwitchInputReport()
         case 0x12:
             lastSwitchOutputReport12 = normalized(Data(parsed.payload), length: 0x30)
-            sendSwitchInputReport30()
+            sendCurrentSwitchInputReport()
         case 0x01:
             lastSwitchOutputReport01 = normalized(Data(parsed.payload), length: 0x30)
             guard parsed.payload.count >= 10 else {
-                sendSwitchInputReport30()
+                sendCurrentSwitchInputReport()
                 return
             }
             let subcommand = parsed.payload[9]
             let subData = Array(parsed.payload.dropFirst(10))
+            hidLog.info("Switch subcommand: 0x\(String(subcommand, radix: 16, uppercase: true), privacy: .public), len=\(subData.count)")
             handleSwitchSubcommand(subcommand, data: subData)
         default:
-            sendSwitchInputReport30()
+            sendCurrentSwitchInputReport()
         }
     }
 
@@ -955,6 +1024,7 @@ final class BLEHIDCommander: NSObject, ObservableObject {
         hidLog.info("Setting up GATT services for profile: \(self.activeProfile.rawValue)")
 
         pm.removeAllServices()
+        stopSwitchInputStreaming()
         servicesAdded = 0
         systemControlInputReportCharacteristic = nil
         consumerInputReportCharacteristic = nil
@@ -1025,8 +1095,21 @@ final class BLEHIDCommander: NSObject, ObservableObject {
             value: Data((activeProfile == .switchPro ? "Pro Controller" : "ChromaCatch HID").utf8),
             permissions: [.readable]
         )
+        // PnP ID: [vendorSource(USB=0x02), vendorID, productID, productVersion]
+        let pnpIDValue: Data = {
+            if activeProfile == .switchPro {
+                return Data([0x02, 0x7E, 0x05, 0x09, 0x20, 0x10, 0x01]) // Nintendo 0x057E, Pro Controller 0x2009
+            }
+            return Data([0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01])
+        }()
+        let pnpIDChar = CBMutableCharacteristic(
+            type: kPnPIDUUID,
+            properties: [.read],
+            value: pnpIDValue,
+            permissions: [.readable]
+        )
         let deviceInfoService = CBMutableService(type: kDeviceInfoServiceUUID, primary: false)
-        deviceInfoService.characteristics = [manufacturerChar, modelNumberChar]
+        deviceInfoService.characteristics = [manufacturerChar, modelNumberChar, pnpIDChar]
 
         // --- 4) HID Service (primary) ---
         let reportDescriptor: [UInt8]
@@ -1042,7 +1125,7 @@ final class BLEHIDCommander: NSObject, ObservableObject {
         let hidInfoChar = CBMutableCharacteristic(
             type: kHIDInfoUUID,
             properties: [.read],
-            value: Data([0x11, 0x01, 0x00, 0x03]),
+            value: Data([0x11, 0x01, 0x08, 0x03]),
             permissions: [.readable]
         )
 
@@ -1208,6 +1291,7 @@ extension BLEHIDCommander: CBPeripheralManagerDelegate {
             setupServices()
         case .poweredOff:
             hidLog.warning("Bluetooth powered off")
+            stopSwitchInputStreaming()
             DispatchQueue.main.async {
                 self.isAdvertising = false
                 self.isConnected = false
@@ -1265,6 +1349,7 @@ extension BLEHIDCommander: CBPeripheralManagerDelegate {
         if activeProfile == .switchPro {
             // Switch handshake reliability improves when we proactively stream initial neutral reports.
             sendSwitchHandshakeBurst()
+            startSwitchInputStreamingIfNeeded()
         }
     }
 
@@ -1281,6 +1366,7 @@ extension BLEHIDCommander: CBPeripheralManagerDelegate {
                 self.isConnected = false
                 self.connectedDeviceName = nil
             }
+            stopSwitchInputStreaming()
         }
     }
 
