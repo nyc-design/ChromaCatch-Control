@@ -6,6 +6,7 @@ from pydantic_settings import BaseSettings
 class BackendSettings(BaseSettings):
     # Authentication
     api_key: str = ""
+    automation_api_key: str = ""
 
     # Server
     host: str = "0.0.0.0"

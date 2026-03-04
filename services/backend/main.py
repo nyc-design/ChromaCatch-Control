@@ -10,29 +10,21 @@ from fastapi import FastAPI, HTTPException, Query, WebSocket
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
+from backend.app_state import (
+    mediamtx_manager,
+    rtp_fec_receiver,
+    rtsp_consumer,
+    session_manager,
+    ws_handler,
+)
 from backend.config import backend_settings
-from backend.mediamtx_manager import MediaMTXManager
-from backend.rtp_fec_receiver import RTPFECReceiver
-from backend.rtsp_consumer import RTSPFrameConsumer
-from backend.session_manager import SessionManager
-from backend.ws_handler import WebSocketHandler
+from backend.routers import automation_router, client_router
 from shared.frame_codec import encode_frame
 from shared.constants import setup_logging
 from shared.messages import GameCommandMessage, HIDCommandMessage, SetHIDModeMessage
 
 setup_logging()
 logger = logging.getLogger(__name__)
-
-session_manager = SessionManager()
-ws_handler = WebSocketHandler(session_manager)
-mediamtx_manager = MediaMTXManager()
-rtsp_consumer = RTSPFrameConsumer(session_manager)
-rtp_fec_receiver = RTPFECReceiver(
-    session_manager,
-    bind_host=backend_settings.rtp_fec_bind_host,
-    bind_port=backend_settings.rtp_fec_bind_port,
-    client_id=backend_settings.rtp_fec_client_id,
-)
 
 
 @asynccontextmanager
@@ -52,11 +44,15 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="ChromaCatch-Go Backend",
-    description="Remote backend for shiny hunting automation",
-    version="0.2.0",
+    title="ChromaCatch Control Backend",
+    description="Control-plane backend for connected clients, CV, and automation APIs",
+    version="0.3.0",
     lifespan=lifespan,
 )
+
+# New namespaced APIs (keep legacy endpoints below for backward compatibility).
+app.include_router(client_router)
+app.include_router(automation_router)
 
 
 # --- WebSocket Endpoint --- $TODO: REORG: move to separate router file

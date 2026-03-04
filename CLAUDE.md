@@ -1,4 +1,4 @@
-# ChromaCatch-Go
+# ChromaCatch-Control
 
 Automated shiny hunting bot for Pokemon Go using AirPlay screen mirroring, computer vision, and Bluetooth HID emulation.
 
@@ -26,10 +26,12 @@ Automated shiny hunting bot for Pokemon Go using AirPlay screen mirroring, compu
 
 ### Service Architecture
 - **Airplay Client** (`services/airplay-client/`): Runs near the source device. Manages video capture (AirPlay, SysDVR, NTR, screen capture), delivers media to the backend (via WebRTC, SRT, or WebSocket), and routes commands from the backend to the target device via pluggable Commander interface (ESP32, sys-botbase, Luma3DS, virtual gamepad). Deployed as a CLI tool.
-- **iOS Controller App** (`services/ios-app/`): Native iPhone app — full drop-in replacement for the CLI airplay-client. Controls iTools BT GPS dongle (EA session + BLE NMEA), relays HID commands to ESP32 via HTTP, and broadcasts screen via ReplayKit (H.264 over WebSocket, same h264-ws protocol as CLI). Connects to both main backend (`/ws/control`) and location service (`/ws/location`).
-- **Location Service** (`services/location_service/`): Standalone FastAPI service on port 8001. Decouples GPS coordinate management from the video/HID pipeline. iOS apps connect via WebSocket to receive coordinates; orchestrator or manual `POST /location` pushes coordinates.
-- **Remote Backend** (`services/backend/`): Runs in the cloud (Cloud Run, VM, etc.). Receives frames (via RTSP from MediaMTX or WebSocket), runs CV analysis, makes decisions, and sends HID commands back through WebSocket control channel.
+- **iOS Controller App** (`services/ios-app/`): Native iPhone app — full drop-in replacement for the CLI airplay-client. Controls iTools BT GPS dongle (EA session + BLE NMEA), relays HID commands to ESP32 over WebSocket-first transport (HTTP fallback), and broadcasts screen via ReplayKit (H.264 over WebSocket, same h264-ws protocol as CLI). Connects to backend control WS (`/ws/control`) plus external location service.
+- **Remote Backend** (`services/backend/`): Runs in the cloud (Cloud Run, VM, etc.). Receives frames (via RTSP from MediaMTX or WebSocket), runs CV analysis, and exposes split APIs:
+  - client API (`/api/client/v1/...`) for first-party client communication and ops tooling
+  - automation API (`/api/automation/v1/...`) for external game automation repos
 - **ESP32 Firmware** (`services/esp32/`): Multi-mode HID device with e-ink display menu. Supports BLE Mouse+Keyboard, BLE Gamepad, and USB HID (wired) output modes. Receives commands over WiFi HTTP or USB Serial. On-device button menu for mode selection. Mode discovery via `GET /mode` and remote configuration via `POST /mode`.
+- **Control SDK** (`services/control-sdk/`): Python SDK package for automation repos to consume control-plane REST + WebSocket APIs.
 - **Shared** (`services/shared/`): Protocol contract between services — message models, frame codec, constants.
 
 ### Media Transport Modes
@@ -197,12 +199,6 @@ ChromaCatch-Go/
 │   │       ├── test_transport.py            # SRT + WS transport + factory tests
 │   │       ├── test_ws_client.py
 │   │       └── test_cli.py
-│   ├── location_service/                    # REMOTE: GPS coordinate service (port 8001)
-│   │   ├── config.py                        # LocationSettings (CC_LOCATION_ prefix)
-│   │   ├── main.py                          # FastAPI + WS /ws/location + POST/GET /location
-│   │   ├── session_manager.py               # Location-only client session tracking
-│   │   └── tests/
-│   │       └── test_location_api.py         # Location service tests (8 tests)
 │   ├── ios-app/                              # iOS: full client (dongle + screen broadcast + HID relay)
 │   │   └── ChromaCatchController/
 │   │       ├── ChromaCatchController.xcodeproj
@@ -239,6 +235,9 @@ ChromaCatch-Go/
 │   └── esp32/                               # ESP32 firmware (v2: multi-mode HID)
 │       ├── platformio.ini                   # BLE Mouse/KB/Gamepad + GxEPD2 + AceButton
 │       └── src/main.cpp                     # Multi-mode HID + e-ink menu + WiFi/Serial
+│   └── control-sdk/                         # Python SDK consumed by external automation repos
+│       ├── chromacatch_control_sdk/
+│       └── tests/
 └── scripts/
     ├── start.sh                             # Dev: run both services locally
     ├── start_client.sh                      # Launch client locally
@@ -267,7 +266,7 @@ ChromaCatch-Go/
 | H.264 decode | PyAV (av) — FFmpeg wrapper for backend H.264→BGR decode |
 | iOS app | Swift, SwiftUI, CoreBluetooth, ExternalAccessory, URLSessionWebSocketTask |
 | GPS spoofing | iTools BT dongle (Beken BK-BLE-1.0, MFi coprocessor, EA protocol) |
-| Testing | pytest, pytest-asyncio (499 tests) |
+| Testing | pytest, pytest-asyncio (543 tests) |
 | Linting | ruff, black, mypy |
 
 ## Phases
@@ -310,7 +309,7 @@ ChromaCatch-Go/
 
 ### Phase 1.7: Location Spoofing + iOS Full Client [IN PROGRESS]
 - [x] iTools BT dongle protocol reverse-engineered (AT+CN/RP init, NMEA RMC+GGA over BLE FF03)
-- [x] Standalone location service (`services/location_service/`, port 8001) — decoupled from main backend
+- [x] Standalone location service extracted to external `ChromaCatch-Go` repo (decoupled from control-plane backend)
 - [x] iOS app scaffold (SwiftUI, CoreBluetooth BLEManager, EA EAManager, WebSocket, NMEA generator)
 - [x] Dongle controller (AT+CN init → NMEA loop at 1Hz with RP status monitoring)
 - [x] iOS dual WebSocket (main backend `/ws/control` + location service `/ws/location`)
@@ -320,9 +319,9 @@ ChromaCatch-Go/
 - [x] App Group IPC (shared UserDefaults between main app and broadcast extension)
 - [x] GPS location verification (LocationMonitor: CLLocationManager polling + haversine drift + auto-recovery)
 - [x] DNS filter extension (NEPacketTunnelProvider sinkhole for Apple Wi-Fi/cell positioning domains)
-- [x] 265 tests passing (8 new location service tests, 7 removed from backend)
+- [x] 265 tests passing (location service tests now live in external `ChromaCatch-Go` repo)
 - [ ] On-device testing: verify EA session activates dongle GPS forwarding (RP status `>`)
-- [ ] End-to-end: location service POST /location → iOS app WS → BLE NMEA → iPhone location change
+- [ ] End-to-end: external location service POST /location → iOS app WS → BLE NMEA → iPhone location change
 - [ ] End-to-end: ReplayKit broadcast → H.264 frames on backend dashboard (same stream as CLI)
 
 ### Phase 2A: Universal Source / Transport / Input [COMPLETE]
@@ -346,6 +345,8 @@ ChromaCatch-Go/
 - [x] ESP32 firmware v2 — e-ink display menu + buttons, BLE Mouse+KB/Gamepad modes, WiFi HTTP + USB Serial input, GET/POST /mode API
 - [x] ESP32Client updated with get_mode() and set_mode() for mode discovery/configuration
 - [x] iOS BLE HID commander (`BLEHIDCommander.swift`) — CBPeripheralManager with expanded 128-bit UUID, mouse/kb/gamepad profiles
+- [x] iOS BLE HID stability hardening — boot input characteristics (2A22/2A33), robust read/write handling, thread-safe peripheral queue, background peripheral mode
+- [x] iOS BLE HID UX controls — disconnect/discoverable reset, host scan/connect list, combo↔gamepad mode switch, local touch trackpad/keyboard + gamepad pane (backend commands prioritized)
 - [x] 491 tests passing (226 new tests across all sprints)
 
 ### Phase 2: Computer Vision
@@ -366,13 +367,13 @@ ChromaCatch-Go/
 # Install
 poetry install
 
-# Run all tests (491 tests)
+# Run all tests (543 tests)
 poetry run pytest
 
 # Run by suite
 poetry run pytest services/backend/tests/              # Backend + shared + integration
 poetry run pytest services/airplay-client/tests/        # Client component tests
-poetry run pytest services/location_service/tests/      # Location service tests
+poetry run pytest services/control-sdk/tests/           # Control SDK tests
 poetry run pytest services/backend/tests/integration/   # End-to-end round-trip only
 
 # Start backend (cloud/remote)
@@ -452,12 +453,7 @@ CC_CLIENT_WEBRTC_TURN_USERNAME=
 CC_CLIENT_WEBRTC_TURN_PASSWORD=
 ```
 
-**Location Service** (`.env` with `CC_LOCATION_` prefix):
-```bash
-CC_LOCATION_API_KEY=your-secret-key
-CC_LOCATION_HOST=0.0.0.0
-CC_LOCATION_PORT=8001
-```
+> Location service has been extracted to the external `ChromaCatch-Go` repo.
 
 **Backend** (`.env` with `CC_BACKEND_` prefix):
 ```bash
@@ -489,20 +485,31 @@ CC_BACKEND_RTP_FEC_CLIENT_ID=rtp-fec       # client_id for session manager
 | WS | `/ws/control` | Low-latency command/ack WebSocket |
 | GET | `/health` | Health check |
 | GET | `/status` | Connected clients count |
-| POST | `/command` | Send HID command to client(s) |
-| POST | `/hid-mode` | Switch client HID profile (gamepad/combo/mouse/keyboard) |
-| GET | `/clients/{id}/status` | Get client's latest status |
-| GET | `/clients/{id}/frame` | Get latest frame as JPEG |
-| GET | `/clients/{id}/audio` | Get latest audio chunk as WAV snippet |
-| POST | `/clients/{id}/rtsp-start` | Start RTSP consumer for SRT client |
-| GET | `/stream/{id}` | MJPEG live frame stream |
+| POST | `/command` | Legacy command endpoint (backward compatible) |
+| POST | `/hid-mode` | Legacy HID mode switch endpoint (backward compatible) |
+| GET | `/clients/{id}/status` | Legacy client status endpoint |
+| GET | `/clients/{id}/frame` | Legacy latest-frame endpoint |
+| GET | `/stream/{id}` | Legacy MJPEG stream endpoint |
 | GET | `/dashboard` | Browser dashboard (WebRTC + MJPEG fallback) |
 
-## Location Service API (port 8001)
+## Client API (`/api/client/v1`)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| WS | `/ws/location` | Location WebSocket (iOS app connects to receive coordinates) |
-| POST | `/location` | Send GPS coordinates to connected iOS client(s) |
-| GET | `/location` | Get current spoofed location (per client or all) |
-| GET | `/health` | Health check (`role: location-service`) |
+| WS | `/api/client/v1/ws/client` | Frame/status channel for clients |
+| WS | `/api/client/v1/ws/control` | Low-latency command + ack channel |
+| GET | `/api/client/v1/clients` | List connected clients |
+| POST | `/api/client/v1/commands` | Send command to one/all clients |
+| POST | `/api/client/v1/hid-mode` | Switch client HID profile |
+
+## Automation API (`/api/automation/v1`)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/automation/v1/clients` | List connected clients for automation bots |
+| GET | `/api/automation/v1/clients/{id}/frame` | Get latest frame (JPEG bytes) |
+| POST | `/api/automation/v1/cv/template-match` | Template matching against latest client frame |
+| POST | `/api/automation/v1/commands` | Send automation command |
+| WS | `/api/automation/v1/ws/commands` | Low-latency automation command channel |
+
+> GPS/location APIs are now hosted in the external `ChromaCatch-Go` repo.

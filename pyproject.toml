@@ -3,9 +3,9 @@
 # can exercise backend + client tests in one go.  Each service has its own
 # pyproject.toml for isolated Docker builds and deployments.
 [tool.poetry]
-name = "chromacatch-go"
+name = "chromacatch-control"
 version = "0.1.0"
-description = "Automated shiny hunting bot for Pokemon Go"
+description = "ChromaCatch control-plane workspace"
 authors = ["Neil Tapiavala <neil@tapiavala.com>"]
 readme = "CLAUDE.md"
 package-mode = false
@@ -50,4 +50,4 @@ warn_unused_configs = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["services/backend/tests", "services/airplay-client/tests", "services/location_service/tests"]
+testpaths = ["services/backend/tests", "services/airplay-client/tests", "services/control-sdk/tests"]
