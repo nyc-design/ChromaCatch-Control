@@ -189,26 +189,24 @@ private let comboReportDescriptor: [UInt8] = [
     0x01, 0x75, 0x08, 0x15, 0x00, 0x25, 0xFF, 0x81, 0x00, 0xC0, 0xC0,
 ]
 
-/// Nintendo-style report map used by existing Switch controller emulators (experimental over BLE).
-/// Source lineage: joycontrol / nxbt SDP HID descriptor list.
+/// Nintendo-style report map used by NXBT's Switch Pro emulation profile.
+/// This keeps report IDs and sizes aligned with the known-working NXBT handshake.
 private let switchProReportDescriptor: [UInt8] = [
-    0x05, 0x01, 0x15, 0x00, 0x09, 0x04, 0xA1, 0x01, 0x85, 0x30, 0x05, 0x01,
-    0x05, 0x09, 0x19, 0x01, 0x29, 0x0A, 0x15, 0x00, 0x25, 0x01, 0x75, 0x01,
-    0x95, 0x0A, 0x55, 0x00, 0x65, 0x00, 0x81, 0x02, 0x05, 0x09, 0x19, 0x0B,
-    0x29, 0x0E, 0x15, 0x00, 0x25, 0x01, 0x75, 0x01, 0x95, 0x04, 0x81, 0x02,
-    0x75, 0x01, 0x95, 0x02, 0x81, 0x03, 0x0B, 0x01, 0x00, 0x01, 0x00, 0xA1,
-    0x00, 0x0B, 0x30, 0x00, 0x01, 0x00, 0x0B, 0x31, 0x00, 0x01, 0x00, 0x0B,
-    0x32, 0x00, 0x01, 0x00, 0x0B, 0x35, 0x00, 0x01, 0x00, 0x15, 0x00, 0x27,
-    0xFF, 0xFF, 0x00, 0x00, 0x75, 0x10, 0x95, 0x04, 0x81, 0x02, 0xC0, 0x0B,
-    0x39, 0x00, 0x01, 0x00, 0x15, 0x00, 0x25, 0x07, 0x35, 0x00, 0x46, 0x3B,
-    0x01, 0x65, 0x14, 0x75, 0x04, 0x95, 0x01, 0x81, 0x02, 0x05, 0x09, 0x19,
-    0x0F, 0x29, 0x12, 0x15, 0x00, 0x25, 0x01, 0x75, 0x01, 0x95, 0x04, 0x81,
-    0x02, 0x75, 0x08, 0x95, 0x34, 0x81, 0x03, 0x06, 0x00, 0xFF, 0x85, 0x21,
-    0x09, 0x01, 0x75, 0x08, 0x95, 0x3F, 0x81, 0x03, 0x85, 0x81, 0x09, 0x02,
-    0x75, 0x08, 0x95, 0x3F, 0x81, 0x03, 0x85, 0x01, 0x09, 0x03, 0x75, 0x08,
-    0x95, 0x3F, 0x91, 0x83, 0x85, 0x10, 0x09, 0x04, 0x75, 0x08, 0x95, 0x3F,
-    0x91, 0x83, 0x85, 0x80, 0x09, 0x05, 0x75, 0x08, 0x95, 0x3F, 0x91, 0x83,
-    0x85, 0x82, 0x09, 0x06, 0x75, 0x08, 0x95, 0x3F, 0x91, 0x83, 0xC0,
+    0x05, 0x01, 0x09, 0x05, 0xA1, 0x01, 0x06, 0x01, 0xFF, 0x85, 0x21, 0x09,
+    0x21, 0x75, 0x08, 0x95, 0x30, 0x81, 0x02, 0x85, 0x30, 0x09, 0x30, 0x75,
+    0x08, 0x95, 0x30, 0x81, 0x02, 0x85, 0x31, 0x09, 0x31, 0x75, 0x08, 0x96,
+    0x69, 0x01, 0x81, 0x02, 0x85, 0x32, 0x09, 0x32, 0x75, 0x08, 0x96, 0x69,
+    0x01, 0x81, 0x02, 0x85, 0x33, 0x09, 0x33, 0x75, 0x08, 0x96, 0x69, 0x01,
+    0x81, 0x02, 0x85, 0x3F, 0x05, 0x09, 0x19, 0x01, 0x29, 0x10, 0x15, 0x00,
+    0x25, 0x01, 0x75, 0x01, 0x95, 0x10, 0x81, 0x02, 0x05, 0x01, 0x09, 0x39,
+    0x15, 0x00, 0x25, 0x07, 0x75, 0x04, 0x95, 0x01, 0x81, 0x42, 0x05, 0x09,
+    0x75, 0x04, 0x95, 0x01, 0x81, 0x01, 0x05, 0x01, 0x09, 0x30, 0x09, 0x31,
+    0x09, 0x33, 0x09, 0x34, 0x16, 0x00, 0x00, 0x27, 0xFF, 0xFF, 0x00, 0x00,
+    0x75, 0x10, 0x95, 0x04, 0x81, 0x02, 0x06, 0x01, 0xFF, 0x85, 0x01, 0x09,
+    0x01, 0x75, 0x08, 0x95, 0x30, 0x91, 0x02, 0x85, 0x10, 0x09, 0x10, 0x75,
+    0x08, 0x95, 0x30, 0x91, 0x02, 0x85, 0x11, 0x09, 0x11, 0x75, 0x08, 0x95,
+    0x30, 0x91, 0x02, 0x85, 0x12, 0x09, 0x12, 0x75, 0x08, 0x95, 0x30, 0x91,
+    0x02, 0xC0,
 ]
 
 // MARK: - Appearance values (Bluetooth SIG assigned numbers)
@@ -245,8 +243,14 @@ final class BLEHIDCommander: NSObject, ObservableObject {
     private var bootMouseInputCharacteristic: CBMutableCharacteristic?
     private var switchInputReport21Characteristic: CBMutableCharacteristic?
     private var switchInputReport30Characteristic: CBMutableCharacteristic?
+    private var switchInputReport31Characteristic: CBMutableCharacteristic?
+    private var switchInputReport32Characteristic: CBMutableCharacteristic?
+    private var switchInputReport33Characteristic: CBMutableCharacteristic?
+    private var switchInputReport3FCharacteristic: CBMutableCharacteristic?
     private var switchOutputReport01Characteristic: CBMutableCharacteristic?
     private var switchOutputReport10Characteristic: CBMutableCharacteristic?
+    private var switchOutputReport11Characteristic: CBMutableCharacteristic?
+    private var switchOutputReport12Characteristic: CBMutableCharacteristic?
 
     // Thread-safe central tracking.
     private var subscribedCentrals: [CBCentral] = []
@@ -278,17 +282,33 @@ final class BLEHIDCommander: NSObject, ObservableObject {
     private var lastKeyboardInputReport = Data([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
     private var lastKeyboardOutputReport = Data([0x00])
     private var lastGamepadInputReport = Data([0x00, 0x00, 0x0F, 0x80, 0x80, 0x80, 0x80])
-    private var lastSwitchInputReport21 = Data(repeating: 0, count: 0x3F)
-    private var lastSwitchInputReport30 = Data(repeating: 0, count: 0x3F)
-    private var lastSwitchOutputReport01 = Data(repeating: 0, count: 0x3F)
-    private var lastSwitchOutputReport10 = Data(repeating: 0, count: 0x3F)
+    private var lastSwitchInputReport21 = Data(repeating: 0, count: 0x30)
+    private var lastSwitchInputReport30 = Data(repeating: 0, count: 0x30)
+    private var lastSwitchInputReport31 = Data(repeating: 0, count: 0x169)
+    private var lastSwitchInputReport32 = Data(repeating: 0, count: 0x169)
+    private var lastSwitchInputReport33 = Data(repeating: 0, count: 0x169)
+    private var lastSwitchInputReport3F = Data(repeating: 0, count: 11)
+    private var lastSwitchOutputReport01 = Data(repeating: 0, count: 0x30)
+    private var lastSwitchOutputReport10 = Data(repeating: 0, count: 0x30)
+    private var lastSwitchOutputReport11 = Data(repeating: 0, count: 0x30)
+    private var lastSwitchOutputReport12 = Data(repeating: 0, count: 0x30)
     private var batteryLevel: UInt8 = 100
     private var lastKeyboardBootReport = Data(repeating: 0, count: 8)
     private var lastMouseBootReport = Data(repeating: 0, count: 3)
     private var switchInputMode: UInt8 = 0x30
     private var switchVibrationEnabled = false
+    private var switchIMUEnabled = false
     private var switchPlayerLights: UInt8 = 0x00
+    private var switchPlayerNumber: Int?
+    private var switchDeviceInfoQueried = false
+    private var switchConnectionInfo: UInt8 = 0x00 // Pro Controller
+    private var switchBatteryLevel: UInt8 = 0x90 // high nibble battery
+    private var switchVibratorByte: UInt8 = 0xA0
     private var switchInputTimer: UInt8 = 0x00
+    private var switchLastTimerTimestamp: TimeInterval?
+    private let switchVibratorCandidates: [UInt8] = [0xA0, 0xB0, 0xC0, 0x90]
+    private let switchBodyColor: [UInt8] = [0x82, 0x82, 0x82]
+    private let switchButtonColor: [UInt8] = [0x0F, 0x0F, 0x0F]
     private let switchControllerAddress: [UInt8] = [0x7C, 0xBB, 0x8A, 0x52, 0x34, 0x12]
 
     override init() {
@@ -311,8 +331,15 @@ final class BLEHIDCommander: NSObject, ObservableObject {
         controlPoint = 0x00
         switchInputMode = 0x30
         switchVibrationEnabled = false
+        switchIMUEnabled = false
         switchPlayerLights = 0x00
+        switchPlayerNumber = nil
+        switchDeviceInfoQueried = false
+        switchConnectionInfo = 0x00
+        switchBatteryLevel = 0x90
+        switchVibratorByte = switchVibratorCandidates.randomElement() ?? 0xA0
         switchInputTimer = 0x00
+        switchLastTimerTimestamp = nil
 
         hidLog.info("Starting BLE HID with profile: \(profile.rawValue)")
         peripheralManager = CBPeripheralManager(
@@ -344,8 +371,14 @@ final class BLEHIDCommander: NSObject, ObservableObject {
         bootMouseInputCharacteristic = nil
         switchInputReport21Characteristic = nil
         switchInputReport30Characteristic = nil
+        switchInputReport31Characteristic = nil
+        switchInputReport32Characteristic = nil
+        switchInputReport33Characteristic = nil
+        switchInputReport3FCharacteristic = nil
         switchOutputReport01Characteristic = nil
         switchOutputReport10Characteristic = nil
+        switchOutputReport11Characteristic = nil
+        switchOutputReport12Characteristic = nil
 
         pm.stopAdvertising()
         pm.removeAllServices()
@@ -536,15 +569,18 @@ final class BLEHIDCommander: NSObject, ObservableObject {
     // MARK: - Switch Pro (experimental) protocol helpers
 
     private func sendSwitchInputReport30() {
-        let payload = buildSwitchBaseInputPayload()
+        var payload = [UInt8](repeating: 0, count: 0x30)
+        applySwitchStandardInput(to: &payload)
+        applySwitchIMUDataIfNeeded(to: &payload)
         var report = Data([0x30])
-        report.append(payload)
+        report.append(Data(payload))
         sendReport(report)
     }
 
     private func sendSwitchSubcommandReply(ack: UInt8, subcommand: UInt8, extraData: [UInt8] = []) {
-        var payload = [UInt8](buildSwitchBaseInputPayload())
-        if payload.count < 14 { payload = [UInt8](repeating: 0, count: 0x3F) }
+        var payload = [UInt8](repeating: 0, count: 0x30)
+        switchVibratorByte = switchVibratorCandidates.randomElement() ?? 0xA0
+        applySwitchStandardInput(to: &payload)
         payload[12] = ack
         payload[13] = subcommand
         if !extraData.isEmpty {
@@ -565,11 +601,21 @@ final class BLEHIDCommander: NSObject, ObservableObject {
         }
     }
 
-    private func buildSwitchBaseInputPayload() -> Data {
-        var payload = [UInt8](repeating: 0, count: 0x3F)
+    private func applySwitchStandardInput(to payload: inout [UInt8]) {
+        let now = Date().timeIntervalSinceReferenceDate
+        if let last = switchLastTimerTimestamp {
+            let deltaMS = (now - last) * 1000.0
+            let elapsedTicks = Int(deltaMS * 4.0)
+            switchInputTimer = UInt8((Int(switchInputTimer) + elapsedTicks) & 0xFF)
+        } else {
+            switchInputTimer = 0
+        }
+        switchLastTimerTimestamp = now
         payload[0] = switchInputTimer
-        switchInputTimer &+= 1
-        payload[1] = 0x8E // battery + connection info
+
+        guard switchDeviceInfoQueried else { return }
+
+        payload[1] = switchBatteryLevel &+ switchConnectionInfo
 
         let buttonBytes = switchButtonStatusBytes()
         payload[2] = buttonBytes.0
@@ -584,9 +630,7 @@ final class BLEHIDCommander: NSObject, ObservableObject {
         payload[8] = right.0
         payload[9] = right.1
         payload[10] = right.2
-        payload[11] = switchVibrationEnabled ? 0xB0 : 0xA0
-
-        return Data(payload)
+        payload[11] = switchVibratorByte
     }
 
     private func encodeSwitchStick(x: UInt8, y: UInt8) -> (UInt8, UInt8, UInt8) {
@@ -645,28 +689,119 @@ final class BLEHIDCommander: NSObject, ObservableObject {
         return (right, shared, left)
     }
 
-    private func switchSPIRead(offset: Int, size: Int) -> [UInt8] {
-        guard size > 0 else { return [] }
-        let end = offset + size
-        var bytes = [UInt8](repeating: 0xFF, count: size)
+    private func applySwitchIMUDataIfNeeded(to payload: inout [UInt8]) {
+        guard switchIMUEnabled else { return }
+        let imuData: [UInt8] = [
+            0x75, 0xFD, 0xFD, 0xFF, 0x09, 0x10, 0x21, 0x00, 0xD5, 0xFF, 0xE0, 0xFF,
+            0x72, 0xFD, 0xF9, 0xFF, 0x0A, 0x10, 0x22, 0x00, 0xD5, 0xFF, 0xE0, 0xFF,
+            0x76, 0xFD, 0xFC, 0xFF, 0x09, 0x10, 0x23, 0x00, 0xD5, 0xFF, 0xE0, 0xFF,
+        ]
+        let start = 12
+        guard start < payload.count else { return }
+        let count = min(imuData.count, payload.count - start)
+        payload.replaceSubrange(start ..< (start + count), with: imuData.prefix(count))
+    }
 
-        func writeRange(_ start: Int, _ data: [UInt8]) {
-            let dataEnd = start + data.count
-            let overlapStart = max(offset, start)
-            let overlapEnd = min(end, dataEnd)
-            guard overlapEnd > overlapStart else { return }
-            for i in overlapStart ..< overlapEnd {
-                bytes[i - offset] = data[i - start]
-            }
+    private func switchSPIReadExtraData(subData: [UInt8]) -> [UInt8] {
+        guard subData.count >= 5 else { return [] }
+
+        let addrBottom = subData[0]
+        let addrTop = subData[1]
+        let readLength = min(Int(subData[4]), 0x1D)
+        var memory = [UInt8](repeating: 0x00, count: readLength)
+
+        func fill(_ offset: Int, _ values: [UInt8]) {
+            guard offset < memory.count else { return }
+            let count = min(values.count, memory.count - offset)
+            memory.replaceSubrange(offset ..< (offset + count), with: values.prefix(count))
         }
 
-        // Default stick calibration values used by common Switch emulators.
-        writeRange(0x603D, [0x00, 0x07, 0x70, 0x00, 0x08, 0x80, 0x00, 0x07, 0x70]) // L
-        writeRange(0x6046, [0x00, 0x08, 0x80, 0x00, 0x07, 0x70, 0x00, 0x07, 0x70]) // R
-        writeRange(0x6050, [0x82, 0x82, 0x82, 0x0F, 0x0F, 0x0F]) // Body/buttons color
-        writeRange(0x6000, Array("CHROMACATCH".utf8) + [0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+        // Stick calibration / parameters values from NXBT's protocol emulation.
+        let params: [UInt8] = [
+            0x0F, 0x30, 0x61, 0x96, 0x30, 0xF3, 0xD4, 0x14, 0x54,
+            0x41, 0x15, 0x54, 0xC7, 0x79, 0x9C, 0x33, 0x36, 0x63,
+        ]
 
-        return bytes
+        if addrTop == 0x60, addrBottom == 0x00 {
+            fill(0, Array(repeating: 0xFF, count: min(16, readLength)))
+        } else if addrTop == 0x60, addrBottom == 0x50 {
+            fill(0, switchBodyColor)
+            fill(3, switchButtonColor)
+            fill(6, Array(repeating: 0xFF, count: min(7, max(0, readLength - 6))))
+        } else if addrTop == 0x60, addrBottom == 0x80 {
+            fill(0, [0x50, 0xFD, 0x00, 0x00, 0xC6, 0x0F])
+            fill(6, params)
+        } else if addrTop == 0x60, addrBottom == 0x98 {
+            fill(0, params)
+        } else if addrTop == 0x80, addrBottom == 0x10 {
+            fill(0, Array(repeating: 0xFF, count: min(24, readLength)))
+        } else if addrTop == 0x60, addrBottom == 0x3D {
+            let lCalibration: [UInt8] = [0xBA, 0xF5, 0x62, 0x6F, 0xC8, 0x77, 0xED, 0x95, 0x5B]
+            let rCalibration: [UInt8] = [0x16, 0xD8, 0x7D, 0xF2, 0xB5, 0x5F, 0x86, 0x65, 0x5E]
+            fill(0, lCalibration)
+            fill(9, rCalibration)
+            fill(18, [0xFF])
+            fill(19, switchBodyColor)
+            fill(22, switchButtonColor)
+        } else if addrTop == 0x60, addrBottom == 0x20 {
+            let sixAxisCalibration: [UInt8] = [
+                0xD3, 0xFF, 0xD5, 0xFF, 0x55, 0x01,
+                0x00, 0x40, 0x00, 0x40, 0x00, 0x40,
+                0x19, 0x00, 0xDD, 0xFF, 0xDC, 0xFF,
+                0x3B, 0x34, 0x3B, 0x34, 0x3B, 0x34,
+            ]
+            fill(0, sixAxisCalibration)
+        }
+
+        return [addrBottom, addrTop, 0x00, 0x00, UInt8(readLength)] + memory
+    }
+
+    private func handleSwitchSubcommand(_ subcommand: UInt8, data: [UInt8]) {
+        switch subcommand {
+        case 0x02: // Request device info
+            switchDeviceInfoQueried = true
+            sendSwitchSubcommandReply(
+                ack: 0x82,
+                subcommand: 0x02,
+                extraData: [0x03, 0x8B, 0x03, 0x02] + switchControllerAddress + [0x01, 0x01]
+            )
+        case 0x08: // Set shipment
+            sendSwitchSubcommandReply(ack: 0x80, subcommand: 0x08)
+        case 0x10: // SPI read
+            sendSwitchSubcommandReply(ack: 0x90, subcommand: 0x10, extraData: switchSPIReadExtraData(subData: data))
+        case 0x03: // Set mode
+            if let mode = data.first { switchInputMode = mode }
+            sendSwitchSubcommandReply(ack: 0x80, subcommand: 0x03)
+        case 0x04: // Trigger buttons elapsed time
+            sendSwitchSubcommandReply(ack: 0x83, subcommand: 0x04)
+        case 0x40: // Toggle IMU
+            switchIMUEnabled = (data.first ?? 0x00) == 0x01
+            sendSwitchSubcommandReply(ack: 0x80, subcommand: 0x40)
+        case 0x48: // Enable vibration
+            switchVibrationEnabled = true
+            sendSwitchSubcommandReply(ack: 0x82, subcommand: 0x48)
+        case 0x30: // Set player lights
+            switchPlayerLights = data.first ?? 0
+            switch switchPlayerLights {
+            case 0x01, 0x10: switchPlayerNumber = 1
+            case 0x03, 0x30: switchPlayerNumber = 2
+            case 0x07, 0x70: switchPlayerNumber = 3
+            case 0x0F, 0xF0: switchPlayerNumber = 4
+            default: switchPlayerNumber = nil
+            }
+            sendSwitchSubcommandReply(ack: 0x80, subcommand: 0x30)
+        case 0x22: // Set NFC/IR state
+            sendSwitchSubcommandReply(ack: 0x80, subcommand: 0x22)
+        case 0x21: // Set NFC/IR config
+            var extra = [UInt8](repeating: 0x00, count: 34)
+            let params: [UInt8] = [0x01, 0x00, 0xFF, 0x00, 0x08, 0x00, 0x1B, 0x01]
+            extra.replaceSubrange(0 ..< params.count, with: params)
+            extra[33] = 0xC8
+            sendSwitchSubcommandReply(ack: 0xA0, subcommand: 0x21, extraData: extra)
+        default:
+            // Match NXBT behavior: ignore unknown subcommands and keep full input stream going.
+            sendSwitchInputReport30()
+        }
     }
 
     private func parseSwitchOutputWrite(fallbackReportID: UInt8, data: Data) -> (reportID: UInt8, payload: [UInt8]) {
@@ -677,7 +812,7 @@ final class BLEHIDCommander: NSObject, ObservableObject {
             return (bytes[1], Array(bytes.dropFirst(2)))
         }
 
-        if [UInt8(0x01), 0x10, 0x80, 0x82].contains(bytes[0]) {
+        if [UInt8(0x01), 0x10, 0x11, 0x12, 0x80, 0x82].contains(bytes[0]) {
             return (bytes[0], Array(bytes.dropFirst(1)))
         }
 
@@ -689,65 +824,25 @@ final class BLEHIDCommander: NSObject, ObservableObject {
         switch parsed.reportID {
         case 0x10:
             switchVibrationEnabled = true
-            lastSwitchOutputReport10 = normalized(Data(parsed.payload), length: 0x3F)
+            lastSwitchOutputReport10 = normalized(Data(parsed.payload), length: 0x30)
+            sendSwitchInputReport30()
+        case 0x11:
+            lastSwitchOutputReport11 = normalized(Data(parsed.payload), length: 0x30)
+            sendSwitchInputReport30()
+        case 0x12:
+            lastSwitchOutputReport12 = normalized(Data(parsed.payload), length: 0x30)
+            sendSwitchInputReport30()
         case 0x01:
-            lastSwitchOutputReport01 = normalized(Data(parsed.payload), length: 0x3F)
-            guard parsed.payload.count >= 10 else { return }
+            lastSwitchOutputReport01 = normalized(Data(parsed.payload), length: 0x30)
+            guard parsed.payload.count >= 10 else {
+                sendSwitchInputReport30()
+                return
+            }
             let subcommand = parsed.payload[9]
             let subData = Array(parsed.payload.dropFirst(10))
-
-            switch subcommand {
-            case 0x02: // request device info
-                sendSwitchSubcommandReply(
-                    ack: 0x82,
-                    subcommand: 0x02,
-                    extraData: [0x03, 0x8B, 0x03, 0x02] + switchControllerAddress + [0x01, 0x01]
-                )
-            case 0x03: // set input report mode
-                if let mode = subData.first {
-                    switchInputMode = mode
-                }
-                sendSwitchSubcommandReply(ack: 0x80, subcommand: 0x03)
-                if switchInputMode == 0x30 || switchInputMode == 0x3F {
-                    sendSwitchInputReport30()
-                }
-            case 0x04: // trigger buttons elapsed
-                sendSwitchSubcommandReply(
-                    ack: 0x83,
-                    subcommand: 0x04,
-                    extraData: [0x2C, 0x01, 0x2C, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
-                )
-            case 0x08: // set shipment state
-                sendSwitchSubcommandReply(ack: 0x80, subcommand: 0x08)
-            case 0x10: // SPI flash read
-                if subData.count >= 5 {
-                    let offset = Int(subData[0]) | (Int(subData[1]) << 8) | (Int(subData[2]) << 16) | (Int(subData[3]) << 24)
-                    let size = Int(subData[4])
-                    let flash = switchSPIRead(offset: max(0, offset), size: min(0x1D, max(0, size)))
-                    sendSwitchSubcommandReply(
-                        ack: 0x90,
-                        subcommand: 0x10,
-                        extraData: [subData[0], subData[1], subData[2], subData[3], UInt8(min(0x1D, max(0, size)))] + flash
-                    )
-                } else {
-                    sendSwitchSubcommandReply(ack: 0x80, subcommand: 0x10)
-                }
-            case 0x30: // set player lights
-                switchPlayerLights = subData.first ?? 0
-                sendSwitchSubcommandReply(ack: 0x80, subcommand: 0x30)
-            case 0x31: // get player lights
-                sendSwitchSubcommandReply(ack: 0xB0, subcommand: 0x31, extraData: [switchPlayerLights])
-            case 0x40: // IMU enable
-                sendSwitchSubcommandReply(ack: 0x80, subcommand: 0x40)
-            case 0x48: // vibration enable
-                switchVibrationEnabled = (subData.first ?? 0x00) != 0x00
-                sendSwitchSubcommandReply(ack: 0x80, subcommand: 0x48)
-            default:
-                // Generic ACK for currently unhandled but known traffic.
-                sendSwitchSubcommandReply(ack: 0x80, subcommand: subcommand)
-            }
+            handleSwitchSubcommand(subcommand, data: subData)
         default:
-            break
+            sendSwitchInputReport30()
         }
     }
 
@@ -796,9 +891,17 @@ final class BLEHIDCommander: NSObject, ObservableObject {
                 lastKeyboardOutputReport = normalized(payload, length: 1)
             }
         case 0x21: // switch subcommand response
-            lastSwitchInputReport21 = normalized(payload, length: 0x3F)
+            lastSwitchInputReport21 = normalized(payload, length: 0x30)
         case 0x30: // switch input stream
-            lastSwitchInputReport30 = normalized(payload, length: 0x3F)
+            lastSwitchInputReport30 = normalized(payload, length: 0x30)
+        case 0x31:
+            lastSwitchInputReport31 = normalized(payload, length: 0x169)
+        case 0x32:
+            lastSwitchInputReport32 = normalized(payload, length: 0x169)
+        case 0x33:
+            lastSwitchInputReport33 = normalized(payload, length: 0x169)
+        case 0x3F:
+            lastSwitchInputReport3F = normalized(payload, length: 11)
         case 0x05: // system control input
             lastSystemControlInputReport = normalized(payload, length: 1)
         case 0x06: // consumer input
@@ -834,6 +937,10 @@ final class BLEHIDCommander: NSObject, ObservableObject {
         case 0x03: return gamepadInputReportCharacteristic
         case 0x21: return switchInputReport21Characteristic
         case 0x30: return switchInputReport30Characteristic
+        case 0x31: return switchInputReport31Characteristic
+        case 0x32: return switchInputReport32Characteristic
+        case 0x33: return switchInputReport33Characteristic
+        case 0x3F: return switchInputReport3FCharacteristic
         case 0x05: return systemControlInputReportCharacteristic
         case 0x06: return consumerInputReportCharacteristic
         default: return nil
@@ -859,8 +966,14 @@ final class BLEHIDCommander: NSObject, ObservableObject {
         bootMouseInputCharacteristic = nil
         switchInputReport21Characteristic = nil
         switchInputReport30Characteristic = nil
+        switchInputReport31Characteristic = nil
+        switchInputReport32Characteristic = nil
+        switchInputReport33Characteristic = nil
+        switchInputReport3FCharacteristic = nil
         switchOutputReport01Characteristic = nil
         switchOutputReport10Characteristic = nil
+        switchOutputReport11Characteristic = nil
+        switchOutputReport12Characteristic = nil
 
         let advertisedName: String = (activeProfile == .switchPro) ? "Pro Controller" : "ChromaCatch HID"
         let appearance: UInt16
@@ -1010,13 +1123,25 @@ final class BLEHIDCommander: NSObject, ObservableObject {
         case .switchPro:
             switchInputReport21Characteristic = createReportCharacteristic(reportID: 0x21, reportType: 0x01, properties: [.read, .notify], permissions: [.readable])
             switchInputReport30Characteristic = createReportCharacteristic(reportID: 0x30, reportType: 0x01, properties: [.read, .notify], permissions: [.readable])
+            switchInputReport31Characteristic = createReportCharacteristic(reportID: 0x31, reportType: 0x01, properties: [.read, .notify], permissions: [.readable])
+            switchInputReport32Characteristic = createReportCharacteristic(reportID: 0x32, reportType: 0x01, properties: [.read, .notify], permissions: [.readable])
+            switchInputReport33Characteristic = createReportCharacteristic(reportID: 0x33, reportType: 0x01, properties: [.read, .notify], permissions: [.readable])
+            switchInputReport3FCharacteristic = createReportCharacteristic(reportID: 0x3F, reportType: 0x01, properties: [.read, .notify], permissions: [.readable])
             switchOutputReport01Characteristic = createReportCharacteristic(reportID: 0x01, reportType: 0x02, properties: [.read, .write, .writeWithoutResponse], permissions: [.readable, .writeable])
             switchOutputReport10Characteristic = createReportCharacteristic(reportID: 0x10, reportType: 0x02, properties: [.read, .write, .writeWithoutResponse], permissions: [.readable, .writeable])
+            switchOutputReport11Characteristic = createReportCharacteristic(reportID: 0x11, reportType: 0x02, properties: [.read, .write, .writeWithoutResponse], permissions: [.readable, .writeable])
+            switchOutputReport12Characteristic = createReportCharacteristic(reportID: 0x12, reportType: 0x02, properties: [.read, .write, .writeWithoutResponse], permissions: [.readable, .writeable])
             hidCharacteristics.append(contentsOf: [
                 switchInputReport21Characteristic!,
                 switchInputReport30Characteristic!,
+                switchInputReport31Characteristic!,
+                switchInputReport32Characteristic!,
+                switchInputReport33Characteristic!,
+                switchInputReport3FCharacteristic!,
                 switchOutputReport01Characteristic!,
                 switchOutputReport10Characteristic!,
+                switchOutputReport11Characteristic!,
+                switchOutputReport12Characteristic!,
             ])
         }
 
@@ -1224,7 +1349,7 @@ extension BLEHIDCommander: CBPeripheralManagerDelegate {
                 {
                     if reportID == 0x03 {
                         lastKeyboardOutputReport = normalized(request.value ?? Data(), length: 1)
-                    } else if activeProfile == .switchPro, [UInt8(0x01), 0x10, 0x80, 0x82].contains(reportID) {
+                    } else if activeProfile == .switchPro, [UInt8(0x01), 0x10, 0x11, 0x12, 0x80, 0x82].contains(reportID) {
                         handleSwitchOutputReportWrite(reportID: reportID, data: request.value ?? Data())
                     } else {
                         result = .requestNotSupported
@@ -1255,6 +1380,8 @@ extension BLEHIDCommander: CBPeripheralManagerDelegate {
             if reportID == 0x03 { return lastKeyboardOutputReport }
             if reportID == 0x01 { return lastSwitchOutputReport01 }
             if reportID == 0x10 { return lastSwitchOutputReport10 }
+            if reportID == 0x11 { return lastSwitchOutputReport11 }
+            if reportID == 0x12 { return lastSwitchOutputReport12 }
             return nil
         }
         if reportType != 0x01 { return nil }
@@ -1265,6 +1392,10 @@ extension BLEHIDCommander: CBPeripheralManagerDelegate {
         case 0x03: return lastGamepadInputReport
         case 0x21: return lastSwitchInputReport21
         case 0x30: return lastSwitchInputReport30
+        case 0x31: return lastSwitchInputReport31
+        case 0x32: return lastSwitchInputReport32
+        case 0x33: return lastSwitchInputReport33
+        case 0x3F: return lastSwitchInputReport3F
         case 0x05: return lastSystemControlInputReport
         case 0x06: return lastConsumerInputReport
         default: return nil
