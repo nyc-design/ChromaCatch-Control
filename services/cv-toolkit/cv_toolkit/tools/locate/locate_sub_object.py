@@ -3,6 +3,8 @@
 Finds a distinctive sub-feature of an object via waterfill, then infers
 the full object position based on the known spatial relationship between
 the sub-feature and the full object in the reference.
+
+Color filters are auto-derived from the sub-reference crop when not provided.
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ import cv2
 import numpy as np
 
 from cv_toolkit._utils import (
+    auto_color_ranges,
     brightness_scale,
     compute_rmsd,
     extract_region,
@@ -37,11 +40,11 @@ def locate_sub_object(
     Params (required):
         sub_reference_region (dict): Normalized region {x, y, w, h} of the
             sub-feature within the reference image.
-        sub_color_filters (list[list[list[int]]]): Color filters for finding
-            the sub-feature, as list of [hsv_lower, hsv_upper] pairs.
 
     Params (optional):
-        sub_rmsd_threshold (float): RMSD threshold for sub-feature matching. Default 80.0.
+        sub_color_filters (list[list[list[int]]]): Color filters for finding
+            the sub-feature. Auto-derived from sub-reference crop if omitted.
+        sub_rmsd_threshold (float): RMSD threshold for sub-feature matching. Default 255.0.
         brightness_scale_enabled (bool): Apply brightness scaling. Default True.
         brightness_clamp (float): Brightness scale clamp factor. Default 0.15.
         max_matches (int): Maximum number of matches to return. Default 5.
@@ -53,17 +56,10 @@ def locate_sub_object(
         raise ValueError("locate_sub_object requires a reference image")
     if "sub_reference_region" not in tool_input.params:
         raise ValueError("locate_sub_object requires 'sub_reference_region' in params")
-    if "sub_color_filters" not in tool_input.params:
-        raise ValueError("locate_sub_object requires 'sub_color_filters' in params")
 
     sub_region = tool_input.params["sub_reference_region"]
-    raw_filters = tool_input.params["sub_color_filters"]
-    color_filters = [
-        (np.array(f[0], dtype=np.uint8), np.array(f[1], dtype=np.uint8))
-        for f in raw_filters
-    ]
 
-    sub_rmsd_threshold = float(tool_input.params.get("sub_rmsd_threshold", 80.0))
+    sub_rmsd_threshold = float(tool_input.params.get("sub_rmsd_threshold", 255.0))
     brightness_enabled = bool(tool_input.params.get("brightness_scale_enabled", True))
     brightness_clamp = float(tool_input.params.get("brightness_clamp", 0.15))
     max_matches = int(tool_input.params.get("max_matches", 5))
@@ -72,7 +68,8 @@ def locate_sub_object(
     max_area_ratio = float(tool_input.params.get("max_area_ratio", 0.5))
 
     img_crop = extract_region(image, tool_input.region)
-    ref_crop = extract_region(reference, tool_input.region)
+    # Use full reference — region specifies where to search in the image
+    ref_crop = reference.copy()
     img_h, img_w = img_crop.shape[:2]
     ref_h, ref_w = ref_crop.shape[:2]
 
@@ -84,6 +81,22 @@ def locate_sub_object(
     sub_w = max(1, sub_w)
     sub_h = max(1, sub_h)
     sub_ref = ref_crop[sub_y : sub_y + sub_h, sub_x : sub_x + sub_w]
+
+    # Auto-derive color filters from sub-reference when not provided
+    if "sub_color_filters" in tool_input.params:
+        raw_filters = tool_input.params["sub_color_filters"]
+        color_filters = [
+            (np.array(f[0], dtype=np.uint8), np.array(f[1], dtype=np.uint8))
+            for f in raw_filters
+        ]
+    else:
+        color_filters = auto_color_ranges(sub_ref, k=3)
+        if not color_filters:
+            return ToolResult(
+                tool="locate_sub_object", score=0.0, match=False,
+                threshold=tool_input.threshold,
+                details={"matches": [], "num_matches": 0},
+            )
 
     # Find sub-feature candidates in the image via waterfill
     candidates = waterfill_candidates(
@@ -111,7 +124,7 @@ def locate_sub_object(
                 cand_crop, sub_ref_resized, clamp=brightness_clamp
             )
 
-        # Compute RMSD
+        # Compute RMSD, normalize by threshold (default 255 = full range)
         rmsd = compute_rmsd(cand_crop, sub_ref_resized)
         confidence = max(0.0, 1.0 - rmsd / sub_rmsd_threshold)
 
@@ -119,8 +132,6 @@ def locate_sub_object(
             continue
 
         # Infer full object position from sub-feature location
-        # sub_region tells us where the sub-feature sits within the full reference
-        # So the full object extends from the sub-feature position based on the ratio
         sx = sub_region["x"]
         sy = sub_region["y"]
         sw = sub_region["w"]

@@ -1,7 +1,8 @@
 """Locate multi-scale tool - multi-scale normalized cross-correlation.
 
 Resizes the template to multiple scales, runs cv2.matchTemplate at each
-scale, collects peaks, applies NMS, and returns the best matches.
+scale (per-channel BGR to preserve color), collects peaks, applies NMS,
+and returns the best matches.
 """
 
 from __future__ import annotations
@@ -28,8 +29,8 @@ def locate_multi_scale(
     """Locate a reference via multi-scale template matching.
 
     Resizes the reference template to N scales within a range, runs
-    cv2.matchTemplate at each scale, collects peaks above the confidence
-    threshold, applies NMS, and returns the best matches.
+    cv2.matchTemplate per-channel (BGR) at each scale, collects peaks
+    above the confidence threshold, applies NMS, and returns the best matches.
 
     Requires reference image.
 
@@ -55,13 +56,11 @@ def locate_multi_scale(
     is_sqdiff = method == cv2.TM_SQDIFF_NORMED
 
     img_crop = extract_region(image, tool_input.region)
-    ref_crop = extract_region(reference, tool_input.region)
+    # Use full reference — region specifies where to search in the image, not
+    # a sub-region of the reference.
+    ref_crop = reference.copy()
     img_h, img_w = img_crop.shape[:2]
-
-    # Convert to grayscale for template matching
-    img_gray = cv2.cvtColor(img_crop, cv2.COLOR_BGR2GRAY)
-    ref_gray = cv2.cvtColor(ref_crop, cv2.COLOR_BGR2GRAY)
-    ref_h, ref_w = ref_gray.shape[:2]
+    ref_h, ref_w = ref_crop.shape[:2]
 
     scales = np.linspace(scale_range[0], scale_range[1], scale_steps)
 
@@ -79,9 +78,15 @@ def locate_multi_scale(
             continue
 
         interp = cv2.INTER_CUBIC if scale > 1.0 else cv2.INTER_AREA
-        scaled_ref = cv2.resize(ref_gray, (new_w, new_h), interpolation=interp)
+        scaled_ref = cv2.resize(ref_crop, (new_w, new_h), interpolation=interp)
 
-        result = cv2.matchTemplate(img_gray, scaled_ref, method)
+        # Per-channel template matching preserves color discrimination.
+        # Average across BGR channels for the final confidence map.
+        channel_results = [
+            cv2.matchTemplate(img_crop[:, :, c], scaled_ref[:, :, c], method)
+            for c in range(3)
+        ]
+        result = np.mean(channel_results, axis=0)
 
         # Find peaks above threshold
         if is_sqdiff:

@@ -6,6 +6,9 @@ This is NOT sliding-window template matching. Instead:
 3. Resize reference to candidate size
 4. Brightness-scaled RMSD comparison
 5. NMS to deduplicate overlapping detections
+
+When color_filters are not provided, they are auto-derived from the
+reference image via K-means clustering in HSV space.
 """
 
 from __future__ import annotations
@@ -14,6 +17,7 @@ import cv2
 import numpy as np
 
 from cv_toolkit._utils import (
+    auto_color_ranges,
     brightness_scale,
     compute_rmsd,
     extract_region,
@@ -34,16 +38,16 @@ def locate_template(
     then compares each candidate against the reference using brightness-scaled
     RMSD.
 
-    Params (required):
-        color_filters (list[list[list[int]]]): List of [hsv_lower, hsv_upper] pairs.
-
     Params (optional):
+        color_filters (list[list[list[int]]]): List of [hsv_lower, hsv_upper] pairs.
+            Auto-derived from reference via K-means if not provided.
+        auto_color_k (int): Number of K-means clusters for auto color derivation. Default 3.
         min_area_ratio (float): Min blob area as fraction of region. Default 0.0005.
         max_area_ratio (float): Max blob area as fraction of region. Default 0.5.
         min_aspect_ratio (float): Min width/height ratio. Default 0.1.
         max_aspect_ratio (float): Max width/height ratio. Default 10.0.
         morph_size (int): Morphological cleanup kernel size. Default 3.
-        rmsd_threshold (float): RMSD value below which a match is considered. Default 80.0.
+        rmsd_threshold (float): RMSD value at which confidence=0. Default 255.0.
         brightness_scale_enabled (bool): Apply brightness scaling. Default True.
         brightness_clamp (float): Brightness scale clamp factor. Default 0.15.
         max_matches (int): Maximum number of matches to return. Default 10.
@@ -51,28 +55,41 @@ def locate_template(
     """
     if reference is None:
         raise ValueError("locate_template requires a reference image")
-    if "color_filters" not in tool_input.params:
-        raise ValueError("locate_template requires 'color_filters' in params")
 
-    raw_filters = tool_input.params["color_filters"]
-    color_filters = [
-        (np.array(f[0], dtype=np.uint8), np.array(f[1], dtype=np.uint8))
-        for f in raw_filters
-    ]
+    # Auto-derive color_filters from reference if not provided
+    if "color_filters" in tool_input.params:
+        raw_filters = tool_input.params["color_filters"]
+        color_filters = [
+            (np.array(f[0], dtype=np.uint8), np.array(f[1], dtype=np.uint8))
+            for f in raw_filters
+        ]
+    else:
+        auto_k = int(tool_input.params.get("auto_color_k", 3))
+        color_filters = auto_color_ranges(reference, k=auto_k)
+
+    if not color_filters:
+        return ToolResult(
+            tool="locate_template",
+            score=0.0,
+            match=False,
+            threshold=tool_input.threshold,
+            details={"matches": [], "num_matches": 0},
+        )
 
     min_area_ratio = float(tool_input.params.get("min_area_ratio", 0.0005))
     max_area_ratio = float(tool_input.params.get("max_area_ratio", 0.5))
     min_aspect = float(tool_input.params.get("min_aspect_ratio", 0.1))
     max_aspect = float(tool_input.params.get("max_aspect_ratio", 10.0))
     morph_size = int(tool_input.params.get("morph_size", 3))
-    rmsd_threshold = float(tool_input.params.get("rmsd_threshold", 80.0))
+    rmsd_threshold = float(tool_input.params.get("rmsd_threshold", 255.0))
     brightness_enabled = bool(tool_input.params.get("brightness_scale_enabled", True))
     brightness_clamp = float(tool_input.params.get("brightness_clamp", 0.15))
     max_matches = int(tool_input.params.get("max_matches", 10))
     nms_overlap = float(tool_input.params.get("nms_overlap", 0.5))
 
     img_crop = extract_region(image, tool_input.region)
-    ref_crop = extract_region(reference, tool_input.region)
+    # Use full reference — region specifies where to search in the image.
+    ref_crop = reference.copy()
 
     candidates = waterfill_candidates(
         img_crop,
@@ -100,7 +117,7 @@ def locate_template(
         if brightness_enabled:
             cand_crop = brightness_scale(cand_crop, ref_resized, clamp=brightness_clamp)
 
-        # Compute RMSD
+        # Compute RMSD, normalize by threshold (default 255 = max per-channel diff)
         rmsd = compute_rmsd(cand_crop, ref_resized)
         confidence = max(0.0, 1.0 - rmsd / rmsd_threshold)
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
+from sklearn.cluster import KMeans
 
 from cv_toolkit.models import Region
 
@@ -273,6 +274,51 @@ def non_max_suppression(
             keep.append(match)
 
     return keep
+
+
+def auto_color_ranges(
+    image: np.ndarray,
+    k: int = 3,
+    h_margin: int = 15,
+    s_margin: int = 50,
+    v_margin: int = 50,
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Auto-derive HSV color filter ranges from an image via K-means clustering.
+
+    Clusters the image pixels in HSV space, then builds (lower, upper) ranges
+    around each cluster center.  Useful for locate_template / locate_color to
+    auto-derive color_filters from a reference image.
+
+    Returns list of (hsv_lower, hsv_upper) np.uint8 array tuples.
+    """
+    hsv = bgr_to_hsv(image)
+    pixels = hsv.reshape(-1, 3).astype(np.float32)
+
+    # Cap k to number of distinct pixels
+    unique_count = min(len(np.unique(pixels, axis=0)), k)
+    if unique_count < 1:
+        return []
+    k = min(k, unique_count)
+
+    kmeans = KMeans(n_clusters=k, n_init=10, random_state=0)
+    kmeans.fit(pixels)
+    centers = kmeans.cluster_centers_
+
+    ranges: list[tuple[np.ndarray, np.ndarray]] = []
+    for center in centers:
+        h_c, s_c, v_c = center
+        lower = np.array([
+            max(0, int(h_c) - h_margin),
+            max(0, int(s_c) - s_margin),
+            max(0, int(v_c) - v_margin),
+        ], dtype=np.uint8)
+        upper = np.array([
+            min(180, int(h_c) + h_margin),
+            min(255, int(s_c) + s_margin),
+            min(255, int(v_c) + v_margin),
+        ], dtype=np.uint8)
+        ranges.append((lower, upper))
+    return ranges
 
 
 def _compute_iou(a: dict, b: dict) -> float:

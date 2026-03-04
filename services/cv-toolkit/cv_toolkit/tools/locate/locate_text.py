@@ -1,7 +1,9 @@
 """Locate text tool - find text on screen via OCR with bounding boxes.
 
 Uses pytesseract (lazy-imported) to detect text in the image and returns
-bounding boxes for matching words or word groups.
+bounding boxes for matching words or word groups. Runs OCR on the
+color-filtered grayscale image (not binary mask) for better edge quality.
+Small images are upscaled for better Tesseract accuracy.
 """
 
 from __future__ import annotations
@@ -15,6 +17,8 @@ from cv_toolkit._utils import bgr_to_hsv, extract_region, normalize_bbox
 from cv_toolkit.models import ToolInput, ToolResult
 from cv_toolkit.registry import register_tool
 
+_MIN_OCR_HEIGHT = 100  # Upscale images shorter than this for better OCR
+
 
 @register_tool("locate_text")
 def locate_text(
@@ -22,8 +26,8 @@ def locate_text(
 ) -> ToolResult:
     """Locate text matching a target string, returning bounding boxes.
 
-    Pre-processes by isolating text-colored pixels, runs Tesseract OCR,
-    then searches for the target string among detected words.
+    Pre-processes by isolating text-colored pixels, runs Tesseract OCR on
+    the filtered grayscale image, then searches for the target string.
 
     Params (required):
         target (str): Text string to find.
@@ -34,6 +38,7 @@ def locate_text(
         psm (int): Tesseract page segmentation mode. Default 6.
         min_confidence (int): Minimum OCR confidence to consider. Default 60.
         fuzzy (bool): Use fuzzy matching (SequenceMatcher). Default False.
+        fuzzy_threshold (float): Fuzzy match similarity threshold. Default 0.6.
     """
     import pytesseract  # Lazy import — system dependency may not be available
 
@@ -50,25 +55,40 @@ def locate_text(
     psm = int(tool_input.params.get("psm", 6))
     min_confidence = int(tool_input.params.get("min_confidence", 60))
     fuzzy = bool(tool_input.params.get("fuzzy", False))
+    fuzzy_threshold = float(tool_input.params.get("fuzzy_threshold", 0.6))
 
     img_crop = extract_region(image, tool_input.region)
     img_h, img_w = img_crop.shape[:2]
+
+    # Upscale small images for better OCR (Tesseract needs ~30px char height)
+    upscale = 1
+    if img_h < _MIN_OCR_HEIGHT:
+        upscale = max(2, _MIN_OCR_HEIGHT // img_h + 1)
+        img_crop = cv2.resize(
+            img_crop,
+            (img_w * upscale, img_h * upscale),
+            interpolation=cv2.INTER_CUBIC,
+        )
 
     # Color filtering
     hsv = bgr_to_hsv(img_crop)
     mask = cv2.inRange(hsv, hsv_lower, hsv_upper)
 
+    # Apply mask to get color-filtered grayscale (preserves edge quality)
+    gray = cv2.cvtColor(img_crop, cv2.COLOR_BGR2GRAY)
+    filtered = cv2.bitwise_and(gray, gray, mask=mask)
+
     # Morphological cleanup
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    filtered = cv2.morphologyEx(filtered, cv2.MORPH_CLOSE, kernel)
 
     # Invert if needed (Tesseract prefers dark text on light background)
-    if np.mean(mask) > 127:
-        mask = cv2.bitwise_not(mask)
+    if np.mean(filtered[mask > 0]) > 127 if np.any(mask > 0) else False:
+        filtered = cv2.bitwise_not(filtered)
 
     config = f"--psm {psm}"
     data = pytesseract.image_to_data(
-        mask, config=config, output_type=pytesseract.Output.DICT
+        filtered, config=config, output_type=pytesseract.Output.DICT
     )
 
     # Collect detected words with bounding boxes
@@ -77,13 +97,14 @@ def locate_text(
         conf_val = int(conf)
         text = data["text"][i].strip()
         if conf_val >= min_confidence and text:
+            # Scale bbox back to original coordinates if upscaled
             words.append({
                 "text": text,
                 "confidence": conf_val,
-                "left": int(data["left"][i]),
-                "top": int(data["top"][i]),
-                "width": int(data["width"][i]),
-                "height": int(data["height"][i]),
+                "left": int(data["left"][i]) // upscale,
+                "top": int(data["top"][i]) // upscale,
+                "width": int(data["width"][i]) // upscale,
+                "height": int(data["height"][i]) // upscale,
             })
 
     # Search for target among detected words
@@ -94,7 +115,7 @@ def locate_text(
     if len(target_words) == 1:
         # Single word — match individual words
         for word in words:
-            if _is_match(word["text"], target_lower, fuzzy):
+            if _is_match(word["text"], target_lower, fuzzy, fuzzy_threshold):
                 bbox = normalize_bbox(
                     word["left"], word["top"], word["width"], word["height"],
                     img_h, img_w,
@@ -110,7 +131,7 @@ def locate_text(
             if fuzzy:
                 combined = " ".join(window_texts)
                 similarity = SequenceMatcher(None, combined, target_lower).ratio()
-                is_match = similarity > 0.6
+                is_match = similarity > fuzzy_threshold
             else:
                 is_match = window_texts == target_words
 
@@ -141,10 +162,10 @@ def locate_text(
     )
 
 
-def _is_match(detected: str, target: str, fuzzy: bool) -> bool:
+def _is_match(detected: str, target: str, fuzzy: bool, threshold: float = 0.6) -> bool:
     """Check if a detected word matches the target."""
     detected_lower = detected.lower()
     if fuzzy:
         similarity = SequenceMatcher(None, detected_lower, target).ratio()
-        return similarity > 0.6
+        return similarity > threshold
     return detected_lower == target

@@ -6,6 +6,7 @@ import pytest
 import cv2
 
 from cv_toolkit._utils import (
+    auto_color_ranges,
     bgr_to_hsv,
     bgr_to_lab,
     brightness_scale,
@@ -305,3 +306,39 @@ class TestNonMaxSuppression:
         result = non_max_suppression(matches, overlap_thresh=0.5)
         # IoU is small here, both should be kept
         assert len(result) == 2
+
+
+class TestAutoColorRanges:
+    def test_solid_color_single_cluster(self):
+        img = np.full((50, 50, 3), [0, 0, 255], dtype=np.uint8)  # BGR red
+        ranges = auto_color_ranges(img, k=1)
+        assert len(ranges) == 1
+        lower, upper = ranges[0]
+        assert lower.dtype == np.uint8
+        assert upper.dtype == np.uint8
+        # Red hue in HSV is ~0; should be within margin
+        assert lower[0] == 0
+        assert upper[0] <= 15
+
+    def test_two_colors_two_clusters(self):
+        img = np.zeros((100, 100, 3), dtype=np.uint8)
+        img[:50, :] = [0, 0, 255]  # BGR red top half
+        img[50:, :] = [255, 0, 0]  # BGR blue bottom half
+        ranges = auto_color_ranges(img, k=2)
+        assert len(ranges) == 2
+
+    def test_returns_valid_hsv_bounds(self):
+        img = np.random.randint(0, 256, (50, 50, 3), dtype=np.uint8)
+        ranges = auto_color_ranges(img, k=3)
+        for lower, upper in ranges:
+            assert all(lower <= upper)
+            assert lower[0] >= 0
+            assert upper[0] <= 180
+            assert upper[1] <= 255
+            assert upper[2] <= 255
+
+    def test_empty_like_image(self):
+        # All same color → only 1 unique pixel → k capped to 1
+        img = np.full((10, 10, 3), 128, dtype=np.uint8)
+        ranges = auto_color_ranges(img, k=3)
+        assert len(ranges) == 1

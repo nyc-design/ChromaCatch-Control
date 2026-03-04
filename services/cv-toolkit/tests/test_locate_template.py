@@ -80,11 +80,14 @@ class TestLocateTemplate:
         with pytest.raises(ValueError, match="reference"):
             run_tool(solid_red, ti)
 
-    def test_requires_color_filters(self, solid_red):
-        """Missing color_filters should raise ValueError."""
-        ti = ToolInput(tool="locate_template", threshold=0.5)
-        with pytest.raises(ValueError, match="color_filters"):
-            run_tool(solid_red, ti, reference=solid_red)
+    def test_auto_derives_color_filters(self):
+        """Without color_filters, should auto-derive from reference and still find matches."""
+        scene = self._make_scene_with_red_rect(100, 100, 50, 50)
+        ref = self._make_red_reference(50, 50)
+        ti = ToolInput(tool="locate_template", threshold=0.3)
+        result = run_tool(scene, ti, reference=ref)
+        assert result.match is True
+        assert result.details["num_matches"] >= 1
 
     def test_multiple_candidates(self):
         """Multiple red rectangles should produce multiple matches."""

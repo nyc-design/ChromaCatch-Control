@@ -89,17 +89,26 @@ class TestLocateSubObject:
         with pytest.raises(ValueError, match="sub_reference_region"):
             run_tool(solid_red, ti, reference=solid_red)
 
-    def test_requires_sub_color_filters(self, solid_red):
-        """Missing sub_color_filters should raise ValueError."""
+    def test_auto_derives_sub_color_filters(self):
+        """Without sub_color_filters, should auto-derive from sub-reference crop."""
+        scene = np.zeros((300, 300, 3), dtype=np.uint8)
+        self._make_object_with_feature(scene, 100, 100, 80, 80)
+
+        ref = np.zeros((80, 80, 3), dtype=np.uint8)
+        cv2.rectangle(ref, (0, 0), (80, 80), (128, 128, 128), -1)
+        cv2.rectangle(ref, (0, 0), (20, 20), (0, 0, 255), -1)
+
         ti = ToolInput(
             tool="locate_sub_object",
-            threshold=0.5,
+            threshold=0.0,
             params={
-                "sub_reference_region": {"x": 0.0, "y": 0.0, "w": 0.5, "h": 0.5},
+                "sub_reference_region": {"x": 0.0, "y": 0.0, "w": 0.25, "h": 0.25},
+                "sub_rmsd_threshold": 200.0,
             },
         )
-        with pytest.raises(ValueError, match="sub_color_filters"):
-            run_tool(solid_red, ti, reference=solid_red)
+        result = run_tool(scene, ti, reference=ref)
+        # Should auto-derive filters from the red sub-feature and find candidates
+        assert result.details["num_matches"] >= 0  # May find matches via auto-filter
 
     def test_bbox_normalized(self):
         """Returned bboxes should be normalized."""

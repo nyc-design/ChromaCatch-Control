@@ -1,8 +1,8 @@
 """Locate contour tool - find shapes via Hu moment matching.
 
 Finds contours in the image and matches each against reference contours
-using cv2.matchShapes. Supports both HSV color filtering and Canny edge
-detection for contour extraction.
+using cv2.matchShapes, then verifies matches via HSV histogram comparison
+to prevent shape-only false positives (e.g. white circle matching red circle).
 """
 
 from __future__ import annotations
@@ -19,11 +19,11 @@ from cv_toolkit.registry import register_tool
 def locate_contour(
     image: np.ndarray, reference: np.ndarray | None, tool_input: ToolInput
 ) -> ToolResult:
-    """Locate shapes matching a reference via Hu moment comparison.
+    """Locate shapes matching a reference via Hu moment + color histogram.
 
     Extracts contours from the image (via HSV color filter or Canny edges),
-    then matches each against reference contours. Returns bounding boxes of
-    the best matching contours.
+    matches each against reference contours via Hu moments, then verifies
+    with HSV histogram comparison. Returns bounding boxes of best matches.
 
     Requires reference image.
 
@@ -50,7 +50,8 @@ def locate_contour(
     use_color = hsv_lower is not None and hsv_upper is not None
 
     img_crop = extract_region(image, tool_input.region)
-    ref_crop = extract_region(reference, tool_input.region)
+    # Use full reference — region specifies where to search in the image.
+    ref_crop = reference.copy()
     img_h, img_w = img_crop.shape[:2]
 
     # Extract contours from image and reference
@@ -72,6 +73,11 @@ def locate_contour(
             details={"matches": [], "num_matches": 0},
         )
 
+    # Compute reference histogram for color verification
+    ref_hsv = bgr_to_hsv(ref_crop)
+    ref_hist = cv2.calcHist([ref_hsv], [0, 1], None, [30, 32], [0, 180, 0, 256])
+    cv2.normalize(ref_hist, ref_hist, alpha=1.0, norm_type=cv2.NORM_L1)
+
     # Match each image contour against all reference contours
     scored: list[dict] = []
     for contour in img_contours:
@@ -80,9 +86,26 @@ def locate_contour(
             dist = cv2.matchShapes(contour, ref_c, cv2.CONTOURS_MATCH_I2, 0.0)
             best_dist = min(best_dist, dist)
 
-        confidence = 1.0 / (1.0 + best_dist)
+        hu_score = 1.0 / (1.0 + best_dist)
+        if hu_score < min_hu_similarity:
+            continue
+
+        x, y, w, h = cv2.boundingRect(contour)
+
+        # Color histogram verification: compare candidate region to reference
+        cand_region = img_crop[y : y + h, x : x + w]
+        if cand_region.size == 0:
+            continue
+        cand_hsv = bgr_to_hsv(cand_region)
+        cand_hist = cv2.calcHist([cand_hsv], [0, 1], None, [30, 32], [0, 180, 0, 256])
+        cv2.normalize(cand_hist, cand_hist, alpha=1.0, norm_type=cv2.NORM_L1)
+        hist_dist = cv2.compareHist(ref_hist, cand_hist, cv2.HISTCMP_BHATTACHARYYA)
+        hist_score = 1.0 - hist_dist  # 0=no overlap, 1=identical
+
+        # Combined score: shape + color
+        confidence = hu_score * 0.5 + hist_score * 0.5
+
         if confidence >= min_hu_similarity:
-            x, y, w, h = cv2.boundingRect(contour)
             bbox = normalize_bbox(x, y, w, h, img_h, img_w)
             scored.append({"bbox": bbox, "confidence": confidence})
 

@@ -20,7 +20,7 @@ class TestLocateColor:
         )
         result = run_tool(img, ti)
         assert result.match is True
-        assert result.score == 1.0
+        assert result.score > 0.5  # Compactness score for a rectangle ≈ pi/4
         assert result.details["num_matches"] == 1
         bbox = result.details["matches"][0]["bbox"]
         assert bbox["x"] > 0.2
@@ -104,8 +104,8 @@ class TestLocateColor:
         result = run_tool(img, ti)
         assert result.details["num_matches"] == 0
 
-    def test_confidence_always_one(self):
-        """All color matches should have confidence 1.0 (binary match)."""
+    def test_confidence_is_compactness(self):
+        """Color matches without reference should score by compactness."""
         img = np.zeros((200, 200, 3), dtype=np.uint8)
         cv2.rectangle(img, (50, 50), (150, 150), (0, 0, 255), -1)
         ti = ToolInput(
@@ -115,7 +115,8 @@ class TestLocateColor:
         )
         result = run_tool(img, ti)
         for m in result.details["matches"]:
-            assert m["confidence"] == 1.0
+            # Compactness: 4*pi*area/perimeter^2; rectangle ≈ pi/4 ≈ 0.785
+            assert 0.0 < m["confidence"] <= 1.0
 
     def test_bbox_normalized(self):
         """Bounding box coordinates should be normalized to 0.0-1.0."""
