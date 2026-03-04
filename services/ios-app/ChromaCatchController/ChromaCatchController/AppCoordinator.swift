@@ -70,13 +70,19 @@ class AppCoordinator: ObservableObject {
     @Published var esp32Host: String {
         didSet {
             UserDefaults.standard.set(esp32Host, forKey: "esp32Host")
-            esp32Client.updateEndpoint(host: esp32Host, port: Int(esp32Port) ?? 80)
+            esp32Client.updateEndpoint(host: esp32Host, port: Int(esp32Port) ?? 80, wsPort: Int(esp32WSPort) ?? 81)
         }
     }
     @Published var esp32Port: String {
         didSet {
             UserDefaults.standard.set(esp32Port, forKey: "esp32Port")
-            esp32Client.updateEndpoint(host: esp32Host, port: Int(esp32Port) ?? 80)
+            esp32Client.updateEndpoint(host: esp32Host, port: Int(esp32Port) ?? 80, wsPort: Int(esp32WSPort) ?? 81)
+        }
+    }
+    @Published var esp32WSPort: String {
+        didSet {
+            UserDefaults.standard.set(esp32WSPort, forKey: "esp32WSPort")
+            esp32Client.updateEndpoint(host: esp32Host, port: Int(esp32Port) ?? 80, wsPort: Int(esp32WSPort) ?? 81)
         }
     }
     @Published var clientId: String {
@@ -111,6 +117,7 @@ class AppCoordinator: ObservableObject {
         let savedKey = UserDefaults.standard.string(forKey: "apiKey") ?? ""
         let savedESP32Host = UserDefaults.standard.string(forKey: "esp32Host") ?? "192.168.1.100"
         let savedESP32Port = UserDefaults.standard.string(forKey: "esp32Port") ?? "80"
+        let savedESP32WSPort = UserDefaults.standard.string(forKey: "esp32WSPort") ?? "81"
         let savedClientId = UserDefaults.standard.string(forKey: "clientId") ?? "ios-app"
         let savedDNSFilter = UserDefaults.standard.bool(forKey: "dnsFilterEnabled")
         let savedBLEProfile = HIDProfile(rawValue: UserDefaults.standard.string(forKey: "bleHIDPreferredProfile") ?? "") ?? .combo
@@ -135,6 +142,7 @@ class AppCoordinator: ObservableObject {
         self.apiKey = savedKey
         self.esp32Host = savedESP32Host
         self.esp32Port = savedESP32Port
+        self.esp32WSPort = savedESP32WSPort
         self.clientId = savedClientId
 
         // Initialize managers with shared logging — all messages go to Xcode console + app UI
@@ -165,6 +173,7 @@ class AppCoordinator: ObservableObject {
         esp32Client = ESP32HTTPClient(
             host: savedESP32Host,
             port: Int(savedESP32Port) ?? 80,
+            wsPort: Int(savedESP32WSPort) ?? 81,
             log: logFn
         )
         bleHIDCommander = BLEHIDCommander()
@@ -191,6 +200,11 @@ class AppCoordinator: ObservableObject {
     private func setupCallbacks() {
         // Forward nested ObservableObject changes to trigger SwiftUI re-render
         bleHIDCommander.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+
+        esp32Client.objectWillChange
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
@@ -273,7 +287,7 @@ class AppCoordinator: ObservableObject {
         addLog("Starting backend connection...")
 
         // Update ESP32 endpoint from current settings
-        esp32Client.updateEndpoint(host: esp32Host, port: Int(esp32Port) ?? 80)
+        esp32Client.updateEndpoint(host: esp32Host, port: Int(esp32Port) ?? 80, wsPort: Int(esp32WSPort) ?? 81)
 
         // Query ESP32 mode on startup
         Task { await queryESP32Mode() }
@@ -313,6 +327,7 @@ class AppCoordinator: ObservableObject {
         isBackendRunning = false
 
         bleHIDCommander.stop()
+        esp32Client.disconnectWebSocket()
         wsManager.disconnect()
         statusTimer?.invalidate()
         statusTimer = nil
@@ -453,6 +468,25 @@ class AppCoordinator: ObservableObject {
         }
     }
 
+    func connectESP32CommandWebSocket() async {
+        esp32Client.updateEndpoint(host: esp32Host, port: Int(esp32Port) ?? 80, wsPort: Int(esp32WSPort) ?? 81)
+        let ok = await esp32Client.connectWebSocket()
+        addLog(ok ? "ESP32 command WS connected" : "ESP32 command WS connect failed")
+    }
+
+    func disconnectESP32CommandWebSocket() {
+        esp32Client.disconnectWebSocket()
+        addLog("ESP32 command WS disconnected")
+    }
+
+    func toggleESP32CommandWebSocket() {
+        if esp32Client.wsConnected {
+            disconnectESP32CommandWebSocket()
+        } else {
+            Task { await connectESP32CommandWebSocket() }
+        }
+    }
+
     // MARK: - BLE HID Control
 
     func setBLEHIDEnabled(_ enabled: Bool) {
@@ -521,16 +555,18 @@ class AppCoordinator: ObservableObject {
             addLog("HID mode change → BLE HID: \(profile.rawValue)")
             bleHIDCommander.switchProfile(profile)
         } else {
-            // Map HIDProfile to ESP32 output_mode and send via HTTP
-            let esp32OutputMode: String
+            // Map HIDProfile to ESP32 mode API
+            let esp32ModeString: String
             switch profile {
-            case .gamepad: esp32OutputMode = "gamepad"
-            case .switchPro: esp32OutputMode = "gamepad"
-            case .combo, .mouse, .keyboard: esp32OutputMode = "mouse_keyboard"
+            case .gamepad: esp32ModeString = "gamepad"
+            case .switchPro: esp32ModeString = "switch_controller"
+            case .combo: esp32ModeString = "combo"
+            case .mouse: esp32ModeString = "mouse_only"
+            case .keyboard: esp32ModeString = "keyboard_only"
             }
-            addLog("HID mode change → ESP32: \(esp32OutputMode)")
+            addLog("HID mode change → ESP32: \(esp32ModeString)")
             Task {
-                let ok = await esp32Client.setMode(outputMode: esp32OutputMode)
+                let ok = await esp32Client.setMode(mode: esp32ModeString)
                 if ok {
                     await queryESP32Mode()
                 } else {

@@ -30,6 +30,10 @@ struct SettingsTab: View {
                             .font(.system(.caption, design: .monospaced))
                             .frame(width: 60)
                             .keyboardType(.numberPad)
+                        TextField("WS", text: $coordinator.esp32WSPort)
+                            .font(.system(.caption, design: .monospaced))
+                            .frame(width: 60)
+                            .keyboardType(.numberPad)
                     }
                 }
 

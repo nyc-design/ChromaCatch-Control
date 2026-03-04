@@ -20,16 +20,37 @@ struct InputTab: View {
                             InfoRow(label: "Mode", value: coordinator.esp32Mode.outputMode)
                         }
 
-                        Button {
-                            Task { await coordinator.queryESP32Mode() }
-                        } label: {
-                            HStack {
-                                Image(systemName: "arrow.clockwise")
-                                Text("Refresh Mode")
+                        ConnectionRow(
+                            label: "Command WS",
+                            icon: "arrow.left.arrow.right.circle",
+                            isConnected: coordinator.esp32Client.wsConnected,
+                            detail: "\(coordinator.esp32Host):\(coordinator.esp32WSPort)",
+                            activeColor: .green
+                        )
+
+                        HStack(spacing: 8) {
+                            Button {
+                                coordinator.toggleESP32CommandWebSocket()
+                            } label: {
+                                HStack {
+                                    Image(systemName: coordinator.esp32Client.wsConnected ? "bolt.slash" : "bolt.horizontal.circle")
+                                    Text(coordinator.esp32Client.wsConnected ? "Disconnect WS" : "Connect WS")
+                                }
+                                .frame(maxWidth: .infinity)
                             }
-                            .frame(maxWidth: .infinity)
+                            .buttonStyle(.borderedProminent)
+
+                            Button {
+                                Task { await coordinator.queryESP32Mode() }
+                            } label: {
+                                HStack {
+                                    Image(systemName: "arrow.clockwise")
+                                    Text("Refresh Mode")
+                                }
+                                .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
                         }
-                        .buttonStyle(.bordered)
                     }
 
                     // BLE HID Commander
