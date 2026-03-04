@@ -48,15 +48,16 @@
     <array>
         <string>external-accessory</string>
         <string>bluetooth-central</string>
+        <string>bluetooth-peripheral</string>
         <string>location</string>
     </array>
 
     <!-- Bluetooth Usage Descriptions -->
     <key>NSBluetoothAlwaysUsageDescription</key>
-    <string>ChromaCatch uses Bluetooth to communicate with the iTools GPS dongle for location control.</string>
+    <string>ChromaCatch uses Bluetooth to communicate with the iTools GPS dongle and optionally emulate a BLE HID controller.</string>
 
     <key>NSBluetoothPeripheralUsageDescription</key>
-    <string>ChromaCatch uses Bluetooth to communicate with the iTools GPS dongle.</string>
+    <string>ChromaCatch can advertise as a Bluetooth mouse/keyboard/gamepad for direct device control.</string>
 
     <!-- Location Usage (GPS verification + background keepalive) -->
     <key>NSLocationWhenInUseUsageDescription</key>

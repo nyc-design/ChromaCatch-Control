@@ -109,11 +109,12 @@ class AppCoordinator: ObservableObject {
         let savedClientId = UserDefaults.standard.string(forKey: "clientId") ?? "ios-app"
         let savedDNSFilter = UserDefaults.standard.bool(forKey: "dnsFilterEnabled")
 
-        // Migration: reset BLE HID after v1 crash fix (old impl crashed permanently)
+        // Migration: reset BLE HID after stability fixes so users can re-enable manually.
         let savedUseBLEHID: Bool
-        if UserDefaults.standard.bool(forKey: "useBLEHID") && !UserDefaults.standard.bool(forKey: "bleHIDFixedV2") {
+        if UserDefaults.standard.bool(forKey: "useBLEHID") && !UserDefaults.standard.bool(forKey: "bleHIDFixedV3") {
             UserDefaults.standard.set(false, forKey: "useBLEHID")
             UserDefaults.standard.set(true, forKey: "bleHIDFixedV2")
+            UserDefaults.standard.set(true, forKey: "bleHIDFixedV3")
             savedUseBLEHID = false
         } else {
             savedUseBLEHID = UserDefaults.standard.bool(forKey: "useBLEHID")
@@ -444,15 +445,21 @@ class AppCoordinator: ObservableObject {
 
     // MARK: - BLE HID Control
 
-    func toggleBLEHID() {
-        useBLEHID.toggle()
-        if useBLEHID {
+    func setBLEHIDEnabled(_ enabled: Bool) {
+        guard useBLEHID != enabled else { return }
+
+        useBLEHID = enabled
+        if enabled {
             bleHIDCommander.start(profile: .combo)
             addLog("BLE HID: enabled (combo profile)")
         } else {
             bleHIDCommander.stop()
             addLog("BLE HID: disabled")
         }
+    }
+
+    func toggleBLEHID() {
+        setBLEHIDEnabled(!useBLEHID)
     }
 
     // MARK: - HID Mode Change (Backend-driven)

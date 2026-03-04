@@ -39,7 +39,7 @@ struct InputTab: View {
 
                         Toggle("Use BLE HID", isOn: Binding(
                             get: { coordinator.useBLEHID },
-                            set: { _ in coordinator.toggleBLEHID() }
+                            set: { newValue in coordinator.setBLEHIDEnabled(newValue) }
                         ))
 
                         if coordinator.useBLEHID {

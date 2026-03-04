@@ -6,15 +6,6 @@
 //  to target devices (Switch, 3DS, PC, Android) without requiring ESP32 hardware.
 //
 //  Reference: https://gist.github.com/conath/c606d95d58bbcb50e9715864eeeecf07
-//  Proven approach: BluTouch (App Store) works on iOS 15.5+.
-//
-//  Key implementation details:
-//  - Expanded 128-bit UUIDs bypass Apple's short-form HID blocklist (iOS 14+)
-//  - Single HID Report characteristic (2A4D) with Report ID as first byte
-//  - Report Reference descriptor (2908) tells hosts which Report ID this char maps to
-//  - Generic Access Service with Appearance tells hosts what device type we are
-//  - Must handle didReceiveRead for Windows/Mac compatibility
-//  - CBPeripheralManager on dedicated queue, UI updates on main thread
 //
 
 import CoreBluetooth
@@ -29,6 +20,8 @@ private let kHIDReportMapUUID = CBUUID(string: "00002A4B-0000-1000-8000-00805F9B
 private let kHIDControlPointUUID = CBUUID(string: "00002A4C-0000-1000-8000-00805F9B34FB")
 private let kHIDReportUUID = CBUUID(string: "00002A4D-0000-1000-8000-00805F9B34FB")
 private let kProtocolModeUUID = CBUUID(string: "00002A4E-0000-1000-8000-00805F9B34FB")
+private let kBootKeyboardInputReportUUID = CBUUID(string: "00002A22-0000-1000-8000-00805F9B34FB")
+private let kBootMouseInputReportUUID = CBUUID(string: "00002A33-0000-1000-8000-00805F9B34FB")
 
 private let kGenericAccessUUID = CBUUID(string: "00001800-0000-1000-8000-00805F9B34FB")
 private let kAppearanceUUID = CBUUID(string: "00002A01-0000-1000-8000-00805F9B34FB")
@@ -162,33 +155,41 @@ private let gamepadReportDescriptor: [UInt8] = [
 private let kAppearanceMouse: UInt16 = 0x03C2
 private let kAppearanceKeyboard: UInt16 = 0x03C1
 private let kAppearanceGamepad: UInt16 = 0x03C4
-private let kAppearanceHIDGeneric: UInt16 = 0x03C0
 
 // MARK: - BLEHIDCommander
 
 /// BLE HID peripheral that makes the iOS device act as a mouse/keyboard/gamepad.
 /// NOT @MainActor — CBPeripheralManager delegate runs on bleQueue, UI updates dispatched to main.
-class BLEHIDCommander: NSObject, ObservableObject {
-    // Published properties — only mutated on main thread
+final class BLEHIDCommander: NSObject, ObservableObject {
+    // Published properties — only mutated on main thread.
     @Published var isAdvertising = false
     @Published var isConnected = false
     @Published var connectedDeviceName: String?
     @Published var currentProfile: HIDProfile = .combo
 
-    // BLE internals
+    // BLE internals.
+    private let bleQueue = DispatchQueue(label: "com.chromacatch.ble-hid", qos: .userInitiated)
     private var peripheralManager: CBPeripheralManager?
     private var reportCharacteristic: CBMutableCharacteristic?
-    private let bleQueue = DispatchQueue(label: "com.chromacatch.ble-hid", qos: .userInitiated)
+    private var bootKeyboardInputCharacteristic: CBMutableCharacteristic?
+    private var bootMouseInputCharacteristic: CBMutableCharacteristic?
 
-    // Thread-safe central tracking
+    // Thread-safe central tracking.
     private var subscribedCentrals: [CBCentral] = []
     private let lock = NSLock()
 
-    // Service setup tracking
+    // Service setup tracking.
     private var servicesAdded = 0
     private var totalServices = 0
 
-    // Current gamepad state
+    // Active profile used on BLE queue.
+    private var activeProfile: HIDProfile = .combo
+
+    // Protocol/control point values.
+    private var protocolMode: UInt8 = 0x01 // 0 = boot, 1 = report
+    private var controlPoint: UInt8 = 0x00
+
+    // Current gamepad state.
     private var gamepadButtons: UInt16 = 0
     private var gamepadHat: UInt8 = 0x0F // centered (null state)
     private var gamepadLeftX: UInt8 = 128
@@ -196,8 +197,10 @@ class BLEHIDCommander: NSObject, ObservableObject {
     private var gamepadRightX: UInt8 = 128
     private var gamepadRightY: UInt8 = 128
 
-    // Last sent report (for read requests)
-    private var lastReport = Data(repeating: 0, count: 9)
+    // Last sent reports (for read requests).
+    private var lastReport = Data([0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+    private var lastKeyboardBootReport = Data(repeating: 0, count: 8)
+    private var lastMouseBootReport = Data(repeating: 0, count: 3)
 
     override init() {
         super.init()
@@ -206,34 +209,29 @@ class BLEHIDCommander: NSObject, ObservableObject {
     // MARK: - Lifecycle
 
     func start(profile: HIDProfile = .combo) {
-        guard peripheralManager == nil else {
-            hidLog.warning("BLE HID already started")
-            return
+        bleQueue.async { [weak self] in
+            self?.startOnBLEQueue(profile: profile)
         }
-        hidLog.info("Starting BLE HID with profile: \(profile.rawValue)")
-        DispatchQueue.main.async { self.currentProfile = profile }
-        peripheralManager = CBPeripheralManager(
-            delegate: self,
-            queue: bleQueue,
-            options: [CBPeripheralManagerOptionShowPowerAlertKey: true]
-        )
     }
 
     func stop() {
-        guard let pm = peripheralManager else { return }
-        hidLog.info("Stopping BLE HID")
-        peripheralManager = nil
-        reportCharacteristic = nil
-
         bleQueue.async {
+            guard let pm = self.peripheralManager else { return }
+
+            hidLog.info("Stopping BLE HID")
+            self.peripheralManager = nil
+            self.reportCharacteristic = nil
+            self.bootKeyboardInputCharacteristic = nil
+            self.bootMouseInputCharacteristic = nil
+
             pm.stopAdvertising()
             pm.removeAllServices()
+            self.lock.lock()
+            self.subscribedCentrals.removeAll()
+            self.lock.unlock()
+            self.servicesAdded = 0
+            self.totalServices = 0
         }
-
-        lock.lock()
-        subscribedCentrals.removeAll()
-        lock.unlock()
-        servicesAdded = 0
 
         DispatchQueue.main.async {
             self.isAdvertising = false
@@ -246,18 +244,60 @@ class BLEHIDCommander: NSObject, ObservableObject {
     /// Stops the current session, changes profile, and restarts.
     /// Connected centrals will need to reconnect after the switch.
     func switchProfile(_ profile: HIDProfile) {
-        let wasRunning = peripheralManager != nil
-        hidLog.info("Switching HID profile: \(self.currentProfile.rawValue) → \(profile.rawValue)")
-        if wasRunning { stop() }
-        // Brief delay to let BLE stack clean up before re-advertising
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-            guard let self = self else { return }
-            if wasRunning {
-                self.start(profile: profile)
-            } else {
-                self.currentProfile = profile
+        bleQueue.async { [weak self] in
+            guard let self else { return }
+            let wasRunning = self.peripheralManager != nil
+
+            hidLog.info("Switching HID profile: \(self.activeProfile.rawValue) → \(profile.rawValue)")
+            self.activeProfile = profile
+            self.publishCurrentProfile(profile)
+
+            guard wasRunning else { return }
+
+            let pm = self.peripheralManager
+            self.peripheralManager = nil
+            self.reportCharacteristic = nil
+            self.bootKeyboardInputCharacteristic = nil
+            self.bootMouseInputCharacteristic = nil
+            self.lock.lock()
+            self.subscribedCentrals.removeAll()
+            self.lock.unlock()
+            self.servicesAdded = 0
+            self.totalServices = 0
+
+            pm?.stopAdvertising()
+            pm?.removeAllServices()
+
+            DispatchQueue.main.async {
+                self.isAdvertising = false
+                self.isConnected = false
+                self.connectedDeviceName = nil
+            }
+
+            // Brief delay to let BLE stack clean up before re-advertising.
+            self.bleQueue.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                self?.startOnBLEQueue(profile: profile)
             }
         }
+    }
+
+    private func startOnBLEQueue(profile: HIDProfile) {
+        guard peripheralManager == nil else {
+            hidLog.warning("BLE HID already started")
+            return
+        }
+
+        activeProfile = profile
+        publishCurrentProfile(profile)
+        protocolMode = 0x01
+        controlPoint = 0x00
+
+        hidLog.info("Starting BLE HID with profile: \(profile.rawValue)")
+        peripheralManager = CBPeripheralManager(
+            delegate: self,
+            queue: bleQueue,
+            options: [CBPeripheralManagerOptionShowPowerAlertKey: true]
+        )
     }
 
     // MARK: - Mouse Commands (Report ID 1)
@@ -290,7 +330,7 @@ class BLEHIDCommander: NSObject, ObservableObject {
         sendReport(report)
     }
 
-    /// Release all keys
+    /// Release all keys.
     func keyRelease() {
         keyPress()
     }
@@ -309,23 +349,25 @@ class BLEHIDCommander: NSObject, ObservableObject {
         sendGamepadReport()
     }
 
-    /// Set hat switch: 0=N, 1=NE, 2=E, ..., 7=NW, 0x0F=centered
+    /// Set hat switch: 0=N, 1=NE, 2=E, ..., 7=NW, 0x0F=centered.
     func gamepadSetHat(_ direction: UInt8) {
         gamepadHat = direction
         sendGamepadReport()
     }
 
-    /// Set stick values (0-255, 128 = center)
+    /// Set stick values (0-255, 128 = center).
     func gamepadSetStick(left: Bool, x: UInt8, y: UInt8) {
         if left {
-            gamepadLeftX = x; gamepadLeftY = y
+            gamepadLeftX = x
+            gamepadLeftY = y
         } else {
-            gamepadRightX = x; gamepadRightY = y
+            gamepadRightX = x
+            gamepadRightY = y
         }
         sendGamepadReport()
     }
 
-    /// Report: [0x03, buttonsLo, buttonsHi, hat, lx, ly, rx, ry] = 8 bytes
+    /// Report: [0x03, buttonsLo, buttonsHi, hat, lx, ly, rx, ry] = 8 bytes.
     private func sendGamepadReport() {
         let lo = UInt8(gamepadButtons & 0xFF)
         let hi = UInt8((gamepadButtons >> 8) & 0xFF)
@@ -335,16 +377,61 @@ class BLEHIDCommander: NSObject, ObservableObject {
     // MARK: - Report Transmission
 
     private func sendReport(_ report: Data) {
-        guard let char = reportCharacteristic, let pm = peripheralManager else { return }
-        lastReport = report
+        bleQueue.async { [weak self] in
+            self?.sendReportOnBLEQueue(report)
+        }
+    }
+
+    private func sendReportOnBLEQueue(_ report: Data) {
+        guard let pm = peripheralManager else { return }
+
+        updateCachedReports(report)
 
         lock.lock()
-        let hasSubs = !subscribedCentrals.isEmpty
+        let hasSubscribers = !subscribedCentrals.isEmpty
         lock.unlock()
-        guard hasSubs else { return }
+        guard hasSubscribers else { return }
 
-        if !pm.updateValue(report, for: char, onSubscribedCentrals: nil) {
-            hidLog.warning("HID report queued (transmit buffer full)")
+        if let reportChar = reportCharacteristic,
+           !pm.updateValue(report, for: reportChar, onSubscribedCentrals: nil)
+        {
+            hidLog.warning("HID report queued (report characteristic transmit buffer full)")
+        }
+
+        guard let reportId = report.first else { return }
+
+        // Boot protocol compatibility for hosts that subscribe/read boot reports (2A22 / 2A33).
+        if reportId == 0x02,
+           let bootKeyboard = bootKeyboardInputCharacteristic,
+           !pm.updateValue(lastKeyboardBootReport, for: bootKeyboard, onSubscribedCentrals: nil)
+        {
+            hidLog.warning("HID report queued (boot keyboard transmit buffer full)")
+        }
+
+        if reportId == 0x01,
+           let bootMouse = bootMouseInputCharacteristic,
+           !pm.updateValue(lastMouseBootReport, for: bootMouse, onSubscribedCentrals: nil)
+        {
+            hidLog.warning("HID report queued (boot mouse transmit buffer full)")
+        }
+    }
+
+    private func updateCachedReports(_ report: Data) {
+        guard let reportId = report.first else { return }
+
+        lastReport = report
+
+        switch reportId {
+        case 0x01: // mouse
+            if report.count >= 4 {
+                lastMouseBootReport = Data([report[1], report[2], report[3]])
+            }
+        case 0x02: // keyboard
+            if report.count >= 9 {
+                lastKeyboardBootReport = report.subdata(in: 1 ..< 9)
+            }
+        default:
+            break
         }
     }
 
@@ -352,53 +439,64 @@ class BLEHIDCommander: NSObject, ObservableObject {
 
     private func setupServices() {
         guard let pm = peripheralManager else { return }
-        hidLog.info("Setting up GATT services for profile: \(self.currentProfile.rawValue)")
+
+        hidLog.info("Setting up GATT services for profile: \(activeProfile.rawValue)")
 
         pm.removeAllServices()
         servicesAdded = 0
         reportCharacteristic = nil
+        bootKeyboardInputCharacteristic = nil
+        bootMouseInputCharacteristic = nil
 
-        // --- 1. Generic Access Service (Appearance tells host what we are) ---
+        // --- 1) Generic Access Service (Appearance tells host what we are) ---
         let appearance: UInt16
-        switch currentProfile {
+        switch activeProfile {
         case .mouse: appearance = kAppearanceMouse
         case .keyboard: appearance = kAppearanceKeyboard
         case .gamepad: appearance = kAppearanceGamepad
-        case .combo: appearance = kAppearanceKeyboard // most compatible for combo
+        case .combo: appearance = kAppearanceKeyboard
         }
         var appearanceLE = appearance.littleEndian
         let appearanceData = Data(bytes: &appearanceLE, count: 2)
         let appearanceChar = CBMutableCharacteristic(
-            type: kAppearanceUUID, properties: [.read], value: appearanceData, permissions: [.readable]
+            type: kAppearanceUUID,
+            properties: [.read],
+            value: appearanceData,
+            permissions: [.readable]
         )
         let genericAccessService = CBMutableService(type: kGenericAccessUUID, primary: false)
         genericAccessService.characteristics = [appearanceChar]
 
-        // --- 2. Device Information Service ---
-        let mfgChar = CBMutableCharacteristic(
-            type: kManufacturerNameUUID, properties: .read,
-            value: "ChromaCatch".data(using: .utf8), permissions: .readable
+        // --- 2) Device Information Service ---
+        let manufacturerChar = CBMutableCharacteristic(
+            type: kManufacturerNameUUID,
+            properties: [.read],
+            value: "ChromaCatch".data(using: .utf8),
+            permissions: [.readable]
         )
         // PnP ID: vendorIdSource=0x02(USB), vendorId=0x046D, productId=0x0001, version=0x0001
         let pnpChar = CBMutableCharacteristic(
-            type: kPnPIDUUID, properties: .read,
+            type: kPnPIDUUID,
+            properties: [.read],
             value: Data([0x02, 0x6D, 0x04, 0x01, 0x00, 0x01, 0x00]),
-            permissions: .readable
+            permissions: [.readable]
         )
         let deviceInfoService = CBMutableService(type: kDeviceInfoServiceUUID, primary: false)
-        deviceInfoService.characteristics = [mfgChar, pnpChar]
+        deviceInfoService.characteristics = [manufacturerChar, pnpChar]
 
-        // --- 3. Battery Service ---
+        // --- 3) Battery Service ---
         let batteryChar = CBMutableCharacteristic(
-            type: kBatteryLevelUUID, properties: [.read, .notify],
-            value: Data([100]), permissions: .readable
+            type: kBatteryLevelUUID,
+            properties: [.read, .notify],
+            value: Data([100]),
+            permissions: [.readable]
         )
         let batteryService = CBMutableService(type: kBatteryServiceUUID, primary: false)
         batteryService.characteristics = [batteryChar]
 
-        // --- 4. HID Service (primary) ---
+        // --- 4) HID Service (primary) ---
         let reportDescriptor: [UInt8]
-        switch currentProfile {
+        switch activeProfile {
         case .mouse: reportDescriptor = mouseReportDescriptor
         case .keyboard: reportDescriptor = keyboardReportDescriptor
         case .gamepad: reportDescriptor = gamepadReportDescriptor
@@ -407,29 +505,37 @@ class BLEHIDCommander: NSObject, ObservableObject {
 
         // HID Information: bcdHID=1.11, bCountryCode=0, Flags=0x02 (normally connectable)
         let hidInfoChar = CBMutableCharacteristic(
-            type: kHIDInfoUUID, properties: .read,
-            value: Data([0x11, 0x01, 0x00, 0x02]), permissions: .readable
+            type: kHIDInfoUUID,
+            properties: [.read],
+            value: Data([0x11, 0x01, 0x00, 0x02]),
+            permissions: [.readable]
         )
 
-        // Report Map — the full HID report descriptor
+        // Report Map — full HID report descriptor.
         let reportMapChar = CBMutableCharacteristic(
-            type: kHIDReportMapUUID, properties: .read,
-            value: Data(reportDescriptor), permissions: .readable
+            type: kHIDReportMapUUID,
+            properties: [.read],
+            value: Data(reportDescriptor),
+            permissions: [.readable]
         )
 
-        // Control Point — host writes here to control HID
+        // Control Point — host writes suspend/exit suspend.
         let controlPointChar = CBMutableCharacteristic(
-            type: kHIDControlPointUUID, properties: .writeWithoutResponse,
-            value: nil, permissions: .writeable
+            type: kHIDControlPointUUID,
+            properties: [.writeWithoutResponse],
+            value: nil,
+            permissions: [.writeable]
         )
 
-        // Protocol Mode — 0x01 = Report Protocol
+        // Protocol Mode — host writes 0x00 (boot) / 0x01 (report).
         let protocolModeChar = CBMutableCharacteristic(
-            type: kProtocolModeUUID, properties: [.read, .writeWithoutResponse],
-            value: Data([0x01]), permissions: [.readable, .writeable]
+            type: kProtocolModeUUID,
+            properties: [.read, .writeWithoutResponse],
+            value: nil,
+            permissions: [.readable, .writeable]
         )
 
-        // Single HID Report characteristic — Report ID is first byte of each notification
+        // Single HID Report characteristic — Report ID is first byte of each report payload.
         let reportChar = CBMutableCharacteristic(
             type: kHIDReportUUID,
             properties: [.read, .notify],
@@ -437,20 +543,40 @@ class BLEHIDCommander: NSObject, ObservableObject {
             permissions: [.readable]
         )
 
-        // Report Reference descriptor (0x2908): tells host the Report ID and type
-        // Value: [ReportID=0x00 (multiplexed via first byte), ReportType=0x01 (Input)]
-        let reportRef = CBMutableDescriptor(
-            type: kReportReferenceUUID,
-            value: Data([0x00, 0x01])
-        )
+        // Report Reference descriptor (0x2908): [ReportID=0x00 (multiplexed), ReportType=0x01 (Input)]
+        let reportRef = CBMutableDescriptor(type: kReportReferenceUUID, value: Data([0x00, 0x01]))
         reportChar.descriptors = [reportRef]
 
+        var hidCharacteristics: [CBMutableCharacteristic] = [hidInfoChar, reportMapChar, controlPointChar, protocolModeChar]
+
+        if activeProfile == .keyboard || activeProfile == .combo {
+            let bootKeyboardChar = CBMutableCharacteristic(
+                type: kBootKeyboardInputReportUUID,
+                properties: [.read, .notify],
+                value: nil,
+                permissions: [.readable]
+            )
+            bootKeyboardInputCharacteristic = bootKeyboardChar
+            hidCharacteristics.append(bootKeyboardChar)
+        }
+
+        if activeProfile == .mouse || activeProfile == .combo {
+            let bootMouseChar = CBMutableCharacteristic(
+                type: kBootMouseInputReportUUID,
+                properties: [.read, .notify],
+                value: nil,
+                permissions: [.readable]
+            )
+            bootMouseInputCharacteristic = bootMouseChar
+            hidCharacteristics.append(bootMouseChar)
+        }
+
         reportCharacteristic = reportChar
+        hidCharacteristics.append(reportChar)
 
         let hidService = CBMutableService(type: kHIDServiceUUID, primary: true)
-        hidService.characteristics = [hidInfoChar, reportMapChar, controlPointChar, protocolModeChar, reportChar]
+        hidService.characteristics = hidCharacteristics
 
-        // Add services — advertising starts after all are added
         totalServices = 4
         pm.add(genericAccessService)
         pm.add(deviceInfoService)
@@ -460,11 +586,26 @@ class BLEHIDCommander: NSObject, ObservableObject {
 
     private func startAdvertising() {
         guard let pm = peripheralManager else { return }
-        let adData: [String: Any] = [
+        pm.startAdvertising([
             CBAdvertisementDataLocalNameKey: "ChromaCatch HID",
             CBAdvertisementDataServiceUUIDsKey: [kHIDServiceUUID],
-        ]
-        pm.startAdvertising(adData)
+        ])
+    }
+
+    private func publishCurrentProfile(_ profile: HIDProfile) {
+        DispatchQueue.main.async {
+            self.currentProfile = profile
+        }
+    }
+
+    private func respondRead(_ request: CBATTRequest, with value: Data, on peripheral: CBPeripheralManager) {
+        guard request.offset <= value.count else {
+            peripheral.respond(to: request, withResult: .invalidOffset)
+            return
+        }
+
+        request.value = value.subdata(in: request.offset ..< value.count)
+        peripheral.respond(to: request, withResult: .success)
     }
 }
 
@@ -473,6 +614,7 @@ class BLEHIDCommander: NSObject, ObservableObject {
 extension BLEHIDCommander: CBPeripheralManagerDelegate {
     func peripheralManagerDidUpdateState(_ peripheral: CBPeripheralManager) {
         hidLog.info("BLE peripheral state: \(peripheral.state.rawValue)")
+
         switch peripheral.state {
         case .poweredOn:
             hidLog.info("Bluetooth powered on — setting up HID services")
@@ -494,12 +636,14 @@ extension BLEHIDCommander: CBPeripheralManagerDelegate {
     }
 
     func peripheralManager(_ peripheral: CBPeripheralManager, didAdd service: CBService, error: Error?) {
-        if let error = error {
+        if let error {
             hidLog.error("Failed to add service \(service.uuid): \(error.localizedDescription)")
             return
         }
+
         hidLog.info("Service added: \(service.uuid)")
         servicesAdded += 1
+
         if servicesAdded >= totalServices {
             hidLog.info("All \(self.totalServices) services added — starting advertising")
             startAdvertising()
@@ -507,22 +651,25 @@ extension BLEHIDCommander: CBPeripheralManagerDelegate {
     }
 
     func peripheralManagerDidStartAdvertising(_ peripheral: CBPeripheralManager, error: Error?) {
-        if let error = error {
+        if let error {
             hidLog.error("Advertising failed: \(error.localizedDescription)")
             DispatchQueue.main.async { self.isAdvertising = false }
             return
         }
+
         hidLog.info("BLE HID advertising started")
         DispatchQueue.main.async { self.isAdvertising = true }
     }
 
     func peripheralManager(_ peripheral: CBPeripheralManager, central: CBCentral, didSubscribeTo characteristic: CBCharacteristic) {
-        hidLog.info("Central subscribed: \(central.identifier.uuidString.prefix(8))")
+        hidLog.info("Central subscribed: \(central.identifier.uuidString.prefix(8)) to \(characteristic.uuid)")
+
         lock.lock()
         if !subscribedCentrals.contains(where: { $0.identifier == central.identifier }) {
             subscribedCentrals.append(central)
         }
         lock.unlock()
+
         DispatchQueue.main.async {
             self.isConnected = true
             self.connectedDeviceName = String(central.identifier.uuidString.prefix(8)) + "..."
@@ -530,11 +677,13 @@ extension BLEHIDCommander: CBPeripheralManagerDelegate {
     }
 
     func peripheralManager(_ peripheral: CBPeripheralManager, central: CBCentral, didUnsubscribeFrom characteristic: CBCharacteristic) {
-        hidLog.info("Central unsubscribed: \(central.identifier.uuidString.prefix(8))")
+        hidLog.info("Central unsubscribed: \(central.identifier.uuidString.prefix(8)) from \(characteristic.uuid)")
+
         lock.lock()
         subscribedCentrals.removeAll { $0.identifier == central.identifier }
         let empty = subscribedCentrals.isEmpty
         lock.unlock()
+
         if empty {
             DispatchQueue.main.async {
                 self.isConnected = false
@@ -543,24 +692,60 @@ extension BLEHIDCommander: CBPeripheralManagerDelegate {
         }
     }
 
-    /// Windows/Mac send read requests — must respond or connection fails
+    /// Windows/macOS frequently issue read requests during HID handshake.
     func peripheralManager(_ peripheral: CBPeripheralManager, didReceiveRead request: CBATTRequest) {
-        hidLog.debug("Read request for \(request.characteristic.uuid)")
-        if request.characteristic.uuid == kHIDReportUUID {
-            request.value = lastReport
-            peripheral.respond(to: request, withResult: .success)
-        } else {
-            // Let CoreBluetooth handle reads for characteristics with static values
-            peripheral.respond(to: request, withResult: .success)
+        let uuid = request.characteristic.uuid
+        hidLog.debug("Read request for \(uuid)")
+
+        switch uuid {
+        case kHIDReportUUID:
+            respondRead(request, with: lastReport, on: peripheral)
+        case kBootKeyboardInputReportUUID:
+            respondRead(request, with: lastKeyboardBootReport, on: peripheral)
+        case kBootMouseInputReportUUID:
+            respondRead(request, with: lastMouseBootReport, on: peripheral)
+        case kProtocolModeUUID:
+            respondRead(request, with: Data([protocolMode]), on: peripheral)
+        default:
+            if let staticValue = request.characteristic.value {
+                respondRead(request, with: staticValue, on: peripheral)
+            } else {
+                peripheral.respond(to: request, withResult: .attributeNotFound)
+            }
         }
     }
 
-    /// Accept write requests (Control Point, Protocol Mode)
+    /// Control Point / Protocol Mode writes. Per CoreBluetooth contract, respond once per callback.
     func peripheralManager(_ peripheral: CBPeripheralManager, didReceiveWrite requests: [CBATTRequest]) {
-        hidLog.debug("Write request(s): \(requests.count)")
+        guard let first = requests.first else { return }
+
+        var result: CBATTError.Code = .success
+
         for request in requests {
-            peripheral.respond(to: request, withResult: .success)
+            if request.offset != 0 {
+                result = .invalidOffset
+                break
+            }
+
+            switch request.characteristic.uuid {
+            case kProtocolModeUUID:
+                guard let mode = request.value?.first, mode == 0x00 || mode == 0x01 else {
+                    result = .unlikelyError
+                    break
+                }
+                protocolMode = mode
+                hidLog.info("Protocol mode set to \(mode == 0x00 ? "boot" : "report")")
+            case kHIDControlPointUUID:
+                controlPoint = request.value?.first ?? 0
+                hidLog.debug("Control point write: \(self.controlPoint)")
+            default:
+                result = .requestNotSupported
+            }
+
+            if result != .success { break }
         }
+
+        peripheral.respond(to: first, withResult: result)
     }
 
     func peripheralManagerIsReady(toUpdateSubscribers peripheral: CBPeripheralManager) {
