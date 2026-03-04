@@ -36,6 +36,9 @@ class AppCoordinator: ObservableObject {
     @Published var useBLEHID: Bool {
         didSet { UserDefaults.standard.set(useBLEHID, forKey: "useBLEHID") }
     }
+    @Published var bleHIDPreferredProfile: HIDProfile {
+        didSet { UserDefaults.standard.set(bleHIDPreferredProfile.rawValue, forKey: "bleHIDPreferredProfile") }
+    }
 
     // GPS verification — mirrored from LocationMonitor for SwiftUI binding
     @Published var gpsAccurate: Bool = false
@@ -86,6 +89,8 @@ class AppCoordinator: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var statusTimer: Timer?
     private var esp32PingTimer: Timer?
+    private var lastBackendBLEInputAt: TimeInterval = 0
+    private let manualBLEBackoffWindowS: TimeInterval = 0.2
     let startTime = Date()
     private let sharedDefaults = UserDefaults(suiteName: "group.com.chromacatch")
 
@@ -108,6 +113,7 @@ class AppCoordinator: ObservableObject {
         let savedESP32Port = UserDefaults.standard.string(forKey: "esp32Port") ?? "80"
         let savedClientId = UserDefaults.standard.string(forKey: "clientId") ?? "ios-app"
         let savedDNSFilter = UserDefaults.standard.bool(forKey: "dnsFilterEnabled")
+        let savedBLEProfile = HIDProfile(rawValue: UserDefaults.standard.string(forKey: "bleHIDPreferredProfile") ?? "") ?? .combo
 
         // Migration: reset BLE HID after stability fixes so users can re-enable manually.
         let savedUseBLEHID: Bool
@@ -124,6 +130,7 @@ class AppCoordinator: ObservableObject {
         self.backendURL = savedBackendURL
         self.dnsFilterEnabled = savedDNSFilter
         self.useBLEHID = savedUseBLEHID
+        self.bleHIDPreferredProfile = savedBLEProfile
         self.locationServiceURL = savedLocationURL
         self.apiKey = savedKey
         self.esp32Host = savedESP32Host
@@ -273,8 +280,10 @@ class AppCoordinator: ObservableObject {
 
         // Start BLE HID if enabled
         if useBLEHID {
-            bleHIDCommander.start(profile: .combo)
-            addLog("BLE HID commander started (combo profile)")
+            if !bleHIDCommander.isRunning {
+                bleHIDCommander.start(profile: bleHIDPreferredProfile)
+                addLog("BLE HID commander started (\(bleHIDPreferredProfile.rawValue) profile)")
+            }
         }
 
         // Connect backend WS
@@ -451,8 +460,8 @@ class AppCoordinator: ObservableObject {
 
         useBLEHID = enabled
         if enabled {
-            bleHIDCommander.start(profile: .combo)
-            addLog("BLE HID: enabled (combo profile)")
+            bleHIDCommander.start(profile: bleHIDPreferredProfile)
+            addLog("BLE HID: enabled (\(bleHIDPreferredProfile.rawValue) profile)")
         } else {
             bleHIDCommander.stop()
             addLog("BLE HID: disabled")
@@ -461,6 +470,41 @@ class AppCoordinator: ObservableObject {
 
     func toggleBLEHID() {
         setBLEHIDEnabled(!useBLEHID)
+    }
+
+    func setBLEHIDProfile(_ profile: HIDProfile) {
+        guard bleHIDPreferredProfile != profile else { return }
+        bleHIDPreferredProfile = profile
+
+        if useBLEHID {
+            bleHIDCommander.switchProfile(profile)
+            addLog("BLE HID profile set: \(profile.rawValue)")
+        }
+    }
+
+    func disconnectBLEHIDAndMakeDiscoverable() {
+        bleHIDCommander.disconnectAndMakeDiscoverable()
+        addLog("BLE HID: disconnected current host and restarted discoverable mode")
+    }
+
+    func startBLEHostScan() {
+        bleHIDCommander.startHostScan()
+        addLog("BLE HID host scan started")
+    }
+
+    func stopBLEHostScan() {
+        bleHIDCommander.stopHostScan()
+        addLog("BLE HID host scan stopped")
+    }
+
+    func connectBLEHost(_ host: HIDHostCandidate) {
+        bleHIDCommander.connectToHost(host)
+        addLog("BLE HID host connect requested: \(host.name)")
+    }
+
+    func disconnectBLEHost() {
+        bleHIDCommander.disconnectHostConnection()
+        addLog("BLE HID host disconnected")
     }
 
     // MARK: - HID Mode Change (Backend-driven)
@@ -473,6 +517,7 @@ class AppCoordinator: ObservableObject {
 
         if useBLEHID {
             // Switch the iOS BLE HID commander profile
+            bleHIDPreferredProfile = profile
             addLog("HID mode change → BLE HID: \(profile.rawValue)")
             bleHIDCommander.switchProfile(profile)
         } else {
@@ -507,6 +552,7 @@ class AppCoordinator: ObservableObject {
             let result: (success: Bool, completedAt: Double, error: String?)
 
             if useBLEHID {
+                await MainActor.run { self.lastBackendBLEInputAt = Date().timeIntervalSince1970 }
                 result = routeHIDToBLEHID(action: cmd.action, params: cmd.params ?? [:])
             } else {
                 result = await esp32Client.sendCommand(action: cmd.action, params: cmd.params ?? [:])
@@ -548,6 +594,7 @@ class AppCoordinator: ObservableObject {
             let result: (success: Bool, completedAt: Double, error: String?)
 
             if useBLEHID {
+                await MainActor.run { self.lastBackendBLEInputAt = Date().timeIntervalSince1970 }
                 result = routeGameToBLEHID(commandType: cmd.commandType, action: cmd.action, params: doubleParams)
             } else {
                 result = await esp32Client.sendCommand(action: cmd.action, params: doubleParams)
@@ -635,6 +682,107 @@ class AppCoordinator: ObservableObject {
             return (false, Date().timeIntervalSince1970, "Unknown command type: \(commandType)")
         }
         return (true, Date().timeIntervalSince1970, nil)
+    }
+
+    // MARK: - Manual BLE HID controls (local UI)
+
+    private func canSendManualBLEInput() -> Bool {
+        guard useBLEHID, bleHIDCommander.isConnected else { return false }
+        if wsManager.isConnected {
+            let now = Date().timeIntervalSince1970
+            if now - lastBackendBLEInputAt < manualBLEBackoffWindowS {
+                return false
+            }
+        }
+        return true
+    }
+
+    func sendManualMouseDelta(dx: Int, dy: Int) {
+        guard canSendManualBLEInput() else { return }
+        let clampedDX = Int8(clamping: dx)
+        let clampedDY = Int8(clamping: dy)
+        bleHIDCommander.mouseMove(dx: clampedDX, dy: clampedDY)
+    }
+
+    func sendManualMouseClick() {
+        guard canSendManualBLEInput() else { return }
+        bleHIDCommander.mouseClick()
+    }
+
+    func sendManualKeyboardUsage(usage: UInt8, modifier: UInt8 = 0) {
+        guard canSendManualBLEInput() else { return }
+        bleHIDCommander.keyPress(modifier: modifier, keys: [usage])
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
+            self?.bleHIDCommander.keyRelease()
+        }
+    }
+
+    func sendManualKeyboardText(_ text: String) {
+        guard canSendManualBLEInput() else { return }
+        Task { @MainActor in
+            for character in text {
+                guard let (usage, modifier) = usageForCharacter(character) else { continue }
+                bleHIDCommander.keyPress(modifier: modifier, keys: [usage])
+                try? await Task.sleep(nanoseconds: 25_000_000)
+                bleHIDCommander.keyRelease()
+                try? await Task.sleep(nanoseconds: 15_000_000)
+            }
+        }
+    }
+
+    func sendManualGamepadButton(index: Int, pressed: Bool) {
+        guard canSendManualBLEInput() else { return }
+        if pressed {
+            bleHIDCommander.gamepadButtonPress(buttonIndex: index)
+        } else {
+            bleHIDCommander.gamepadButtonRelease(buttonIndex: index)
+        }
+    }
+
+    func sendManualGamepadHat(direction: UInt8) {
+        guard canSendManualBLEInput() else { return }
+        bleHIDCommander.gamepadSetHat(direction)
+    }
+
+    func clearManualGamepadHat() {
+        guard canSendManualBLEInput() else { return }
+        bleHIDCommander.gamepadSetHat(0x0F)
+    }
+
+    private func usageForCharacter(_ c: Character) -> (UInt8, UInt8)? {
+        if let scalar = c.unicodeScalars.first?.value {
+            switch scalar {
+            case 97 ... 122: // a-z
+                return (UInt8(scalar - 93), 0) // 'a' -> 0x04
+            case 65 ... 90: // A-Z
+                return (UInt8(scalar - 61), 0x02) // shift + key
+            case 49 ... 57: // 1-9
+                return (UInt8(scalar - 19), 0)
+            case 48: // 0
+                return (0x27, 0)
+            case 32: return (0x2C, 0) // space
+            case 10: return (0x28, 0) // enter
+            case 44: return (0x36, 0) // ,
+            case 46: return (0x37, 0) // .
+            case 47: return (0x38, 0) // /
+            case 59: return (0x33, 0) // ;
+            case 39: return (0x34, 0) // '
+            case 45: return (0x2D, 0) // -
+            case 61: return (0x2E, 0) // =
+            case 33: return (0x1E, 0x02) // !
+            case 64: return (0x1F, 0x02) // @
+            case 35: return (0x20, 0x02) // #
+            case 36: return (0x21, 0x02) // $
+            case 37: return (0x22, 0x02) // %
+            case 94: return (0x23, 0x02) // ^
+            case 38: return (0x24, 0x02) // &
+            case 42: return (0x25, 0x02) // *
+            case 40: return (0x26, 0x02) // (
+            case 41: return (0x27, 0x02) // )
+            default: return nil
+            }
+        }
+        return nil
     }
 
     // MARK: - Status Reporting

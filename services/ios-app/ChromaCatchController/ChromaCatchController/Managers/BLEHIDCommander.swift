@@ -46,6 +46,17 @@ enum HIDProfile: String, CaseIterable {
     case combo // mouse + keyboard
 }
 
+struct HIDHostCandidate: Identifiable, Equatable {
+    let id: UUID
+    let name: String
+    let peripheral: CBPeripheral
+    let rssi: Int
+
+    static func == (lhs: HIDHostCandidate, rhs: HIDHostCandidate) -> Bool {
+        lhs.id == rhs.id
+    }
+}
+
 // MARK: - Report Descriptors
 
 /// Mouse: Report ID 1 — buttons(3bit)+pad(5bit), X(8), Y(8), wheel(8) = 4 bytes
@@ -192,9 +203,14 @@ final class BLEHIDCommander: NSObject, ObservableObject {
     @Published var isConnected = false
     @Published var connectedDeviceName: String?
     @Published var currentProfile: HIDProfile = .combo
+    @Published var discoveredHosts: [HIDHostCandidate] = []
+    @Published var isScanningHosts = false
+    @Published var connectedHostName: String?
 
     // BLE internals.
     private var peripheralManager: CBPeripheralManager?
+    private var centralManager: CBCentralManager?
+    private var hostPeripheral: CBPeripheral?
     private var systemControlInputReportCharacteristic: CBMutableCharacteristic?
     private var consumerInputReportCharacteristic: CBMutableCharacteristic?
     private var mouseInputReportCharacteristic: CBMutableCharacteristic?
@@ -241,6 +257,8 @@ final class BLEHIDCommander: NSObject, ObservableObject {
     override init() {
         super.init()
     }
+
+    var isRunning: Bool { peripheralManager != nil }
 
     // MARK: - Lifecycle
 
@@ -308,6 +326,73 @@ final class BLEHIDCommander: NSObject, ObservableObject {
             if wasRunning {
                 self.start(profile: profile)
             }
+        }
+    }
+
+    /// Force-disconnect current central subscriptions and restart advertising.
+    func disconnectAndMakeDiscoverable() {
+        guard peripheralManager != nil else { return }
+        hidLog.info("Disconnecting active HID links and restarting discoverable advertising")
+
+        stop()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            guard let self else { return }
+            self.start(profile: self.activeProfile)
+        }
+    }
+
+    // MARK: - Optional host scan/connect (Bluetouch-style)
+
+    func startHostScan() {
+        if centralManager == nil {
+            centralManager = CBCentralManager(delegate: self, queue: nil)
+        }
+
+        guard let central = centralManager else { return }
+        DispatchQueue.main.async {
+            self.discoveredHosts = []
+            self.isScanningHosts = true
+        }
+
+        guard central.state == .poweredOn else {
+            hidLog.warning("Host scan requested before Bluetooth central was powered on")
+            return
+        }
+
+        central.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
+        hidLog.info("Started scanning for host devices")
+    }
+
+    func stopHostScan() {
+        centralManager?.stopScan()
+        DispatchQueue.main.async {
+            self.isScanningHosts = false
+        }
+    }
+
+    func connectToHost(_ host: HIDHostCandidate) {
+        if centralManager == nil {
+            centralManager = CBCentralManager(delegate: self, queue: nil)
+        }
+        guard let central = centralManager else { return }
+        guard central.state == .poweredOn else {
+            hidLog.warning("Cannot connect to host while central manager not powered on")
+            return
+        }
+
+        stopHostScan()
+        hostPeripheral = host.peripheral
+        connectedHostName = host.name
+        central.connect(host.peripheral, options: nil)
+        hidLog.info("Connecting to host candidate: \(host.name, privacy: .public)")
+    }
+
+    func disconnectHostConnection() {
+        guard let peripheral = hostPeripheral else { return }
+        centralManager?.cancelPeripheralConnection(peripheral)
+        hostPeripheral = nil
+        DispatchQueue.main.async {
+            self.connectedHostName = nil
         }
     }
 
@@ -780,7 +865,9 @@ extension BLEHIDCommander: CBPeripheralManagerDelegate {
                 hidLog.debug("Control point write: \(self.controlPoint)")
             case kHIDReportUUID:
                 // Only output reports should be writable (e.g. keyboard LEDs).
-                if isSameCharacteristic(request.characteristic, as: keyboardOutputReportCharacteristic) {
+                if let (reportID, reportType) = reportReference(of: request.characteristic),
+                   reportID == 0x03, reportType == 0x02
+                {
                     lastKeyboardOutputReport = normalized(request.value ?? Data(), length: 1)
                 } else {
                     result = .requestNotSupported
@@ -800,17 +887,112 @@ extension BLEHIDCommander: CBPeripheralManagerDelegate {
     }
 
     private func valueForReportCharacteristic(_ characteristic: CBCharacteristic) -> Data? {
-        if isSameCharacteristic(characteristic, as: systemControlInputReportCharacteristic) { return lastSystemControlInputReport }
-        if isSameCharacteristic(characteristic, as: consumerInputReportCharacteristic) { return lastConsumerInputReport }
-        if isSameCharacteristic(characteristic, as: mouseInputReportCharacteristic) { return lastMouseInputReport }
-        if isSameCharacteristic(characteristic, as: keyboardInputReportCharacteristic) { return lastKeyboardInputReport }
-        if isSameCharacteristic(characteristic, as: keyboardOutputReportCharacteristic) { return lastKeyboardOutputReport }
-        if isSameCharacteristic(characteristic, as: gamepadInputReportCharacteristic) { return lastGamepadInputReport }
-        return nil
+        guard let (reportID, reportType) = reportReference(of: characteristic) else {
+            return nil
+        }
+
+        if reportType == 0x02, reportID == 0x03 { return lastKeyboardOutputReport }
+        if reportType != 0x01 { return nil }
+
+        switch reportID {
+        case 0x01: return lastMouseInputReport
+        case 0x02: return lastKeyboardInputReport
+        case 0x03: return lastGamepadInputReport
+        case 0x05: return lastSystemControlInputReport
+        case 0x06: return lastConsumerInputReport
+        default: return nil
+        }
     }
 
-    private func isSameCharacteristic(_ lhs: CBCharacteristic, as rhs: CBMutableCharacteristic?) -> Bool {
-        guard let rhs else { return false }
-        return lhs === rhs
+    private func reportReference(of characteristic: CBCharacteristic) -> (UInt8, UInt8)? {
+        guard let descriptors = characteristic.descriptors else { return nil }
+        for descriptor in descriptors where descriptor.uuid == kReportReferenceUUID {
+            if let data = descriptor.value as? Data, data.count >= 2 {
+                return (data[0], data[1])
+            }
+            if let bytes = descriptor.value as? [UInt8], bytes.count >= 2 {
+                return (bytes[0], bytes[1])
+            }
+            if let nsData = descriptor.value as? NSData, nsData.length >= 2 {
+                var bytes = [UInt8](repeating: 0, count: 2)
+                nsData.getBytes(&bytes, length: 2)
+                return (bytes[0], bytes[1])
+            }
+        }
+        return nil
+    }
+}
+
+// MARK: - CBCentralManagerDelegate (optional host selection flow)
+
+extension BLEHIDCommander: CBCentralManagerDelegate {
+    func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        guard isScanningHosts else { return }
+        if central.state == .poweredOn {
+            central.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
+        }
+    }
+
+    func centralManager(_ central: CBCentralManager,
+                        didDiscover peripheral: CBPeripheral,
+                        advertisementData: [String: Any],
+                        rssi RSSI: NSNumber)
+    {
+        let localName = advertisementData[CBAdvertisementDataLocalNameKey] as? String
+        let name = peripheral.name ?? localName ?? "Unknown Device"
+
+        // Skip our own peripheral advertising and iTools dongle entries in this host picker.
+        if name.contains("ChromaCatch") || name.hasPrefix("BT-01414") {
+            return
+        }
+
+        let candidate = HIDHostCandidate(
+            id: peripheral.identifier,
+            name: name,
+            peripheral: peripheral,
+            rssi: RSSI.intValue
+        )
+
+        DispatchQueue.main.async {
+            if let idx = self.discoveredHosts.firstIndex(where: { $0.id == candidate.id }) {
+                self.discoveredHosts[idx] = candidate
+            } else {
+                self.discoveredHosts.append(candidate)
+            }
+            self.discoveredHosts.sort { $0.rssi > $1.rssi }
+        }
+    }
+
+    func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        hidLog.info("Host connected from app scan: \(peripheral.name ?? "unknown", privacy: .public)")
+        DispatchQueue.main.async {
+            self.connectedHostName = peripheral.name ?? "Unknown Host"
+        }
+    }
+
+    func centralManager(_ central: CBCentralManager,
+                        didDisconnectPeripheral peripheral: CBPeripheral,
+                        error: Error?)
+    {
+        hidLog.info("Host disconnected: \(peripheral.name ?? "unknown", privacy: .public)")
+        DispatchQueue.main.async {
+            if self.hostPeripheral?.identifier == peripheral.identifier {
+                self.hostPeripheral = nil
+                self.connectedHostName = nil
+            }
+        }
+    }
+
+    func centralManager(_ central: CBCentralManager,
+                        didFailToConnect peripheral: CBPeripheral,
+                        error: Error?)
+    {
+        hidLog.error("Host connect failed: \(error?.localizedDescription ?? "unknown", privacy: .public)")
+        DispatchQueue.main.async {
+            if self.hostPeripheral?.identifier == peripheral.identifier {
+                self.hostPeripheral = nil
+                self.connectedHostName = nil
+            }
+        }
     }
 }
