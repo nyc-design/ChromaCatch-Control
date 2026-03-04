@@ -150,6 +150,32 @@ private let gamepadReportDescriptor: [UInt8] = [
     0xC0, // End Collection
 ]
 
+/// Combo descriptor captured from Bluetouch-style HID profile:
+/// Mouse (ID 1), Keyboard input (ID 2), Keyboard output LEDs (ID 3),
+/// Consumer control (ID 6), System control (ID 5).
+private let comboReportDescriptor: [UInt8] = [
+    0x05, 0x01, 0x09, 0x02, 0xA1, 0x01, 0x85, 0x01, 0x09, 0x01, 0xA1, 0x00,
+    0x05, 0x09, 0x19, 0x01, 0x29, 0x03, 0x75, 0x01, 0x95, 0x03, 0x15, 0x00,
+    0x25, 0x01, 0x81, 0x02, 0x95, 0x05, 0x81, 0x03, 0x05, 0x01, 0x09, 0x30,
+    0x09, 0x31, 0x09, 0x38, 0x75, 0x08, 0x95, 0x03, 0x15, 0x81, 0x25, 0x7F,
+    0x81, 0x06, 0xC0, 0xC0, 0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, 0x85, 0x02,
+    0x05, 0x07, 0x19, 0xE0, 0x29, 0xE7, 0x75, 0x01, 0x95, 0x08, 0x15, 0x00,
+    0x25, 0x01, 0x81, 0x02, 0x95, 0x01, 0x75, 0x08, 0x81, 0x01, 0x19, 0x00,
+    0x29, 0xDD, 0x95, 0x06, 0x25, 0xDD, 0x81, 0x00, 0x85, 0x03, 0x05, 0x08,
+    0x19, 0x01, 0x29, 0x05, 0x95, 0x05, 0x75, 0x01, 0x25, 0x01, 0x91, 0x02,
+    0x95, 0x03, 0x91, 0x03, 0xC0, 0x05, 0x0C, 0x09, 0x01, 0xA1, 0x01, 0x85,
+    0x04, 0x05, 0x06, 0x09, 0x20, 0x75, 0x08, 0x95, 0x01, 0x15, 0x00, 0x25,
+    0x64, 0x81, 0x02, 0xC0, 0x05, 0x01, 0x09, 0x80, 0xA1, 0x01, 0x85, 0x05,
+    0x09, 0x81, 0x09, 0x82, 0x09, 0x8E, 0x09, 0xA8, 0x09, 0x8F, 0x09, 0x85,
+    0x09, 0x86, 0x09, 0xA7, 0x75, 0x01, 0x95, 0x08, 0x15, 0x00, 0x25, 0x01,
+    0x81, 0x06, 0xC0, 0x05, 0x0C, 0x09, 0x01, 0xA1, 0x01, 0x85, 0x06, 0x19,
+    0x00, 0x2A, 0x74, 0x01, 0x75, 0x10, 0x95, 0x01, 0x15, 0x00, 0x26, 0x74,
+    0x01, 0x81, 0x00, 0x1A, 0x81, 0x01, 0x2A, 0xCB, 0x01, 0x95, 0x01, 0x75,
+    0x08, 0x15, 0x01, 0x25, 0x4B, 0x81, 0x00, 0x1A, 0x01, 0x02, 0x2A, 0xB0,
+    0x02, 0x25, 0xB0, 0x81, 0x00, 0xA1, 0x03, 0x19, 0x00, 0x29, 0xFF, 0x95,
+    0x01, 0x75, 0x08, 0x15, 0x00, 0x25, 0xFF, 0x81, 0x00, 0xC0, 0xC0,
+]
+
 // MARK: - Appearance values (Bluetooth SIG assigned numbers)
 
 private let kAppearanceMouse: UInt16 = 0x03C2
@@ -169,7 +195,12 @@ final class BLEHIDCommander: NSObject, ObservableObject {
 
     // BLE internals.
     private var peripheralManager: CBPeripheralManager?
-    private var reportCharacteristic: CBMutableCharacteristic?
+    private var systemControlInputReportCharacteristic: CBMutableCharacteristic?
+    private var consumerInputReportCharacteristic: CBMutableCharacteristic?
+    private var mouseInputReportCharacteristic: CBMutableCharacteristic?
+    private var keyboardInputReportCharacteristic: CBMutableCharacteristic?
+    private var keyboardOutputReportCharacteristic: CBMutableCharacteristic?
+    private var gamepadInputReportCharacteristic: CBMutableCharacteristic?
     private var bootKeyboardInputCharacteristic: CBMutableCharacteristic?
     private var bootMouseInputCharacteristic: CBMutableCharacteristic?
 
@@ -197,7 +228,12 @@ final class BLEHIDCommander: NSObject, ObservableObject {
     private var gamepadRightY: UInt8 = 128
 
     // Last sent reports (for read requests).
-    private var lastReport = Data([0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+    private var lastSystemControlInputReport = Data([0x00])
+    private var lastConsumerInputReport = Data([0x00, 0x00, 0x00, 0x00, 0x00])
+    private var lastMouseInputReport = Data([0x00, 0x00, 0x00, 0x00])
+    private var lastKeyboardInputReport = Data([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+    private var lastKeyboardOutputReport = Data([0x00])
+    private var lastGamepadInputReport = Data([0x00, 0x00, 0x0F, 0x80, 0x80, 0x80, 0x80])
     private var lastKeyboardBootReport = Data(repeating: 0, count: 8)
     private var lastMouseBootReport = Data(repeating: 0, count: 3)
 
@@ -231,7 +267,12 @@ final class BLEHIDCommander: NSObject, ObservableObject {
 
         hidLog.info("Stopping BLE HID")
         peripheralManager = nil
-        reportCharacteristic = nil
+        systemControlInputReportCharacteristic = nil
+        consumerInputReportCharacteristic = nil
+        mouseInputReportCharacteristic = nil
+        keyboardInputReportCharacteristic = nil
+        keyboardOutputReportCharacteristic = nil
+        gamepadInputReportCharacteristic = nil
         bootKeyboardInputCharacteristic = nil
         bootMouseInputCharacteristic = nil
 
@@ -354,53 +395,75 @@ final class BLEHIDCommander: NSObject, ObservableObject {
     private func sendReportOnMainQueue(_ report: Data) {
         guard let pm = peripheralManager else { return }
 
-        updateCachedReports(report)
+        guard let reportID = report.first else { return }
+        let payload = Data(report.dropFirst())
+        updateCachedReports(reportID: reportID, payload: payload)
 
         lock.lock()
         let hasSubscribers = !subscribedCentrals.isEmpty
         lock.unlock()
         guard hasSubscribers else { return }
 
-        if let reportChar = reportCharacteristic,
-           !pm.updateValue(report, for: reportChar, onSubscribedCentrals: nil)
-        {
-            hidLog.warning("HID report queued (report characteristic transmit buffer full)")
-        }
-
-        guard let reportId = report.first else { return }
+        sendIfAvailable(payload, to: characteristic(forInputReportID: reportID), manager: pm, label: "report \(reportID)")
 
         // Boot protocol compatibility for hosts that subscribe/read boot reports (2A22 / 2A33).
-        if reportId == 0x02,
-           let bootKeyboard = bootKeyboardInputCharacteristic,
-           !pm.updateValue(lastKeyboardBootReport, for: bootKeyboard, onSubscribedCentrals: nil)
-        {
-            hidLog.warning("HID report queued (boot keyboard transmit buffer full)")
-        }
-
-        if reportId == 0x01,
-           let bootMouse = bootMouseInputCharacteristic,
-           !pm.updateValue(lastMouseBootReport, for: bootMouse, onSubscribedCentrals: nil)
-        {
-            hidLog.warning("HID report queued (boot mouse transmit buffer full)")
+        if reportID == 0x02 {
+            sendIfAvailable(lastKeyboardBootReport, to: bootKeyboardInputCharacteristic, manager: pm, label: "boot keyboard")
+        } else if reportID == 0x01 {
+            sendIfAvailable(lastMouseBootReport, to: bootMouseInputCharacteristic, manager: pm, label: "boot mouse")
         }
     }
 
-    private func updateCachedReports(_ report: Data) {
-        guard let reportId = report.first else { return }
-
-        lastReport = report
-
-        switch reportId {
-        case 0x01: // mouse
-            if report.count >= 4 {
-                lastMouseBootReport = Data([report[1], report[2], report[3]])
+    private func updateCachedReports(reportID: UInt8, payload: Data) {
+        switch reportID {
+        case 0x01: // mouse input
+            lastMouseInputReport = normalized(payload, length: 4)
+            lastMouseBootReport = Data(lastMouseInputReport.prefix(3))
+        case 0x02: // keyboard input
+            lastKeyboardInputReport = normalized(payload, length: 8)
+            lastKeyboardBootReport = lastKeyboardInputReport
+        case 0x03: // gamepad input (gamepad profile) OR keyboard LED output
+            if activeProfile == .gamepad {
+                lastGamepadInputReport = normalized(payload, length: 7)
+            } else {
+                lastKeyboardOutputReport = normalized(payload, length: 1)
             }
-        case 0x02: // keyboard
-            if report.count >= 9 {
-                lastKeyboardBootReport = report.subdata(in: 1 ..< 9)
-            }
+        case 0x05: // system control input
+            lastSystemControlInputReport = normalized(payload, length: 1)
+        case 0x06: // consumer input
+            lastConsumerInputReport = normalized(payload, length: 5)
         default:
             break
+        }
+    }
+
+    private func normalized(_ payload: Data, length: Int) -> Data {
+        var bytes = Array(payload.prefix(length))
+        if bytes.count < length {
+            bytes.append(contentsOf: Array(repeating: UInt8(0), count: length - bytes.count))
+        }
+        return Data(bytes)
+    }
+
+    private func sendIfAvailable(_ payload: Data,
+                                 to characteristic: CBMutableCharacteristic?,
+                                 manager: CBPeripheralManager,
+                                 label: String)
+    {
+        guard let characteristic else { return }
+        if !manager.updateValue(payload, for: characteristic, onSubscribedCentrals: nil) {
+            hidLog.warning("HID report queued (\(label, privacy: .public) transmit buffer full)")
+        }
+    }
+
+    private func characteristic(forInputReportID reportID: UInt8) -> CBMutableCharacteristic? {
+        switch reportID {
+        case 0x01: return mouseInputReportCharacteristic
+        case 0x02: return keyboardInputReportCharacteristic
+        case 0x03: return gamepadInputReportCharacteristic
+        case 0x05: return systemControlInputReportCharacteristic
+        case 0x06: return consumerInputReportCharacteristic
+        default: return nil
         }
     }
 
@@ -413,47 +476,16 @@ final class BLEHIDCommander: NSObject, ObservableObject {
 
         pm.removeAllServices()
         servicesAdded = 0
-        reportCharacteristic = nil
+        systemControlInputReportCharacteristic = nil
+        consumerInputReportCharacteristic = nil
+        mouseInputReportCharacteristic = nil
+        keyboardInputReportCharacteristic = nil
+        keyboardOutputReportCharacteristic = nil
+        gamepadInputReportCharacteristic = nil
         bootKeyboardInputCharacteristic = nil
         bootMouseInputCharacteristic = nil
 
-        // --- 1) Generic Access Service (Appearance tells host what we are) ---
-        let appearance: UInt16
-        switch self.activeProfile {
-        case .mouse: appearance = kAppearanceMouse
-        case .keyboard: appearance = kAppearanceKeyboard
-        case .gamepad: appearance = kAppearanceGamepad
-        case .combo: appearance = kAppearanceKeyboard
-        }
-        var appearanceLE = appearance.littleEndian
-        let appearanceData = Data(bytes: &appearanceLE, count: 2)
-        let appearanceChar = CBMutableCharacteristic(
-            type: kAppearanceUUID,
-            properties: [.read],
-            value: appearanceData,
-            permissions: [.readable]
-        )
-        let genericAccessService = CBMutableService(type: kGenericAccessUUID, primary: false)
-        genericAccessService.characteristics = [appearanceChar]
-
-        // --- 2) Device Information Service ---
-        let manufacturerChar = CBMutableCharacteristic(
-            type: kManufacturerNameUUID,
-            properties: [.read],
-            value: "ChromaCatch".data(using: .utf8),
-            permissions: [.readable]
-        )
-        // PnP ID: vendorIdSource=0x02(USB), vendorId=0x046D, productId=0x0001, version=0x0001
-        let pnpChar = CBMutableCharacteristic(
-            type: kPnPIDUUID,
-            properties: [.read],
-            value: Data([0x02, 0x6D, 0x04, 0x01, 0x00, 0x01, 0x00]),
-            permissions: [.readable]
-        )
-        let deviceInfoService = CBMutableService(type: kDeviceInfoServiceUUID, primary: false)
-        deviceInfoService.characteristics = [manufacturerChar, pnpChar]
-
-        // --- 3) Battery Service ---
+        // --- 1) Battery Service ---
         let batteryChar = CBMutableCharacteristic(
             type: kBatteryLevelUUID,
             properties: [.read, .notify],
@@ -463,20 +495,20 @@ final class BLEHIDCommander: NSObject, ObservableObject {
         let batteryService = CBMutableService(type: kBatteryServiceUUID, primary: false)
         batteryService.characteristics = [batteryChar]
 
-        // --- 4) HID Service (primary) ---
+        // --- 2) HID Service (primary) ---
         let reportDescriptor: [UInt8]
         switch self.activeProfile {
         case .mouse: reportDescriptor = mouseReportDescriptor
         case .keyboard: reportDescriptor = keyboardReportDescriptor
         case .gamepad: reportDescriptor = gamepadReportDescriptor
-        case .combo: reportDescriptor = mouseReportDescriptor + keyboardReportDescriptor
+        case .combo: reportDescriptor = comboReportDescriptor
         }
 
-        // HID Information: bcdHID=1.11, bCountryCode=0, Flags=0x02 (normally connectable)
+        // HID Information: bcdHID=1.11, bCountryCode=0, Flags=0x03
         let hidInfoChar = CBMutableCharacteristic(
             type: kHIDInfoUUID,
             properties: [.read],
-            value: Data([0x11, 0x01, 0x00, 0x02]),
+            value: Data([0x11, 0x01, 0x00, 0x03]),
             permissions: [.readable]
         )
 
@@ -487,6 +519,8 @@ final class BLEHIDCommander: NSObject, ObservableObject {
             value: Data(reportDescriptor),
             permissions: [.readable]
         )
+        // External Report Reference descriptor links HID report map to Battery Level (2A19).
+        reportMapChar.descriptors = [CBMutableDescriptor(type: CBUUID(string: "00002907-0000-1000-8000-00805F9B34FB"), value: Data([0x19, 0x2A]))]
 
         // Control Point — host writes suspend/exit suspend.
         let controlPointChar = CBMutableCharacteristic(
@@ -504,19 +538,7 @@ final class BLEHIDCommander: NSObject, ObservableObject {
             permissions: [.readable, .writeable]
         )
 
-        // Single HID Report characteristic — Report ID is first byte of each report payload.
-        let reportChar = CBMutableCharacteristic(
-            type: kHIDReportUUID,
-            properties: [.read, .notify],
-            value: nil,
-            permissions: [.readable]
-        )
-
-        // Report Reference descriptor (0x2908): [ReportID=0x00 (multiplexed), ReportType=0x01 (Input)]
-        let reportRef = CBMutableDescriptor(type: kReportReferenceUUID, value: Data([0x00, 0x01]))
-        reportChar.descriptors = [reportRef]
-
-        var hidCharacteristics: [CBMutableCharacteristic] = [hidInfoChar, reportMapChar, controlPointChar, protocolModeChar]
+        var hidCharacteristics: [CBMutableCharacteristic] = [protocolModeChar, hidInfoChar, controlPointChar, reportMapChar]
 
         if self.activeProfile == .keyboard || self.activeProfile == .combo {
             let bootKeyboardChar = CBMutableCharacteristic(
@@ -540,17 +562,53 @@ final class BLEHIDCommander: NSObject, ObservableObject {
             hidCharacteristics.append(bootMouseChar)
         }
 
-        reportCharacteristic = reportChar
-        hidCharacteristics.append(reportChar)
+        switch self.activeProfile {
+        case .combo:
+            systemControlInputReportCharacteristic = createReportCharacteristic(reportID: 0x05, reportType: 0x01, properties: [.read, .notify], permissions: [.readable])
+            consumerInputReportCharacteristic = createReportCharacteristic(reportID: 0x06, reportType: 0x01, properties: [.read, .notify], permissions: [.readable])
+            mouseInputReportCharacteristic = createReportCharacteristic(reportID: 0x01, reportType: 0x01, properties: [.read, .notify], permissions: [.readable])
+            keyboardInputReportCharacteristic = createReportCharacteristic(reportID: 0x02, reportType: 0x01, properties: [.read, .notify], permissions: [.readable])
+            keyboardOutputReportCharacteristic = createReportCharacteristic(reportID: 0x03, reportType: 0x02, properties: [.read, .write, .writeWithoutResponse], permissions: [.readable, .writeable])
+            hidCharacteristics.append(contentsOf: [
+                systemControlInputReportCharacteristic!,
+                consumerInputReportCharacteristic!,
+                mouseInputReportCharacteristic!,
+                keyboardInputReportCharacteristic!,
+                keyboardOutputReportCharacteristic!,
+            ])
+        case .mouse:
+            mouseInputReportCharacteristic = createReportCharacteristic(reportID: 0x01, reportType: 0x01, properties: [.read, .notify], permissions: [.readable])
+            hidCharacteristics.append(mouseInputReportCharacteristic!)
+        case .keyboard:
+            keyboardInputReportCharacteristic = createReportCharacteristic(reportID: 0x02, reportType: 0x01, properties: [.read, .notify], permissions: [.readable])
+            keyboardOutputReportCharacteristic = createReportCharacteristic(reportID: 0x03, reportType: 0x02, properties: [.read, .write, .writeWithoutResponse], permissions: [.readable, .writeable])
+            hidCharacteristics.append(contentsOf: [keyboardInputReportCharacteristic!, keyboardOutputReportCharacteristic!])
+        case .gamepad:
+            gamepadInputReportCharacteristic = createReportCharacteristic(reportID: 0x03, reportType: 0x01, properties: [.read, .notify], permissions: [.readable])
+            hidCharacteristics.append(gamepadInputReportCharacteristic!)
+        }
 
         let hidService = CBMutableService(type: kHIDServiceUUID, primary: true)
         hidService.characteristics = hidCharacteristics
 
-        totalServices = 4
-        pm.add(genericAccessService)
-        pm.add(deviceInfoService)
+        totalServices = 2
         pm.add(batteryService)
         pm.add(hidService)
+    }
+
+    private func createReportCharacteristic(reportID: UInt8,
+                                            reportType: UInt8,
+                                            properties: CBCharacteristicProperties,
+                                            permissions: CBAttributePermissions) -> CBMutableCharacteristic
+    {
+        let characteristic = CBMutableCharacteristic(
+            type: kHIDReportUUID,
+            properties: properties,
+            value: nil,
+            permissions: permissions
+        )
+        characteristic.descriptors = [CBMutableDescriptor(type: kReportReferenceUUID, value: Data([reportID, reportType]))]
+        return characteristic
     }
 
     private func startAdvertising() {
@@ -666,21 +724,29 @@ extension BLEHIDCommander: CBPeripheralManagerDelegate {
         let uuid = request.characteristic.uuid
         hidLog.debug("Read request for \(uuid)")
 
-        switch uuid {
-        case kHIDReportUUID:
-            respondRead(request, with: lastReport, on: peripheral)
-        case kBootKeyboardInputReportUUID:
+        if uuid == kBootKeyboardInputReportUUID {
             respondRead(request, with: lastKeyboardBootReport, on: peripheral)
-        case kBootMouseInputReportUUID:
+            return
+        }
+        if uuid == kBootMouseInputReportUUID {
             respondRead(request, with: lastMouseBootReport, on: peripheral)
-        case kProtocolModeUUID:
+            return
+        }
+        if uuid == kProtocolModeUUID {
             respondRead(request, with: Data([protocolMode]), on: peripheral)
-        default:
-            if let staticValue = request.characteristic.value {
-                respondRead(request, with: staticValue, on: peripheral)
-            } else {
-                peripheral.respond(to: request, withResult: .attributeNotFound)
-            }
+            return
+        }
+
+        // Multiple 2A4D report instances in combo profile; match by characteristic instance.
+        if let value = valueForReportCharacteristic(request.characteristic) {
+            respondRead(request, with: value, on: peripheral)
+            return
+        }
+
+        if let staticValue = request.characteristic.value {
+            respondRead(request, with: staticValue, on: peripheral)
+        } else {
+            peripheral.respond(to: request, withResult: .attributeNotFound)
         }
     }
 
@@ -707,6 +773,13 @@ extension BLEHIDCommander: CBPeripheralManagerDelegate {
             case kHIDControlPointUUID:
                 controlPoint = request.value?.first ?? 0
                 hidLog.debug("Control point write: \(self.controlPoint)")
+            case kHIDReportUUID:
+                // Only output reports should be writable (e.g. keyboard LEDs).
+                if isSameCharacteristic(request.characteristic, as: keyboardOutputReportCharacteristic) {
+                    lastKeyboardOutputReport = normalized(request.value ?? Data(), length: 1)
+                } else {
+                    result = .requestNotSupported
+                }
             default:
                 result = .requestNotSupported
             }
@@ -719,5 +792,20 @@ extension BLEHIDCommander: CBPeripheralManagerDelegate {
 
     func peripheralManagerIsReady(toUpdateSubscribers peripheral: CBPeripheralManager) {
         hidLog.debug("Transmit buffer ready")
+    }
+
+    private func valueForReportCharacteristic(_ characteristic: CBCharacteristic) -> Data? {
+        if isSameCharacteristic(characteristic, as: systemControlInputReportCharacteristic) { return lastSystemControlInputReport }
+        if isSameCharacteristic(characteristic, as: consumerInputReportCharacteristic) { return lastConsumerInputReport }
+        if isSameCharacteristic(characteristic, as: mouseInputReportCharacteristic) { return lastMouseInputReport }
+        if isSameCharacteristic(characteristic, as: keyboardInputReportCharacteristic) { return lastKeyboardInputReport }
+        if isSameCharacteristic(characteristic, as: keyboardOutputReportCharacteristic) { return lastKeyboardOutputReport }
+        if isSameCharacteristic(characteristic, as: gamepadInputReportCharacteristic) { return lastGamepadInputReport }
+        return nil
+    }
+
+    private func isSameCharacteristic(_ lhs: CBCharacteristic, as rhs: CBMutableCharacteristic?) -> Bool {
+        guard let rhs else { return false }
+        return lhs === rhs
     }
 }
