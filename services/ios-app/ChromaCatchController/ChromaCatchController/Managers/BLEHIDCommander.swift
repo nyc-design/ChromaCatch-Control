@@ -440,7 +440,7 @@ final class BLEHIDCommander: NSObject, ObservableObject {
     private func setupServices() {
         guard let pm = peripheralManager else { return }
 
-        hidLog.info("Setting up GATT services for profile: \(activeProfile.rawValue)")
+        hidLog.info("Setting up GATT services for profile: \(self.activeProfile.rawValue)")
 
         pm.removeAllServices()
         servicesAdded = 0
@@ -450,7 +450,7 @@ final class BLEHIDCommander: NSObject, ObservableObject {
 
         // --- 1) Generic Access Service (Appearance tells host what we are) ---
         let appearance: UInt16
-        switch activeProfile {
+        switch self.activeProfile {
         case .mouse: appearance = kAppearanceMouse
         case .keyboard: appearance = kAppearanceKeyboard
         case .gamepad: appearance = kAppearanceGamepad
@@ -496,7 +496,7 @@ final class BLEHIDCommander: NSObject, ObservableObject {
 
         // --- 4) HID Service (primary) ---
         let reportDescriptor: [UInt8]
-        switch activeProfile {
+        switch self.activeProfile {
         case .mouse: reportDescriptor = mouseReportDescriptor
         case .keyboard: reportDescriptor = keyboardReportDescriptor
         case .gamepad: reportDescriptor = gamepadReportDescriptor
@@ -549,7 +549,7 @@ final class BLEHIDCommander: NSObject, ObservableObject {
 
         var hidCharacteristics: [CBMutableCharacteristic] = [hidInfoChar, reportMapChar, controlPointChar, protocolModeChar]
 
-        if activeProfile == .keyboard || activeProfile == .combo {
+        if self.activeProfile == .keyboard || self.activeProfile == .combo {
             let bootKeyboardChar = CBMutableCharacteristic(
                 type: kBootKeyboardInputReportUUID,
                 properties: [.read, .notify],
@@ -560,7 +560,7 @@ final class BLEHIDCommander: NSObject, ObservableObject {
             hidCharacteristics.append(bootKeyboardChar)
         }
 
-        if activeProfile == .mouse || activeProfile == .combo {
+        if self.activeProfile == .mouse || self.activeProfile == .combo {
             let bootMouseChar = CBMutableCharacteristic(
                 type: kBootMouseInputReportUUID,
                 properties: [.read, .notify],
