@@ -1256,10 +1256,21 @@ final class BLEHIDCommander: NSObject, ObservableObject {
     private func startAdvertising() {
         guard let pm = peripheralManager else { return }
         let localName: String = (activeProfile == .switchPro) ? "Pro Controller" : "ChromaCatch HID"
-        pm.startAdvertising([
+        var payload: [String: Any] = [
             CBAdvertisementDataLocalNameKey: localName,
             CBAdvertisementDataServiceUUIDsKey: [kHIDServiceUUID],
-        ])
+        ]
+
+        if activeProfile == .switchPro {
+            // Nintendo-like manufacturer marker to improve discoverability on host scans
+            // that filter using mfg data in addition to HID service UUID.
+            // Format (little-endian): company ID 0x057E + product/version hint bytes.
+            payload[CBAdvertisementDataManufacturerDataKey] = Data([0x7E, 0x05, 0x09, 0x20, 0x01, 0x01])
+            payload[CBAdvertisementDataOverflowServiceUUIDsKey] = [kHIDServiceUUID, kBatteryServiceUUID]
+        }
+
+        hidLog.info("Starting advertising name=\(localName, privacy: .public), switchProfile=\(self.activeProfile == .switchPro)")
+        pm.startAdvertising(payload)
     }
 
     private func publishCurrentProfile(_ profile: HIDProfile) {
