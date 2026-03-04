@@ -1,21 +1,30 @@
 /**
- * ChromaCatch-Go ESP32-S3 Firmware v2
+ * ChromaCatch-Go ESP32-S3 Firmware v3
  *
- * Multi-mode HID device with e-ink display for mode selection.
- * Supports: BLE Mouse+Keyboard, BLE Gamepad, USB HID (wired).
- * Receives commands over WiFi HTTP or USB Serial.
+ * Goals:
+ *  - Accept commands from BOTH WiFi (HTTP) and wired (USB Serial) concurrently
+ *  - Prioritize wired commands when both are active
+ *  - Support 6 packaged HID modes
+ *  - Auto-select HID output transport: USB (if host mounted) else BLE (if connected)
+ *  - Expose simple e-ink display command APIs (rendering is still stubbed to Serial)
  *
- * Hardware:
- *   - ESP32-S3 (NimBLE + USB OTG)
- *   - Waveshare e-ink display (SPI)
- *   - 3 buttons: UP (GPIO_UP), DOWN (GPIO_DOWN), SELECT (GPIO_SEL)
+ * Modes:
+ *  1) combo                  (keyboard + mouse)
+ *  2) keyboard_only
+ *  3) mouse_only
+ *  4) gamepad
+ *  5) switch_controller
+ *  6) switch_wired_bt_input  (wired output path only; BT input bridge placeholder)
  *
  * HTTP API:
- *   GET  /ping       -> {"status": "ok"}
- *   GET  /status     -> full device status including mode
- *   GET  /mode       -> current mode settings
- *   POST /mode       -> update mode settings
- *   POST /command    -> HID command (action + params)
+ *   GET  /ping
+ *   GET  /status
+ *   GET  /mode
+ *   POST /mode
+ *   POST /command
+ *   GET  /display
+ *   POST /display
+ *   POST /display/clear
  */
 
 #include <Arduino.h>
@@ -23,362 +32,860 @@
 #include <ESPmDNS.h>
 #include <WebServer.h>
 #include <ArduinoJson.h>
+
 #include <NimBLEDevice.h>
 #include <BleCombo.h>
 #include <BleGamepad.h>
-// E-ink includes would be: #include <GxEPD2_BW.h> -- stubbed for now
+
+#include "usb_hid_bridge.h"
 
 // ============================================================
-// USER CONFIGURATION -- Edit these before flashing!
+// USER CONFIGURATION -- Edit before flashing
 // ============================================================
-//
-// 1. Set your WiFi network name and password below
-// 2. Flash:  cd services/esp32 && pio run -t upload
-// 3. Open Serial Monitor (115200 baud) to see the IP address
-// 4. The device advertises as "ChromaCatch" in your
-//    iPhone's Bluetooth settings (Settings > Bluetooth)
-//
-// After flashing:
-//   - Pair "ChromaCatch" on your iPhone
-//   - Note the IP address printed on Serial Monitor
-//   - Set CC_CLIENT_ESP32_HOST to that IP address
-//
-const char* WIFI_SSID       = "YOUR_WIFI_SSID";      // <-- Your WiFi network name
-const char* WIFI_PASSWORD   = "YOUR_WIFI_PASSWORD";   // <-- Your WiFi password
+const char* WIFI_SSID       = "YOUR_WIFI_SSID";
+const char* WIFI_PASSWORD   = "YOUR_WIFI_PASSWORD";
 const int   HTTP_PORT       = 80;
 const char* DEVICE_NAME     = "ChromaCatch";
 
-// GPIO pins for buttons (active LOW with internal pull-up)
+// GPIO pins for 3-button menu (active LOW with pull-up)
 const int GPIO_UP   = 35;
 const int GPIO_DOWN = 34;
 const int GPIO_SEL  = 33;
-// ============================================================
+
+// Wired command priority window. During this window, WiFi /command is deferred.
+const unsigned long WIRED_PRIORITY_WINDOW_MS = 250;
 
 // ============================================================
 // Mode enums
 // ============================================================
-enum InputMode      { INPUT_WIFI, INPUT_SERIAL };
-enum OutputDelivery { OUTPUT_BLUETOOTH, OUTPUT_WIRED };
-enum OutputMode     { OUTPUT_MOUSE_KB, OUTPUT_GAMEPAD };
+enum DeviceMode {
+    MODE_COMBO = 0,
+    MODE_KEYBOARD_ONLY,
+    MODE_MOUSE_ONLY,
+    MODE_GAMEPAD,
+    MODE_SWITCH_CONTROLLER,
+    MODE_SWITCH_WIRED_BT_INPUT,
+    MODE_COUNT
+};
+
+enum DeliveryPolicy {
+    DELIVERY_AUTO = 0,       // USB if available, else BLE
+    DELIVERY_FORCE_USB,
+    DELIVERY_FORCE_BLE,
+};
+
+enum RuntimeDelivery {
+    RUNTIME_NONE = 0,
+    RUNTIME_USB,
+    RUNTIME_BLE,
+};
+
+enum CommandSource {
+    SOURCE_WIFI = 0,
+    SOURCE_WIRED,
+};
 
 // ============================================================
 // Globals
 // ============================================================
 WebServer server(HTTP_PORT);
 
-// BLE devices (only one active set at a time)
-BleComboKeyboard* bleComboKb    = nullptr;
+// BLE outputs (created/destroyed on mode changes)
+BleComboKeyboard* bleComboKb = nullptr;
 BleComboMouse*    bleComboMouse = nullptr;
-BleGamepad*       bleGamepad    = nullptr;
+BleGamepad*       bleGamepad = nullptr;
 
-// Current mode
-InputMode      currentInput      = INPUT_WIFI;
-OutputDelivery currentOutput     = OUTPUT_BLUETOOTH;
-OutputMode     currentOutputMode = OUTPUT_MOUSE_KB;
+DeviceMode currentMode = MODE_COMBO;
+DeliveryPolicy deliveryPolicy = DELIVERY_AUTO;
 
-// Menu state
+String serialBuffer = "";
+unsigned long lastWiredCommandAtMs = 0;
+
+// Menu
 int menuIndex = 0;
-const int MENU_ITEMS = 3;
-const char* menuLabels[] = {"Input", "Output", "Mode"};
-bool menuActive = true;
-
-// Button debounce
+const int MENU_ITEMS = 2;
+const char* menuLabels[] = {"Mode", "Delivery"};
 unsigned long lastButtonPress = 0;
 const unsigned long DEBOUNCE_MS = 200;
 
-// Serial command buffer (for INPUT_SERIAL mode)
-String serialBuffer = "";
+// Display state (stubbed renderer)
+struct DisplayState {
+    String line1;
+    String line2;
+    String line3;
+    bool sticky = true;
+    unsigned long expiresAtMs = 0;
+};
+DisplayState displayState;
 
 // ============================================================
-// E-ink display (stubbed -- real implementation uses GxEPD2)
+// Helpers
+// ============================================================
+bool strEqIgnoreCase(const String& a, const char* b) {
+    String rhs = String(b);
+    return a.equalsIgnoreCase(rhs);
+}
+
+int8_t clampInt8(int value) {
+    if (value > 127) return 127;
+    if (value < -127) return -127;
+    return static_cast<int8_t>(value);
+}
+
+bool isSwitchMode(DeviceMode mode) {
+    return mode == MODE_SWITCH_CONTROLLER || mode == MODE_SWITCH_WIRED_BT_INPUT;
+}
+
+bool modeAllowsMouse(DeviceMode mode) {
+    return mode == MODE_COMBO || mode == MODE_MOUSE_ONLY;
+}
+
+bool modeAllowsKeyboard(DeviceMode mode) {
+    return mode == MODE_COMBO || mode == MODE_KEYBOARD_ONLY;
+}
+
+bool modeAllowsGamepad(DeviceMode mode) {
+    return mode == MODE_GAMEPAD || mode == MODE_SWITCH_CONTROLLER || mode == MODE_SWITCH_WIRED_BT_INPUT;
+}
+
+bool modeUsesBleOutput(DeviceMode mode) {
+    // switch_wired_bt_input is intentionally wired output only (bridge placeholder mode)
+    return mode != MODE_SWITCH_WIRED_BT_INPUT;
+}
+
+bool modeUsesBleCombo(DeviceMode mode) {
+    return mode == MODE_COMBO || mode == MODE_KEYBOARD_ONLY || mode == MODE_MOUSE_ONLY;
+}
+
+bool modeUsesBleGamepad(DeviceMode mode) {
+    return mode == MODE_GAMEPAD || mode == MODE_SWITCH_CONTROLLER;
+}
+
+const char* modeToString(DeviceMode mode) {
+    switch (mode) {
+        case MODE_COMBO: return "combo";
+        case MODE_KEYBOARD_ONLY: return "keyboard_only";
+        case MODE_MOUSE_ONLY: return "mouse_only";
+        case MODE_GAMEPAD: return "gamepad";
+        case MODE_SWITCH_CONTROLLER: return "switch_controller";
+        case MODE_SWITCH_WIRED_BT_INPUT: return "switch_wired_bt_input";
+        default: return "combo";
+    }
+}
+
+const char* deliveryPolicyToString(DeliveryPolicy p) {
+    switch (p) {
+        case DELIVERY_AUTO: return "auto";
+        case DELIVERY_FORCE_USB: return "wired";
+        case DELIVERY_FORCE_BLE: return "bluetooth";
+        default: return "auto";
+    }
+}
+
+const char* runtimeDeliveryToString(RuntimeDelivery d) {
+    switch (d) {
+        case RUNTIME_USB: return "wired";
+        case RUNTIME_BLE: return "bluetooth";
+        default: return "none";
+    }
+}
+
+bool wiredPriorityActive() {
+    return (millis() - lastWiredCommandAtMs) <= WIRED_PRIORITY_WINDOW_MS;
+}
+
+DeviceMode parseModeString(const String& raw) {
+    if (raw.length() == 0) return currentMode;
+
+    if (raw == "combo" || raw == "mouse_keyboard") return MODE_COMBO;
+    if (raw == "keyboard" || raw == "keyboard_only") return MODE_KEYBOARD_ONLY;
+    if (raw == "mouse" || raw == "mouse_only") return MODE_MOUSE_ONLY;
+    if (raw == "gamepad" || raw == "general_gamepad") return MODE_GAMEPAD;
+    if (raw == "switch" || raw == "switch_pro" || raw == "switch_controller") return MODE_SWITCH_CONTROLLER;
+    if (raw == "switch_wired_bt_input" || raw == "switch_controller_wired_bt_input" || raw == "switch_wired") {
+        return MODE_SWITCH_WIRED_BT_INPUT;
+    }
+    return currentMode;
+}
+
+DeliveryPolicy parseDeliveryPolicy(const String& raw) {
+    if (raw == "wired" || raw == "usb" || raw == "force_wired") return DELIVERY_FORCE_USB;
+    if (raw == "bluetooth" || raw == "ble" || raw == "force_bluetooth") return DELIVERY_FORCE_BLE;
+    return DELIVERY_AUTO;
+}
+
+// ============================================================
+// E-ink display (stub renderer)
 // ============================================================
 void displayInit() {
-    // In real implementation: GxEPD2_BW display setup
-    // Example for Waveshare 2.13" V4:
-    //   GxEPD2_BW<GxEPD2_213_BN, GxEPD2_213_BN::HEIGHT> display(
-    //       GxEPD2_213_BN(CS, DC, RST, BUSY));
-    //   display.init(115200, true, 50, false);
-    Serial.println("[E-ink] Display initialized (stub)");
+    Serial.println("[E-ink] Initialized (stub renderer)");
+}
+
+void renderDisplayNow() {
+    Serial.println("\n=== E-ink ===");
+    Serial.println(displayState.line1);
+    Serial.println(displayState.line2);
+    Serial.println(displayState.line3);
+    Serial.println("=============");
+}
+
+void displaySet(const String& l1, const String& l2 = "", const String& l3 = "", bool sticky = true, unsigned long ttlMs = 0) {
+    displayState.line1 = l1;
+    displayState.line2 = l2;
+    displayState.line3 = l3;
+    displayState.sticky = sticky;
+    displayState.expiresAtMs = sticky ? 0 : (millis() + ttlMs);
+    renderDisplayNow();
+}
+
+void displayClear() {
+    displayState.line1 = "";
+    displayState.line2 = "";
+    displayState.line3 = "";
+    displayState.sticky = true;
+    displayState.expiresAtMs = 0;
+    renderDisplayNow();
 }
 
 void displayMenu() {
-    // In real implementation: render to e-ink with partial refresh
-    // display.setPartialWindow(0, 0, display.width(), display.height());
-    // display.firstPage(); do { ... } while (display.nextPage());
+    String mode = String(modeToString(currentMode));
+    String policy = String(deliveryPolicyToString(deliveryPolicy));
 
     Serial.println("\n=== ChromaCatch Menu ===");
     for (int i = 0; i < MENU_ITEMS; i++) {
         String prefix = (i == menuIndex) ? "> " : "  ";
-        String value;
-        switch (i) {
-            case 0: value = (currentInput == INPUT_WIFI) ? "WiFi" : "Serial"; break;
-            case 1: value = (currentOutput == OUTPUT_BLUETOOTH) ? "Bluetooth" : "Wired"; break;
-            case 2: value = (currentOutputMode == OUTPUT_MOUSE_KB) ? "Mouse+KB" : "Gamepad"; break;
+        if (i == 0) {
+            Serial.println(prefix + String(menuLabels[i]) + ": " + mode);
+        } else {
+            Serial.println(prefix + String(menuLabels[i]) + ": " + policy);
         }
-        Serial.println(prefix + menuLabels[i] + ": " + value);
     }
     Serial.println("========================");
+
+    displaySet(mode, "delivery=" + policy, "wired>wifi priority", true, 0);
 }
 
-void displayStatus(const char* line1, const char* line2) {
-    Serial.println(String("[Status] ") + line1);
-    if (line2) Serial.println(String("[Status] ") + line2);
-    // In real implementation: render status bar on e-ink
+void displayStatus(const String& l1, const String& l2 = "", const String& l3 = "") {
+    displaySet(l1, l2, l3, false, 1500);
+}
+
+void updateDisplayExpiry() {
+    if (!displayState.sticky && displayState.expiresAtMs > 0 && millis() >= displayState.expiresAtMs) {
+        displayMenu();
+    }
 }
 
 // ============================================================
-// BLE initialization (tear down old, start new based on mode)
+// USB HID init & state
 // ============================================================
-void initBLE() {
-    // Clean up previous instances
+void initUSBHID() {
+    UsbHidBridge::init();
+    Serial.println("USB HID initialized");
+}
+
+bool isUSBMounted() {
+    return UsbHidBridge::isMounted();
+}
+
+// ============================================================
+// BLE init and state
+// ============================================================
+void stopBLE() {
     if (bleComboMouse) { delete bleComboMouse; bleComboMouse = nullptr; }
     if (bleComboKb)    { delete bleComboKb;    bleComboKb = nullptr; }
     if (bleGamepad)    { delete bleGamepad;    bleGamepad = nullptr; }
+}
 
-    if (currentOutput != OUTPUT_BLUETOOTH) {
-        Serial.println("BLE disabled (wired output mode)");
+void initBLE() {
+    stopBLE();
+
+    if (!modeUsesBleOutput(currentMode)) {
+        Serial.println("BLE output disabled for current mode");
         return;
     }
 
-    if (currentOutputMode == OUTPUT_MOUSE_KB) {
+    if (modeUsesBleCombo(currentMode)) {
         bleComboKb = new BleComboKeyboard(DEVICE_NAME, "ChromaCatch", 100);
         bleComboMouse = new BleComboMouse(bleComboKb);
-        bleComboKb->begin();  // Starts single HID service with mouse+keyboard+media
-        Serial.println("BLE Mouse+Keyboard started (combo)");
-    } else {
+        bleComboKb->begin();
+        Serial.println("BLE combo (keyboard+mouse) started");
+        return;
+    }
+
+    if (modeUsesBleGamepad(currentMode)) {
         bleGamepad = new BleGamepad(DEVICE_NAME, "ChromaCatch", 100);
         BleGamepadConfiguration cfg;
         cfg.setAutoReport(false);
         cfg.setButtonCount(16);
         cfg.setHatSwitchCount(1);
         bleGamepad->begin(&cfg);
-        Serial.println("BLE Gamepad started");
+        Serial.println("BLE gamepad started");
+        return;
     }
 }
 
-// ============================================================
-// BLE connection check
-// ============================================================
 bool isBLEConnected() {
-    if (currentOutput != OUTPUT_BLUETOOTH) return false;
-    if (currentOutputMode == OUTPUT_MOUSE_KB) {
+    if (modeUsesBleCombo(currentMode)) {
         return bleComboKb && bleComboKb->isConnected();
     }
-    return bleGamepad && bleGamepad->isConnected();
+    if (modeUsesBleGamepad(currentMode)) {
+        return bleGamepad && bleGamepad->isConnected();
+    }
+    return false;
+}
+
+RuntimeDelivery chooseRuntimeDelivery() {
+    bool usbAvailable = isUSBMounted();
+    bool bleAvailable = isBLEConnected();
+
+    // Mode 6 explicitly wires output only
+    if (currentMode == MODE_SWITCH_WIRED_BT_INPUT) {
+        return usbAvailable ? RUNTIME_USB : RUNTIME_NONE;
+    }
+
+    switch (deliveryPolicy) {
+        case DELIVERY_FORCE_USB:
+            return usbAvailable ? RUNTIME_USB : RUNTIME_NONE;
+        case DELIVERY_FORCE_BLE:
+            return bleAvailable ? RUNTIME_BLE : RUNTIME_NONE;
+        case DELIVERY_AUTO:
+        default:
+            if (usbAvailable) return RUNTIME_USB;
+            if (bleAvailable) return RUNTIME_BLE;
+            return RUNTIME_NONE;
+    }
 }
 
 // ============================================================
-// Command execution: Mouse + Keyboard
+// HID key helpers
 // ============================================================
-void executeMouseCommand(const String& action, JsonDocument& doc, JsonDocument& response) {
-    if (!bleComboKb || !bleComboKb->isConnected()) {
+uint8_t parseKeyCode(const String& key) {
+    if (key.length() == 1) return static_cast<uint8_t>(key[0]);
+
+    if (strEqIgnoreCase(key, "enter") || strEqIgnoreCase(key, "return")) return KEY_RETURN;
+    if (strEqIgnoreCase(key, "esc") || strEqIgnoreCase(key, "escape")) return KEY_ESC;
+    if (strEqIgnoreCase(key, "tab")) return KEY_TAB;
+    if (strEqIgnoreCase(key, "space")) return ' ';
+    if (strEqIgnoreCase(key, "up")) return KEY_UP_ARROW;
+    if (strEqIgnoreCase(key, "down")) return KEY_DOWN_ARROW;
+    if (strEqIgnoreCase(key, "left")) return KEY_LEFT_ARROW;
+    if (strEqIgnoreCase(key, "right")) return KEY_RIGHT_ARROW;
+    if (strEqIgnoreCase(key, "backspace")) return KEY_BACKSPACE;
+    if (strEqIgnoreCase(key, "delete")) return KEY_DELETE;
+    if (strEqIgnoreCase(key, "home")) return KEY_HOME;
+    if (strEqIgnoreCase(key, "end")) return KEY_END;
+    if (strEqIgnoreCase(key, "page_up")) return KEY_PAGE_UP;
+    if (strEqIgnoreCase(key, "page_down")) return KEY_PAGE_DOWN;
+
+    return 0;
+}
+
+uint8_t parseMouseButton(JsonDocument& doc) {
+    String name = doc["button"].as<String>();
+    if (name.length() == 0 || strEqIgnoreCase(name, "left")) return UsbHidBridge::USB_MOUSE_BTN_LEFT;
+    if (strEqIgnoreCase(name, "right")) return UsbHidBridge::USB_MOUSE_BTN_RIGHT;
+    if (strEqIgnoreCase(name, "middle")) return UsbHidBridge::USB_MOUSE_BTN_MIDDLE;
+    return UsbHidBridge::USB_MOUSE_BTN_LEFT;
+}
+
+int mapDPadToBleHat(const String& name) {
+    if (strEqIgnoreCase(name, "up") || strEqIgnoreCase(name, "DUP")) return 0;
+    if (strEqIgnoreCase(name, "right") || strEqIgnoreCase(name, "DRIGHT")) return 2;
+    if (strEqIgnoreCase(name, "down") || strEqIgnoreCase(name, "DDOWN")) return 4;
+    if (strEqIgnoreCase(name, "left") || strEqIgnoreCase(name, "DLEFT")) return 6;
+    return -1;
+}
+
+uint8_t mapDPadToUsbHat(const String& name) {
+    if (strEqIgnoreCase(name, "up") || strEqIgnoreCase(name, "DUP")) return UsbHidBridge::USB_HAT_UP;
+    if (strEqIgnoreCase(name, "right") || strEqIgnoreCase(name, "DRIGHT")) return UsbHidBridge::USB_HAT_RIGHT;
+    if (strEqIgnoreCase(name, "down") || strEqIgnoreCase(name, "DDOWN")) return UsbHidBridge::USB_HAT_DOWN;
+    if (strEqIgnoreCase(name, "left") || strEqIgnoreCase(name, "DLEFT")) return UsbHidBridge::USB_HAT_LEFT;
+    return UsbHidBridge::USB_HAT_CENTER;
+}
+
+int mapGamepadButtonBLE(const String& name, bool switchLayout) {
+    // BLE gamepad lib uses button numbers 1..N
+    if (strEqIgnoreCase(name, "A")) return switchLayout ? 2 : 1;
+    if (strEqIgnoreCase(name, "B")) return switchLayout ? 1 : 2;
+    if (strEqIgnoreCase(name, "X")) return switchLayout ? 4 : 3;
+    if (strEqIgnoreCase(name, "Y")) return switchLayout ? 3 : 4;
+
+    if (strEqIgnoreCase(name, "L") || strEqIgnoreCase(name, "LB")) return 5;
+    if (strEqIgnoreCase(name, "R") || strEqIgnoreCase(name, "RB")) return 6;
+    if (strEqIgnoreCase(name, "ZL") || strEqIgnoreCase(name, "LT")) return 7;
+    if (strEqIgnoreCase(name, "ZR") || strEqIgnoreCase(name, "RT")) return 8;
+    if (strEqIgnoreCase(name, "minus") || strEqIgnoreCase(name, "select")) return 9;
+    if (strEqIgnoreCase(name, "plus") || strEqIgnoreCase(name, "start")) return 10;
+    if (strEqIgnoreCase(name, "L3") || strEqIgnoreCase(name, "lstick")) return 11;
+    if (strEqIgnoreCase(name, "R3") || strEqIgnoreCase(name, "rstick")) return 12;
+    if (strEqIgnoreCase(name, "home")) return 13;
+    if (strEqIgnoreCase(name, "capture")) return 14;
+
+    return 0;
+}
+
+uint8_t mapGamepadButtonUSB(const String& name, bool switchLayout) {
+    // USB gamepad buttons are 0-based symbolic constants.
+    if (strEqIgnoreCase(name, "A")) return switchLayout ? UsbHidBridge::USB_BUTTON_EAST : UsbHidBridge::USB_BUTTON_SOUTH;
+    if (strEqIgnoreCase(name, "B")) return switchLayout ? UsbHidBridge::USB_BUTTON_SOUTH : UsbHidBridge::USB_BUTTON_EAST;
+    if (strEqIgnoreCase(name, "X")) return switchLayout ? UsbHidBridge::USB_BUTTON_NORTH : UsbHidBridge::USB_BUTTON_WEST;
+    if (strEqIgnoreCase(name, "Y")) return switchLayout ? UsbHidBridge::USB_BUTTON_WEST : UsbHidBridge::USB_BUTTON_NORTH;
+
+    if (strEqIgnoreCase(name, "L") || strEqIgnoreCase(name, "LB")) return UsbHidBridge::USB_BUTTON_TL;
+    if (strEqIgnoreCase(name, "R") || strEqIgnoreCase(name, "RB")) return UsbHidBridge::USB_BUTTON_TR;
+    if (strEqIgnoreCase(name, "ZL") || strEqIgnoreCase(name, "LT")) return UsbHidBridge::USB_BUTTON_TL2;
+    if (strEqIgnoreCase(name, "ZR") || strEqIgnoreCase(name, "RT")) return UsbHidBridge::USB_BUTTON_TR2;
+    if (strEqIgnoreCase(name, "minus") || strEqIgnoreCase(name, "select")) return UsbHidBridge::USB_BUTTON_SELECT;
+    if (strEqIgnoreCase(name, "plus") || strEqIgnoreCase(name, "start")) return UsbHidBridge::USB_BUTTON_START;
+    if (strEqIgnoreCase(name, "home")) return UsbHidBridge::USB_BUTTON_MODE;
+    if (strEqIgnoreCase(name, "L3") || strEqIgnoreCase(name, "lstick")) return UsbHidBridge::USB_BUTTON_THUMBL;
+    if (strEqIgnoreCase(name, "R3") || strEqIgnoreCase(name, "rstick")) return UsbHidBridge::USB_BUTTON_THUMBR;
+
+    // No dedicated capture in generic USB gamepad descriptor.
+    if (strEqIgnoreCase(name, "capture")) return UsbHidBridge::USB_BUTTON_MODE;
+
+    return 0xFF;
+}
+
+// ============================================================
+// Command execution by category & transport
+// ============================================================
+void executeMouseCommand(RuntimeDelivery transport, const String& action, JsonDocument& doc, JsonDocument& response) {
+    if (!modeAllowsMouse(currentMode)) {
         response["status"] = "error";
-        response["error"]  = "BLE combo not connected";
+        response["error"] = "mouse actions not allowed in current mode";
         return;
     }
 
-    if (action == "move") {
-        int dx = doc["dx"] | 0;
-        int dy = doc["dy"] | 0;
-        bleComboMouse->move(dx, dy);
-        response["status"] = "ok";
-        response["dx"] = dx;
-        response["dy"] = dy;
-    }
-    else if (action == "click") {
-        int x = doc["x"] | 0;
-        int y = doc["y"] | 0;
-        bleComboMouse->move(x, y);
-        delay(10);
-        bleComboMouse->click(MOUSE_LEFT);
-        response["status"] = "ok";
-        response["x"] = x;
-        response["y"] = y;
-    }
-    else if (action == "swipe") {
-        int x1 = doc["x1"] | 0;
-        int y1 = doc["y1"] | 0;
-        int x2 = doc["x2"] | 0;
-        int y2 = doc["y2"] | 0;
-        int duration = doc["duration_ms"] | 300;
-        int steps = max(1, duration / 10);
-        int stepX = (x2 - x1) / steps;
-        int stepY = (y2 - y1) / steps;
+    if (transport == RUNTIME_BLE) {
+        if (!bleComboKb || !bleComboKb->isConnected() || !bleComboMouse) {
+            response["status"] = "error";
+            response["error"] = "BLE combo not connected";
+            return;
+        }
 
-        bleComboMouse->move(x1, y1);
-        delay(10);
-        bleComboMouse->press(MOUSE_LEFT);
-        for (int i = 0; i < steps; i++) {
-            bleComboMouse->move(stepX, stepY);
+        if (action == "move") {
+            int dx = doc["dx"] | 0;
+            int dy = doc["dy"] | 0;
+            bleComboMouse->move(dx, dy);
+            response["status"] = "ok";
+            return;
+        }
+
+        if (action == "click") {
+            if (doc["x"].is<int>() || doc["y"].is<int>()) {
+                int x = doc["x"] | 0;
+                int y = doc["y"] | 0;
+                bleComboMouse->move(x, y);
+                delay(5);
+            }
+            bleComboMouse->click(parseMouseButton(doc));
+            response["status"] = "ok";
+            return;
+        }
+
+        if (action == "swipe") {
+            int x1 = doc["x1"] | 0;
+            int y1 = doc["y1"] | 0;
+            int x2 = doc["x2"] | 0;
+            int y2 = doc["y2"] | 0;
+            int duration = doc["duration_ms"] | 300;
+            int steps = max(1, duration / 10);
+            int stepX = (x2 - x1) / steps;
+            int stepY = (y2 - y1) / steps;
+
+            bleComboMouse->move(x1, y1);
+            delay(5);
+            bleComboMouse->press(parseMouseButton(doc));
+            for (int i = 0; i < steps; i++) {
+                bleComboMouse->move(stepX, stepY);
+                delay(10);
+            }
+            bleComboMouse->release(parseMouseButton(doc));
+            response["status"] = "ok";
+            response["steps"] = steps;
+            return;
+        }
+
+        if (action == "press") {
+            bleComboMouse->press(parseMouseButton(doc));
+            response["status"] = "ok";
+            return;
+        }
+
+        if (action == "release") {
+            bleComboMouse->release(parseMouseButton(doc));
+            response["status"] = "ok";
+            return;
+        }
+    }
+
+    if (transport == RUNTIME_USB) {
+        if (action == "move") {
+            int dx = doc["dx"] | 0;
+            int dy = doc["dy"] | 0;
+            UsbHidBridge::mouseMove(dx, dy);
+            response["status"] = "ok";
+            return;
+        }
+
+        if (action == "click") {
+            if (doc["x"].is<int>() || doc["y"].is<int>()) {
+                int x = doc["x"] | 0;
+                int y = doc["y"] | 0;
+                UsbHidBridge::mouseMove(x, y);
+                delay(5);
+            }
+            UsbHidBridge::mouseClick(parseMouseButton(doc));
+            response["status"] = "ok";
+            return;
+        }
+
+        if (action == "swipe") {
+            int x1 = doc["x1"] | 0;
+            int y1 = doc["y1"] | 0;
+            int x2 = doc["x2"] | 0;
+            int y2 = doc["y2"] | 0;
+            int duration = doc["duration_ms"] | 300;
+            int steps = max(1, duration / 10);
+            int stepX = (x2 - x1) / steps;
+            int stepY = (y2 - y1) / steps;
+
+            UsbHidBridge::mouseMove(x1, y1);
+            delay(5);
+            UsbHidBridge::mousePress(parseMouseButton(doc));
+            for (int i = 0; i < steps; i++) {
+                UsbHidBridge::mouseMove(stepX, stepY);
+                delay(10);
+            }
+            UsbHidBridge::mouseRelease(parseMouseButton(doc));
+            response["status"] = "ok";
+            response["steps"] = steps;
+            return;
+        }
+
+        if (action == "press") {
+            UsbHidBridge::mousePress(parseMouseButton(doc));
+            response["status"] = "ok";
+            return;
+        }
+
+        if (action == "release") {
+            UsbHidBridge::mouseRelease(parseMouseButton(doc));
+            response["status"] = "ok";
+            return;
+        }
+    }
+
+    response["status"] = "error";
+    response["error"] = "unknown mouse action";
+}
+
+void executeKeyboardCommand(RuntimeDelivery transport, const String& action, JsonDocument& doc, JsonDocument& response) {
+    if (!modeAllowsKeyboard(currentMode)) {
+        response["status"] = "error";
+        response["error"] = "keyboard actions not allowed in current mode";
+        return;
+    }
+
+    if (action == "text") {
+        String text = doc["text"].as<String>();
+        if (transport == RUNTIME_BLE) {
+            if (!bleComboKb || !bleComboKb->isConnected()) {
+                response["status"] = "error";
+                response["error"] = "BLE combo not connected";
+                return;
+            }
+            bleComboKb->print(text);
+        } else {
+            UsbHidBridge::keyboardPrint(text);
+        }
+        response["status"] = "ok";
+        response["count"] = text.length();
+        return;
+    }
+
+    String keyName = doc["key"].as<String>();
+    uint8_t keyCode = parseKeyCode(keyName);
+    if (keyCode == 0) {
+        response["status"] = "error";
+        response["error"] = "invalid key";
+        return;
+    }
+
+    if (transport == RUNTIME_BLE) {
+        if (!bleComboKb || !bleComboKb->isConnected()) {
+            response["status"] = "error";
+            response["error"] = "BLE combo not connected";
+            return;
+        }
+
+        if (action == "key_press") {
+            bleComboKb->press(keyCode);
+            response["status"] = "ok";
+            return;
+        }
+        if (action == "key_release") {
+            bleComboKb->release(keyCode);
+            response["status"] = "ok";
+            return;
+        }
+        if (action == "key_tap") {
+            bleComboKb->press(keyCode);
             delay(10);
+            bleComboKb->release(keyCode);
+            response["status"] = "ok";
+            return;
         }
-        bleComboMouse->release(MOUSE_LEFT);
-        response["status"] = "ok";
-        response["steps"] = steps;
-    }
-    else if (action == "press") {
-        bleComboMouse->press(MOUSE_LEFT);
-        response["status"] = "ok";
-    }
-    else if (action == "release") {
-        bleComboMouse->release(MOUSE_LEFT);
-        response["status"] = "ok";
-    }
-    else if (action == "key_press") {
-        String key = doc["key"].as<String>();
-        if (key.length() == 1) {
-            bleComboKb->press(key[0]);
+    } else {
+        if (action == "key_press") {
+            UsbHidBridge::keyboardPress(keyCode);
+            response["status"] = "ok";
+            return;
         }
-        response["status"] = "ok";
-    }
-    else if (action == "key_release") {
-        String key = doc["key"].as<String>();
-        if (key.length() == 1) {
-            bleComboKb->release(key[0]);
+        if (action == "key_release") {
+            UsbHidBridge::keyboardRelease(keyCode);
+            response["status"] = "ok";
+            return;
         }
-        response["status"] = "ok";
+        if (action == "key_tap") {
+            UsbHidBridge::keyboardPress(keyCode);
+            delay(10);
+            UsbHidBridge::keyboardRelease(keyCode);
+            response["status"] = "ok";
+            return;
+        }
     }
-    else {
+
+    response["status"] = "error";
+    response["error"] = "unknown keyboard action";
+}
+
+void executeGamepadCommand(RuntimeDelivery transport, const String& action, JsonDocument& doc, JsonDocument& response) {
+    if (!modeAllowsGamepad(currentMode)) {
         response["status"] = "error";
-        response["error"]  = "unknown mouse/kb action: " + action;
-    }
-}
-
-// ============================================================
-// Command execution: Gamepad
-// ============================================================
-
-// Maps string button names to BLE Gamepad button numbers
-int mapGamepadButton(const String& name) {
-    if (name == "A" || name == "a")                       return 1;
-    if (name == "B" || name == "b")                       return 2;
-    if (name == "X" || name == "x")                       return 3;
-    if (name == "Y" || name == "y")                       return 4;
-    if (name == "L" || name == "l" || name == "LB")       return 5;
-    if (name == "R" || name == "r" || name == "RB")       return 6;
-    if (name == "ZL" || name == "LT")                     return 7;
-    if (name == "ZR" || name == "RT")                     return 8;
-    if (name == "minus" || name == "select" || name == "MINUS") return 9;
-    if (name == "plus"  || name == "start"  || name == "PLUS")  return 10;
-    if (name == "L3" || name == "lstick")                 return 11;
-    if (name == "R3" || name == "rstick")                 return 12;
-    if (name == "home" || name == "HOME")                 return 13;
-    if (name == "capture" || name == "CAPTURE")           return 14;
-    return 0;  // unknown
-}
-
-// D-pad to hat switch mapping (0=N, 1=NE, 2=E, ... 7=NW, -1=center)
-int mapDPadToHat(const String& name) {
-    if (name == "up"    || name == "DUP")    return 0;  // North
-    if (name == "right" || name == "DRIGHT") return 2;  // East
-    if (name == "down"  || name == "DDOWN")  return 4;  // South
-    if (name == "left"  || name == "DLEFT")  return 6;  // West
-    return -1;  // center/release
-}
-
-void executeGamepadCommand(const String& action, JsonDocument& doc, JsonDocument& response) {
-    if (!bleGamepad || !bleGamepad->isConnected()) {
-        response["status"] = "error";
-        response["error"]  = "BLE gamepad not connected";
+        response["error"] = "gamepad actions not allowed in current mode";
         return;
     }
 
-    if (action == "button_press") {
-        String button = doc["button"].as<String>();
-        int hat = mapDPadToHat(button);
-        if (hat >= 0) {
-            bleGamepad->setHat1(hat);
-        } else {
-            int btn = mapGamepadButton(button);
-            if (btn > 0) bleGamepad->press(btn);
+    bool switchLayout = isSwitchMode(currentMode);
+
+    if (transport == RUNTIME_BLE) {
+        if (!bleGamepad || !bleGamepad->isConnected()) {
+            response["status"] = "error";
+            response["error"] = "BLE gamepad not connected";
+            return;
         }
-        bleGamepad->sendReport();
-        response["status"] = "ok";
-    }
-    else if (action == "button_release") {
-        String button = doc["button"].as<String>();
-        int hat = mapDPadToHat(button);
-        if (hat >= 0) {
-            bleGamepad->setHat1(-1);  // center
-        } else {
-            int btn = mapGamepadButton(button);
-            if (btn > 0) bleGamepad->release(btn);
+
+        if (action == "button_press") {
+            String button = doc["button"].as<String>();
+            int hat = mapDPadToBleHat(button);
+            if (hat >= 0) {
+                bleGamepad->setHat1(hat);
+            } else {
+                int btn = mapGamepadButtonBLE(button, switchLayout);
+                if (btn <= 0) {
+                    response["status"] = "error";
+                    response["error"] = "unknown button";
+                    return;
+                }
+                bleGamepad->press(btn);
+            }
+            bleGamepad->sendReport();
+            response["status"] = "ok";
+            return;
         }
-        bleGamepad->sendReport();
-        response["status"] = "ok";
-    }
-    else if (action == "stick") {
-        String stick_id = doc["stick_id"].as<String>();
-        int x = doc["x"] | 0;
-        int y = doc["y"] | 0;
-        // Map -32768..32767 -> 0..32767 (BLE Gamepad library range)
-        int mappedX = map(x, -32768, 32767, 0, 32767);
-        int mappedY = map(y, -32768, 32767, 0, 32767);
-        if (stick_id == "left" || stick_id == "LEFT") {
-            bleGamepad->setLeftThumb(mappedX, mappedY);
-        } else {
-            bleGamepad->setRightThumb(mappedX, mappedY);
+
+        if (action == "button_release") {
+            String button = doc["button"].as<String>();
+            int hat = mapDPadToBleHat(button);
+            if (hat >= 0) {
+                bleGamepad->setHat1(-1);
+            } else {
+                int btn = mapGamepadButtonBLE(button, switchLayout);
+                if (btn <= 0) {
+                    response["status"] = "error";
+                    response["error"] = "unknown button";
+                    return;
+                }
+                bleGamepad->release(btn);
+            }
+            bleGamepad->sendReport();
+            response["status"] = "ok";
+            return;
         }
-        bleGamepad->sendReport();
-        response["status"] = "ok";
+
+        if (action == "stick") {
+            String stick = doc["stick_id"].as<String>();
+            int x = doc["x"] | 0;
+            int y = doc["y"] | 0;
+            int mappedX = map(x, -32768, 32767, 0, 32767);
+            int mappedY = map(y, -32768, 32767, 0, 32767);
+            if (strEqIgnoreCase(stick, "left")) {
+                bleGamepad->setLeftThumb(mappedX, mappedY);
+            } else {
+                bleGamepad->setRightThumb(mappedX, mappedY);
+            }
+            bleGamepad->sendReport();
+            response["status"] = "ok";
+            return;
+        }
+
+        if (action == "hat") {
+            String dir = doc["direction"].as<String>();
+            int hat = mapDPadToBleHat(dir);
+            bleGamepad->setHat1(hat >= 0 ? hat : -1);
+            bleGamepad->sendReport();
+            response["status"] = "ok";
+            return;
+        }
     }
-    else {
-        response["status"] = "error";
-        response["error"]  = "unknown gamepad action: " + action;
+
+    if (transport == RUNTIME_USB) {
+        if (action == "button_press") {
+            String button = doc["button"].as<String>();
+            uint8_t hat = mapDPadToUsbHat(button);
+            if (hat != UsbHidBridge::USB_HAT_CENTER || strEqIgnoreCase(button, "up") || strEqIgnoreCase(button, "down") || strEqIgnoreCase(button, "left") || strEqIgnoreCase(button, "right") || strEqIgnoreCase(button, "DUP") || strEqIgnoreCase(button, "DDOWN") || strEqIgnoreCase(button, "DLEFT") || strEqIgnoreCase(button, "DRIGHT")) {
+                UsbHidBridge::gamepadHat(hat);
+                response["status"] = "ok";
+                return;
+            }
+
+            uint8_t btn = mapGamepadButtonUSB(button, switchLayout);
+            if (btn == 0xFF) {
+                response["status"] = "error";
+                response["error"] = "unknown button";
+                return;
+            }
+            UsbHidBridge::gamepadPress(btn);
+            response["status"] = "ok";
+            return;
+        }
+
+        if (action == "button_release") {
+            String button = doc["button"].as<String>();
+            uint8_t hat = mapDPadToUsbHat(button);
+            if (hat != UsbHidBridge::USB_HAT_CENTER || strEqIgnoreCase(button, "up") || strEqIgnoreCase(button, "down") || strEqIgnoreCase(button, "left") || strEqIgnoreCase(button, "right") || strEqIgnoreCase(button, "DUP") || strEqIgnoreCase(button, "DDOWN") || strEqIgnoreCase(button, "DLEFT") || strEqIgnoreCase(button, "DRIGHT")) {
+                UsbHidBridge::gamepadHat(UsbHidBridge::USB_HAT_CENTER);
+                response["status"] = "ok";
+                return;
+            }
+
+            uint8_t btn = mapGamepadButtonUSB(button, switchLayout);
+            if (btn == 0xFF) {
+                response["status"] = "error";
+                response["error"] = "unknown button";
+                return;
+            }
+            UsbHidBridge::gamepadRelease(btn);
+            response["status"] = "ok";
+            return;
+        }
+
+        if (action == "stick") {
+            String stick = doc["stick_id"].as<String>();
+            int x = doc["x"] | 0;
+            int y = doc["y"] | 0;
+            int8_t mappedX = clampInt8(map(x, -32768, 32767, -127, 127));
+            int8_t mappedY = clampInt8(map(y, -32768, 32767, -127, 127));
+            if (strEqIgnoreCase(stick, "left")) {
+                UsbHidBridge::gamepadLeftStick(mappedX, mappedY);
+            } else {
+                UsbHidBridge::gamepadRightStick(mappedX, mappedY);
+            }
+            response["status"] = "ok";
+            return;
+        }
+
+        if (action == "hat") {
+            String dir = doc["direction"].as<String>();
+            uint8_t hat = mapDPadToUsbHat(dir);
+            UsbHidBridge::gamepadHat(hat);
+            response["status"] = "ok";
+            return;
+        }
     }
+
+    response["status"] = "error";
+    response["error"] = "unknown gamepad action";
 }
 
-// ============================================================
-// Unified command dispatcher (routes to mouse/kb or gamepad)
-// ============================================================
-void executeCommand(JsonDocument& doc, JsonDocument& response) {
+void executeCommand(JsonDocument& doc, JsonDocument& response, CommandSource source) {
     String action = doc["action"].as<String>();
     response["action"] = action;
+    response["mode"] = modeToString(currentMode);
+    response["source"] = source == SOURCE_WIRED ? "wired" : "wifi";
 
-    if (currentOutputMode == OUTPUT_MOUSE_KB) {
-        executeMouseCommand(action, doc, response);
-    } else {
-        executeGamepadCommand(action, doc, response);
+    RuntimeDelivery delivery = chooseRuntimeDelivery();
+    response["delivery"] = runtimeDeliveryToString(delivery);
+
+    if (delivery == RUNTIME_NONE) {
+        response["status"] = "error";
+        response["error"] = "no available output transport (USB not mounted and BLE not connected)";
+        return;
+    }
+
+    if (action == "move" || action == "click" || action == "swipe" || action == "press" || action == "release") {
+        executeMouseCommand(delivery, action, doc, response);
+    }
+    else if (action == "key_press" || action == "key_release" || action == "key_tap" || action == "text") {
+        executeKeyboardCommand(delivery, action, doc, response);
+    }
+    else if (action == "button_press" || action == "button_release" || action == "stick" || action == "hat") {
+        executeGamepadCommand(delivery, action, doc, response);
+    }
+    else {
+        response["status"] = "error";
+        response["error"] = "unknown action";
     }
 }
 
 // ============================================================
-// Mode string helpers
+// HTTP handlers
 // ============================================================
-String inputModeStr()      { return currentInput == INPUT_WIFI ? "wifi" : "serial"; }
-String outputDeliveryStr() { return currentOutput == OUTPUT_BLUETOOTH ? "bluetooth" : "wired"; }
-String outputModeStr()     { return currentOutputMode == OUTPUT_MOUSE_KB ? "mouse_keyboard" : "gamepad"; }
+void sendJson(int code, JsonDocument& doc) {
+    String out;
+    serializeJson(doc, out);
+    server.send(code, "application/json", out);
+}
 
-// ============================================================
-// HTTP Handlers
-// ============================================================
 void handlePing() {
     server.send(200, "application/json", "{\"status\":\"ok\"}");
 }
 
 void handleStatus() {
     JsonDocument doc;
-    doc["ble_connected"]   = isBLEConnected();
-    doc["ip"]              = WiFi.localIP().toString();
-    doc["device_name"]     = DEVICE_NAME;
-    doc["input_mode"]      = inputModeStr();
-    doc["output_delivery"] = outputDeliveryStr();
-    doc["output_mode"]     = outputModeStr();
-
-    String resp;
-    serializeJson(doc, resp);
-    server.send(200, "application/json", resp);
+    doc["device_name"] = DEVICE_NAME;
+    doc["ip"] = WiFi.localIP().toString();
+    doc["mode"] = modeToString(currentMode);
+    doc["delivery_policy"] = deliveryPolicyToString(deliveryPolicy);
+    doc["active_delivery"] = runtimeDeliveryToString(chooseRuntimeDelivery());
+    doc["usb_mounted"] = isUSBMounted();
+    doc["ble_connected"] = isBLEConnected();
+    doc["wired_priority_active"] = wiredPriorityActive();
+    doc["wired_priority_window_ms"] = WIRED_PRIORITY_WINDOW_MS;
+    doc["wired_bt_input_bridge_ready"] = false;
+    doc["wired_bt_input_bridge_note"] = "Mode switch_wired_bt_input currently uses command bridge input (BT input bridge TBD)";
+    sendJson(200, doc);
 }
 
 void handleGetMode() {
     JsonDocument doc;
-    doc["input_mode"]      = inputModeStr();
-    doc["output_delivery"] = outputDeliveryStr();
-    doc["output_mode"]     = outputModeStr();
+    doc["mode"] = modeToString(currentMode);
+    doc["delivery_policy"] = deliveryPolicyToString(deliveryPolicy);
+    // Backward-compatible fields
+    doc["output_mode"] = (modeAllowsGamepad(currentMode) ? "gamepad" : "mouse_keyboard");
+    doc["output_delivery"] = deliveryPolicyToString(deliveryPolicy);
+    doc["input_mode"] = "auto_dual";
+    sendJson(200, doc);
+}
 
-    String resp;
-    serializeJson(doc, resp);
-    server.send(200, "application/json", resp);
+void applyModeChange(bool modeChanged) {
+    if (modeChanged) {
+        initBLE();
+        displayMenu();
+    }
 }
 
 void handleSetMode() {
@@ -388,36 +895,80 @@ void handleSetMode() {
     }
 
     JsonDocument doc;
-    if (deserializeJson(doc, server.arg("plain"))) {
+    DeserializationError err = deserializeJson(doc, server.arg("plain"));
+    if (err) {
         server.send(400, "application/json", "{\"error\":\"invalid json\"}");
         return;
     }
 
-    bool changed = false;
+    DeviceMode nextMode = currentMode;
+    DeliveryPolicy nextPolicy = deliveryPolicy;
 
-    if (doc["input_mode"].is<const char*>()) {
-        String val = doc["input_mode"].as<String>();
-        InputMode newMode = (val == "serial") ? INPUT_SERIAL : INPUT_WIFI;
-        if (newMode != currentInput) { currentInput = newMode; changed = true; }
+    if (doc["mode"].is<const char*>()) {
+        nextMode = parseModeString(doc["mode"].as<String>());
     }
-    if (doc["output_delivery"].is<const char*>()) {
-        String val = doc["output_delivery"].as<String>();
-        OutputDelivery newDel = (val == "wired") ? OUTPUT_WIRED : OUTPUT_BLUETOOTH;
-        if (newDel != currentOutput) { currentOutput = newDel; changed = true; }
+    // compatibility with existing callers
+    if (doc["hid_mode"].is<const char*>()) {
+        nextMode = parseModeString(doc["hid_mode"].as<String>());
     }
     if (doc["output_mode"].is<const char*>()) {
-        String val = doc["output_mode"].as<String>();
-        OutputMode newMode = (val == "gamepad") ? OUTPUT_GAMEPAD : OUTPUT_MOUSE_KB;
-        if (newMode != currentOutputMode) { currentOutputMode = newMode; changed = true; }
+        nextMode = parseModeString(doc["output_mode"].as<String>());
     }
 
-    if (changed) {
-        initBLE();
-        displayMenu();
+    if (doc["delivery_policy"].is<const char*>()) {
+        nextPolicy = parseDeliveryPolicy(doc["delivery_policy"].as<String>());
+    }
+    if (doc["output_delivery"].is<const char*>()) {
+        nextPolicy = parseDeliveryPolicy(doc["output_delivery"].as<String>());
     }
 
-    // Return current mode as response
+    bool changed = (nextMode != currentMode) || (nextPolicy != deliveryPolicy);
+    currentMode = nextMode;
+    deliveryPolicy = nextPolicy;
+
+    applyModeChange(changed);
     handleGetMode();
+}
+
+void handleDisplayGet() {
+    JsonDocument doc;
+    doc["line1"] = displayState.line1;
+    doc["line2"] = displayState.line2;
+    doc["line3"] = displayState.line3;
+    doc["sticky"] = displayState.sticky;
+    sendJson(200, doc);
+}
+
+void handleDisplaySet() {
+    if (!server.hasArg("plain")) {
+        server.send(400, "application/json", "{\"error\":\"no body\"}");
+        return;
+    }
+
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, server.arg("plain"));
+    if (err) {
+        server.send(400, "application/json", "{\"error\":\"invalid json\"}");
+        return;
+    }
+
+    String l1 = doc["line1"].as<String>();
+    String l2 = doc["line2"].as<String>();
+    String l3 = doc["line3"].as<String>();
+    bool sticky = doc["sticky"].is<bool>() ? doc["sticky"].as<bool>() : true;
+    unsigned long ttlMs = doc["ttl_ms"] | 1500;
+
+    displaySet(l1, l2, l3, sticky, ttlMs);
+
+    JsonDocument response;
+    response["status"] = "ok";
+    response["line1"] = l1;
+    sendJson(200, response);
+}
+
+void handleDisplayClear() {
+    displayClear();
+    server.send(200, "application/json", "{\"status\":\"ok\"}");
 }
 
 void handleCommand() {
@@ -426,42 +977,55 @@ void handleCommand() {
         return;
     }
 
+    if (wiredPriorityActive()) {
+        JsonDocument deferred;
+        deferred["status"] = "deferred";
+        deferred["reason"] = "wired_priority_window_active";
+        deferred["window_ms"] = WIRED_PRIORITY_WINDOW_MS;
+        sendJson(409, deferred);
+        return;
+    }
+
     JsonDocument doc;
-    if (deserializeJson(doc, server.arg("plain"))) {
+    DeserializationError err = deserializeJson(doc, server.arg("plain"));
+    if (err) {
         server.send(400, "application/json", "{\"error\":\"invalid json\"}");
         return;
     }
 
     JsonDocument response;
-    executeCommand(doc, response);
+    executeCommand(doc, response, SOURCE_WIFI);
 
-    String resp;
-    serializeJson(response, resp);
-    int code = (response["status"] == "ok") ? 200 : 400;
-    server.send(code, "application/json", resp);
+    int code = 400;
+    String status = response["status"].as<String>();
+    if (status == "ok") code = 200;
+    else if (status == "deferred") code = 409;
+
+    sendJson(code, response);
 }
 
 // ============================================================
-// Serial command processing (for INPUT_SERIAL mode)
+// Serial input handling (wired command channel)
 // ============================================================
 void processSerialCommand(const String& line) {
     JsonDocument doc;
-    if (deserializeJson(doc, line)) {
-        Serial.println("{\"error\":\"invalid json\"}");
+    DeserializationError err = deserializeJson(doc, line);
+    if (err) {
+        Serial.println("{\"status\":\"error\",\"error\":\"invalid json\"}");
         return;
     }
 
-    JsonDocument response;
-    executeCommand(doc, response);
+    lastWiredCommandAtMs = millis();
 
-    String resp;
-    serializeJson(response, resp);
-    Serial.println(resp);
+    JsonDocument response;
+    executeCommand(doc, response, SOURCE_WIRED);
+
+    String out;
+    serializeJson(response, out);
+    Serial.println(out);
 }
 
 void handleSerialInput() {
-    if (currentInput != INPUT_SERIAL) return;
-
     while (Serial.available()) {
         char c = Serial.read();
         if (c == '\n' || c == '\r') {
@@ -471,9 +1035,8 @@ void handleSerialInput() {
             }
         } else {
             serialBuffer += c;
-            // Guard against buffer overflow
             if (serialBuffer.length() > 2048) {
-                Serial.println("{\"error\":\"serial buffer overflow\"}");
+                Serial.println("{\"status\":\"error\",\"error\":\"serial buffer overflow\"}");
                 serialBuffer = "";
             }
         }
@@ -481,8 +1044,21 @@ void handleSerialInput() {
 }
 
 // ============================================================
-// Button handling (physical menu navigation)
+// Buttons / menu
 // ============================================================
+void cycleModeForward() {
+    int next = (static_cast<int>(currentMode) + 1) % static_cast<int>(MODE_COUNT);
+    currentMode = static_cast<DeviceMode>(next);
+    initBLE();
+    displayMenu();
+}
+
+void cycleDeliveryPolicyForward() {
+    int next = (static_cast<int>(deliveryPolicy) + 1) % 3;
+    deliveryPolicy = static_cast<DeliveryPolicy>(next);
+    displayMenu();
+}
+
 void handleButtons() {
     if (millis() - lastButtonPress < DEBOUNCE_MS) return;
 
@@ -498,20 +1074,8 @@ void handleButtons() {
     }
     else if (digitalRead(GPIO_SEL) == LOW) {
         lastButtonPress = millis();
-        // Toggle the selected setting
-        switch (menuIndex) {
-            case 0:
-                currentInput = (currentInput == INPUT_WIFI) ? INPUT_SERIAL : INPUT_WIFI;
-                break;
-            case 1:
-                currentOutput = (currentOutput == OUTPUT_BLUETOOTH) ? OUTPUT_WIRED : OUTPUT_BLUETOOTH;
-                break;
-            case 2:
-                currentOutputMode = (currentOutputMode == OUTPUT_MOUSE_KB) ? OUTPUT_GAMEPAD : OUTPUT_MOUSE_KB;
-                break;
-        }
-        initBLE();
-        displayMenu();
+        if (menuIndex == 0) cycleModeForward();
+        else cycleDeliveryPolicyForward();
     }
 }
 
@@ -521,6 +1085,7 @@ void handleButtons() {
 void setupWiFi() {
     Serial.print("Connecting to WiFi: ");
     Serial.println(WIFI_SSID);
+
     WiFi.mode(WIFI_STA);
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
@@ -535,64 +1100,68 @@ void setupWiFi() {
         Serial.println("\nWiFi connected!");
         Serial.print("IP address: ");
         Serial.println(WiFi.localIP());
-        MDNS.begin("chromacatch");
-        Serial.println("mDNS: chromacatch.local");
+        if (MDNS.begin("chromacatch")) {
+            Serial.println("mDNS: chromacatch.local");
+        }
     } else {
         Serial.println("\nWiFi connection failed!");
     }
 }
 
 // ============================================================
-// Arduino Setup & Loop
+// Setup / Loop
 // ============================================================
 void setup() {
     Serial.begin(115200);
-    Serial.println("\n=== ChromaCatch-Go ESP32-S3 v2 ===");
+    Serial.println("\n=== ChromaCatch-Go ESP32-S3 v3 ===");
 
-    // Button pins (active LOW, internal pull-up)
-    pinMode(GPIO_UP,  INPUT_PULLUP);
+    pinMode(GPIO_UP, INPUT_PULLUP);
     pinMode(GPIO_DOWN, INPUT_PULLUP);
     pinMode(GPIO_SEL, INPUT_PULLUP);
 
-    // Display
     displayInit();
 
-    // WiFi first (must be established before BLE on S3)
     setupWiFi();
-
-    // BLE second
+    initUSBHID();
     initBLE();
 
-    // HTTP routes (active even in serial input mode for status/mode queries)
-    server.on("/ping",    HTTP_GET,  handlePing);
-    server.on("/status",  HTTP_GET,  handleStatus);
-    server.on("/mode",    HTTP_GET,  handleGetMode);
-    server.on("/mode",    HTTP_POST, handleSetMode);
+    server.on("/ping", HTTP_GET, handlePing);
+    server.on("/status", HTTP_GET, handleStatus);
+    server.on("/mode", HTTP_GET, handleGetMode);
+    server.on("/mode", HTTP_POST, handleSetMode);
     server.on("/command", HTTP_POST, handleCommand);
+    server.on("/display", HTTP_GET, handleDisplayGet);
+    server.on("/display", HTTP_POST, handleDisplaySet);
+    server.on("/display/clear", HTTP_POST, handleDisplayClear);
     server.begin();
 
     Serial.println("HTTP server started on port " + String(HTTP_PORT));
     displayMenu();
-    Serial.println("Ready for commands!");
+    Serial.println("Ready for commands (WiFi + wired serial)");
 }
 
 void loop() {
-    // Always handle HTTP (for status/mode even in serial input mode)
     server.handleClient();
-
-    // Physical button menu navigation
     handleButtons();
-
-    // Serial command input (when in serial mode)
     handleSerialInput();
+    updateDisplayExpiry();
 
-    // Log BLE connection state changes
-    static bool lastConnected = false;
-    bool connected = isBLEConnected();
-    if (connected != lastConnected) {
-        Serial.println(connected ? "BLE device connected!" : "BLE device disconnected.");
-        displayStatus(connected ? "BLE: Connected" : "BLE: Disconnected", nullptr);
-        lastConnected = connected;
+    static bool lastBle = false;
+    static bool lastUsb = false;
+
+    bool bleNow = isBLEConnected();
+    bool usbNow = isUSBMounted();
+
+    if (bleNow != lastBle) {
+        Serial.println(bleNow ? "BLE connected" : "BLE disconnected");
+        displayStatus(bleNow ? "BLE connected" : "BLE disconnected");
+        lastBle = bleNow;
+    }
+
+    if (usbNow != lastUsb) {
+        Serial.println(usbNow ? "USB host mounted" : "USB host unmounted");
+        displayStatus(usbNow ? "USB mounted" : "USB unmounted");
+        lastUsb = usbNow;
     }
 
     delay(1);

@@ -154,7 +154,11 @@ class ESP32Client:
             return await asyncio.to_thread(self._urllib_request, "GET", "/mode", None)
 
     async def set_mode(self, **kwargs: str) -> dict:
-        """Set ESP32 mode. Accepted keys: input_mode, output_delivery, output_mode."""
+        """Set ESP32 mode.
+
+        Accepted keys (v3 firmware): mode, delivery_policy.
+        Backward-compatible keys: input_mode, output_delivery, output_mode, hid_mode.
+        """
         try:
             response = await self._client.post("/mode", json=kwargs)
             response.raise_for_status()

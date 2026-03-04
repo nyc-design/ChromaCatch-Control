@@ -103,7 +103,15 @@ class ChromaCatchClient:
 
     async def _handle_set_hid_mode(self, msg: SetHIDModeMessage) -> None:
         """Apply HID mode change from backend — routes to ESP32 mode API."""
-        mode_map = {"combo": "mouse_keyboard", "mouse": "mouse_keyboard", "keyboard": "mouse_keyboard", "gamepad": "gamepad"}
+        mode_map = {
+            "combo": "combo",
+            "mouse": "mouse_only",
+            "keyboard": "keyboard_only",
+            "gamepad": "gamepad",
+            # Optional extended modes (if backend sends them)
+            "switch_pro": "switch_controller",
+            "switch_wired_bt_input": "switch_wired_bt_input",
+        }
         esp32_mode = mode_map.get(msg.hid_mode)
         if esp32_mode is None:
             logger.warning("Unknown HID mode: %s", msg.hid_mode)
@@ -112,7 +120,8 @@ class ChromaCatchClient:
         from airplay_client.commander.esp32_commander import ESP32Commander
         if isinstance(self._commander, ESP32Commander):
             try:
-                result = await self._commander._esp32.set_mode(output_mode=esp32_mode)
+                legacy_output_mode = "gamepad" if esp32_mode in {"gamepad", "switch_controller", "switch_wired_bt_input"} else "mouse_keyboard"
+                result = await self._commander._esp32.set_mode(mode=esp32_mode, output_mode=legacy_output_mode)
                 logger.info("ESP32 HID mode changed to %s: %s", esp32_mode, result)
             except Exception as e:
                 logger.error("Failed to set ESP32 mode: %s", e)
