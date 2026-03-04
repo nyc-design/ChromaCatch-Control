@@ -325,6 +325,13 @@ final class BLEHIDCommander: NSObject, ObservableObject {
         guard let pm = peripheralManager else { return }
 
         hidLog.info("Stopping BLE HID")
+        // Also stop any optional host-central flow so we don't silently reconnect to a previously selected host.
+        centralManager?.stopScan()
+        if let hostPeripheral {
+            centralManager?.cancelPeripheralConnection(hostPeripheral)
+            self.hostPeripheral = nil
+        }
+
         peripheralManager = nil
         systemControlInputReportCharacteristic = nil
         consumerInputReportCharacteristic = nil
@@ -351,6 +358,9 @@ final class BLEHIDCommander: NSObject, ObservableObject {
             self.isAdvertising = false
             self.isConnected = false
             self.connectedDeviceName = nil
+            self.isScanningHosts = false
+            self.connectedHostName = nil
+            self.discoveredHosts = []
         }
     }
 
@@ -377,6 +387,10 @@ final class BLEHIDCommander: NSObject, ObservableObject {
     func disconnectAndMakeDiscoverable() {
         guard peripheralManager != nil else { return }
         hidLog.info("Disconnecting active HID links and restarting discoverable advertising")
+
+        // Ensure we also drop any app-initiated central connection to a host.
+        disconnectHostConnection()
+        stopHostScan()
 
         stop()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
