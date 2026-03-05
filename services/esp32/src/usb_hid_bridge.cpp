@@ -61,21 +61,33 @@ void init() {
 
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
 #if CONFIG_TINYUSB_ENABLED
-    USB.manufacturerName("ChromaCatch");
-    USB.productName("ChromaCatch HID");
-    USB.begin();
+    if (gamepadProfile == USB_GAMEPAD_PROFILE_SWITCH_PRO) {
+        USB.manufacturerName("Nintendo Co., Ltd.");
+        USB.productName("Pro Controller");
+    } else {
+        USB.manufacturerName("ChromaCatch");
+        USB.productName("ChromaCatch HID");
+    }
 #endif
 
-    keyboard.begin();
-    mouse.begin();
 #if CONFIG_TINYUSB_HID_ENABLED
     if (gamepadProfile == USB_GAMEPAD_PROFILE_SWITCH_PRO) {
+        // Match switch_ESP32 startup sequence: register NS HID device first,
+        // then start USB to enumerate with the Switch descriptor/PID.
         switchGamepad.begin();
     } else {
+        keyboard.begin();
+        mouse.begin();
         gamepad.begin();
     }
 #else
+    keyboard.begin();
+    mouse.begin();
     gamepad.begin();
+#endif
+
+#if CONFIG_TINYUSB_ENABLED
+    USB.begin();
 #endif
 #endif
 

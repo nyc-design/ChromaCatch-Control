@@ -127,26 +127,44 @@ bool SwitchProBT::begin() {
     }
 
     esp_bt_controller_status_t ctrlStatus = esp_bt_controller_get_status();
+    Serial.printf("[SwitchProBT] controller status (pre): %d\n", static_cast<int>(ctrlStatus));
     if (ctrlStatus == ESP_BT_CONTROLLER_STATUS_IDLE) {
-        esp_bt_controller_mem_release(ESP_BT_MODE_BLE);
+        esp_err_t rel = esp_bt_controller_mem_release(ESP_BT_MODE_BLE);
+        if (rel != ESP_OK && rel != ESP_ERR_INVALID_STATE) {
+            Serial.printf("[SwitchProBT] mem_release(BLE) failed: %d\n", static_cast<int>(rel));
+        }
         esp_bt_controller_config_t cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
         esp_err_t err = esp_bt_controller_init(&cfg);
-        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return false;
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+            Serial.printf("[SwitchProBT] controller_init failed: %d\n", static_cast<int>(err));
+            return false;
+        }
     }
 
     ctrlStatus = esp_bt_controller_get_status();
+    Serial.printf("[SwitchProBT] controller status (post-init): %d\n", static_cast<int>(ctrlStatus));
     if (ctrlStatus == ESP_BT_CONTROLLER_STATUS_INITED) {
-        esp_err_t err = esp_bt_controller_enable(ESP_BT_MODE_CLASSIC_BT);
-        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return false;
+        // Arduino core typically runs BTDM mode; use BTDM enable for broad compatibility.
+        esp_err_t err = esp_bt_controller_enable(ESP_BT_MODE_BTDM);
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+            Serial.printf("[SwitchProBT] controller_enable(BTDM) failed: %d\n", static_cast<int>(err));
+            return false;
+        }
     }
 
     if (esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_UNINITIALIZED) {
         esp_err_t err = esp_bluedroid_init();
-        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return false;
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+            Serial.printf("[SwitchProBT] bluedroid_init failed: %d\n", static_cast<int>(err));
+            return false;
+        }
     }
     if (esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_INITIALIZED) {
         esp_err_t err = esp_bluedroid_enable();
-        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return false;
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+            Serial.printf("[SwitchProBT] bluedroid_enable failed: %d\n", static_cast<int>(err));
+            return false;
+        }
     }
 
     esp_bt_dev_set_device_name(kBtHidConfig.device_name);
@@ -154,10 +172,16 @@ bool SwitchProBT::begin() {
     cod.major = 5;
     cod.minor = 2;
     cod.service = 1;
-    esp_bt_gap_set_cod(cod, ESP_BT_SET_COD_ALL);
+    esp_err_t codErr = esp_bt_gap_set_cod(cod, ESP_BT_SET_COD_ALL);
+    if (codErr != ESP_OK) {
+        Serial.printf("[SwitchProBT] set_cod failed: %d\n", static_cast<int>(codErr));
+    }
 
     esp_err_t err = esp_hidd_dev_init(&kBtHidConfig, ESP_HID_TRANSPORT_BT, &SwitchProBT::hiddEventCallback, &_dev);
-    if (err != ESP_OK) return false;
+    if (err != ESP_OK) {
+        Serial.printf("[SwitchProBT] hidd_dev_init failed: %d\n", static_cast<int>(err));
+        return false;
+    }
 
     _active = true;
     _discoverable = true;
