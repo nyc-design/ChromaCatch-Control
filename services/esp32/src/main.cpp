@@ -146,6 +146,11 @@ bool einkReady = false;
 bool customDisplayActive = false;
 GxEPD2_BW<GxEPD2_213_B74, GxEPD2_213_B74::HEIGHT> eink(GxEPD2_213_B74(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
 
+// Forward declarations used by display renderer.
+bool isUSBMounted();
+bool isBLEConnected();
+RuntimeDelivery chooseRuntimeDelivery();
+
 // ============================================================
 // Helpers
 // ============================================================
