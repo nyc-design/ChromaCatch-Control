@@ -35,6 +35,7 @@
 #include <XboxGamepadConfiguration.h>
 
 #include "usb_hid_bridge.h"
+#include "switch_pro_bt.h"
 
 // ============================================================
 // USER CONFIGURATION -- Edit before flashing
@@ -136,6 +137,9 @@ BleComboMouse*    bleComboMouse = nullptr;
 BleCompositeHID*  bleCompositeHid = nullptr;
 GamepadDevice*    bleGenericGamepad = nullptr;
 XboxGamepadDevice* bleXboxGamepad = nullptr;
+#if defined(CONFIG_IDF_TARGET_ESP32)
+SwitchProBT switchProBt;
+#endif
 
 DeviceMode currentMode = MODE_COMBO;
 DeliveryPolicy deliveryPolicy = DELIVERY_AUTO;
@@ -218,7 +222,7 @@ bool modeUsesBleCombo(DeviceMode mode) {
 
 bool modeUsesBleGamepad(DeviceMode mode) {
     if (!modeUsesBleOutput(mode)) return false;
-    return mode == MODE_GAMEPAD || mode == MODE_SWITCH_CONTROLLER;
+    return mode == MODE_GAMEPAD;
 }
 
 bool emulationModeSupported(EmulationMode mode) {
@@ -288,6 +292,16 @@ const char* runtimeDeliveryToString(RuntimeDelivery d) {
         case RUNTIME_BLE: return "bluetooth";
         default: return "none";
     }
+}
+
+String getBleAdvertisementName() {
+    if (!modeUsesBleOutput(currentMode)) return "n/a";
+#if defined(CONFIG_IDF_TARGET_ESP32)
+    if (BOARD_SUPPORTS_BT_SWITCH_PRO_MODE && isSwitchMode(currentMode)) {
+        return "Pro Controller";
+    }
+#endif
+    return String(DEVICE_NAME);
 }
 
 void applyEmulationMode(EmulationMode mode) {
@@ -431,7 +445,7 @@ void renderDashboardNow() {
     String activeDelivery = String(runtimeDeliveryToString(active));
     String usbState = isUSBMounted() ? "mounted" : "not-mounted";
     String bleState = !bleAvailable ? "disabled" : (bleConnected ? "connected" : "advertising");
-    String advName = bleAvailable ? String(DEVICE_NAME) : "n/a";
+    String advName = getBleAdvertisementName();
     String wsState = wsConnectedClients > 0 ? (String(wsConnectedClients) + " client(s)") : "idle";
 
     int w = eink.width();
@@ -582,6 +596,11 @@ bool isUSBMounted() {
 // BLE init and state
 // ============================================================
 void stopBLE() {
+#if defined(CONFIG_IDF_TARGET_ESP32)
+    if (switchProBt.isActive()) {
+        switchProBt.end();
+    }
+#endif
     if (bleComboMouse) { delete bleComboMouse; bleComboMouse = nullptr; }
     if (bleComboKb)    { delete bleComboKb;    bleComboKb = nullptr; }
     if (bleCompositeHid) {
@@ -590,6 +609,7 @@ void stopBLE() {
     if (bleXboxGamepad) { delete bleXboxGamepad; bleXboxGamepad = nullptr; }
     if (bleGenericGamepad) { delete bleGenericGamepad; bleGenericGamepad = nullptr; }
     if (bleCompositeHid) { delete bleCompositeHid; bleCompositeHid = nullptr; }
+    NimBLEDevice::deinit(true);
 }
 
 void initBLE() {
@@ -599,6 +619,17 @@ void initBLE() {
         Serial.println("BLE output disabled for current mode");
         return;
     }
+
+#if defined(CONFIG_IDF_TARGET_ESP32)
+    if (BOARD_SUPPORTS_BT_SWITCH_PRO_MODE && isSwitchMode(currentMode)) {
+        if (switchProBt.begin()) {
+            Serial.println("Bluetooth Switch Pro profile started (classic BT)");
+        } else {
+            Serial.println("Failed to start Bluetooth Switch Pro profile");
+        }
+        return;
+    }
+#endif
 
     if (modeUsesBleCombo(currentMode)) {
         bleComboKb = new BleComboKeyboard(DEVICE_NAME, "ChromaCatch", 100);
@@ -628,6 +659,11 @@ void initBLE() {
 }
 
 bool isBLEConnected() {
+#if defined(CONFIG_IDF_TARGET_ESP32)
+    if (BOARD_SUPPORTS_BT_SWITCH_PRO_MODE && isSwitchMode(currentMode)) {
+        return switchProBt.isConnected();
+    }
+#endif
     if (modeUsesBleCombo(currentMode)) {
         return bleComboKb && bleComboKb->isConnected();
     }
@@ -1001,6 +1037,50 @@ void executeGamepadCommand(RuntimeDelivery transport, const String& action, Json
     bool switchLayout = isSwitchMode(currentMode);
 
     if (transport == RUNTIME_BLE) {
+#if defined(CONFIG_IDF_TARGET_ESP32)
+        if (BOARD_SUPPORTS_BT_SWITCH_PRO_MODE && isSwitchMode(currentMode)) {
+            if (!switchProBt.isConnected()) {
+                response["status"] = "error";
+                response["error"] = "switch_pro_bt_not_connected";
+                return;
+            }
+
+            if (action == "button_press" || action == "button_release") {
+                String button = doc["button"].as<String>();
+                bool pressed = action == "button_press";
+                bool ok = switchProBt.setButton(button, pressed);
+                if (!ok) {
+                    response["status"] = "error";
+                    response["error"] = "unknown button";
+                    return;
+                }
+                response["status"] = "ok";
+                return;
+            }
+
+            if (action == "stick") {
+                String stick = doc["stick_id"].as<String>();
+                int x = doc["x"] | 0;
+                int y = doc["y"] | 0;
+                bool ok = switchProBt.setStick(stick, x, y);
+                if (!ok) {
+                    response["status"] = "error";
+                    response["error"] = "unknown stick";
+                    return;
+                }
+                response["status"] = "ok";
+                return;
+            }
+
+            if (action == "hat") {
+                String dir = doc["direction"].as<String>();
+                switchProBt.setHat(dir);
+                response["status"] = "ok";
+                return;
+            }
+        }
+#endif
+
         if (!bleCompositeHid || !bleCompositeHid->isConnected()) {
             response["status"] = "error";
             response["error"] = "BLE gamepad not connected";
@@ -1753,6 +1833,11 @@ void loop() {
     handleButtons();
     handleSerialInput();
     updateDisplayExpiry();
+#if defined(CONFIG_IDF_TARGET_ESP32)
+    if (BOARD_SUPPORTS_BT_SWITCH_PRO_MODE && isSwitchMode(currentMode)) {
+        switchProBt.tick();
+    }
+#endif
 
     static bool lastBle = false;
     static bool lastUsb = false;
