@@ -314,6 +314,17 @@ String getBleAdvertisementName() {
     }
 }
 
+String getBleProfileLabel() {
+    switch (currentEmulationMode) {
+        case EMU_BLUETOOTH_COMBO: return "ble_combo";
+        case EMU_BLUETOOTH_MOUSE_ONLY: return "ble_mouse";
+        case EMU_BLUETOOTH_KEYBOARD_ONLY: return "ble_keyboard";
+        case EMU_BLUETOOTH_XBOX_CONTROLLER: return "ble_xbox";
+        case EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER: return "bt_classic_switch_pro";
+        default: return "none";
+    }
+}
+
 String getModeHeaderLabel() {
     switch (currentEmulationMode) {
         case EMU_BLUETOOTH_COMBO: return "K+B";
@@ -371,6 +382,21 @@ int centeredCursorX(const String& text, int rectX, int rectW, int charPx = 6) {
 int centeredBaselineY(int rectY, int rectH) {
     // Default built-in font is ~8px tall; baseline near bottom.
     return rectY + ((rectH - 8) / 2) + 7;
+}
+
+void configureNimBLEForCurrentMode() {
+    if (!modeUsesBleOutput(currentMode)) return;
+
+    // Improve discoverability on phones/scanners.
+    NimBLEDevice::setPower(9, NimBLETxPowerType::All);
+
+    if (currentEmulationMode == EMU_BLUETOOTH_XBOX_CONTROLLER) {
+        // iOS/macOS tend to be stricter for controller-like peripherals.
+        NimBLEDevice::setSecurityAuth(true, false, true);  // bonding + secure connections
+        NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);
+    } else {
+        NimBLEDevice::setSecurityAuth(true, false, false); // keyboard/mouse/gamepad baseline
+    }
 }
 
 void applyEmulationMode(EmulationMode mode) {
@@ -713,6 +739,7 @@ void initBLE() {
 #endif
 
     String advName = getBleAdvertisementName();
+    configureNimBLEForCurrentMode();
 
     if (modeUsesBleCombo(currentMode)) {
         bleComboKb = new BleComboKeyboard(advName.c_str(), "ChromaCatch", 100);
@@ -727,6 +754,12 @@ void initBLE() {
         if (isXboxMode(currentMode)) {
             auto* config = new XboxOneSControllerDeviceConfiguration();
             BLEHostConfiguration hostConfig = config->getIdealHostConfiguration();
+            hostConfig.setModelNumber("1708");
+            hostConfig.setHardwareRevision("1.0");
+            hostConfig.setFirmwareRevision("5.17");
+            hostConfig.setSoftwareRevision("5.17");
+            hostConfig.setQueuedSending(true);
+            hostConfig.setQueueSendRate(240);
             bleXboxGamepad = new XboxGamepadDevice(config);
             bleCompositeHid->addDevice(bleXboxGamepad);
             bleCompositeHid->begin(hostConfig);
@@ -1424,11 +1457,61 @@ void executeCommand(JsonDocument& doc, JsonDocument& response, CommandSource sou
         response["delivery_policy"] = deliveryPolicyToString(deliveryPolicy);
         return;
     }
+    if (action == "restart_ble") {
+        initBLE();
+        displayMenu();
+        response["status"] = "ok";
+        response["mode"] = emulationModeToString(currentEmulationMode);
+        response["ble_advertisement_name"] = getBleAdvertisementName();
+        return;
+    }
+    if (action == "clear_ble_bonds") {
+        if (!modeUsesBleOutput(currentMode)) {
+            response["status"] = "error";
+            response["error"] = "ble_disabled_for_current_mode";
+            return;
+        }
+#if defined(CONFIG_IDF_TARGET_ESP32)
+        if (BOARD_SUPPORTS_BT_SWITCH_PRO_MODE && isSwitchMode(currentMode)) {
+            response["status"] = "error";
+            response["error"] = "not_supported_for_bt_classic_switch_mode";
+            return;
+        }
+#endif
+        bool cleared = NimBLEDevice::deleteAllBonds();
+        initBLE();
+        displayMenu();
+        response["status"] = cleared ? "ok" : "error";
+        if (!cleared) response["error"] = "failed_to_clear_ble_bonds";
+        response["ble_advertisement_name"] = getBleAdvertisementName();
+        return;
+    }
     if (action == "set_delivery_policy") {
         InputPolicy nextPolicy = inputPolicy;
         if (doc["delivery_policy"].is<const char*>()) {
             nextPolicy = parseInputPolicy(doc["delivery_policy"].as<String>());
         } else if (doc["input_policy"].is<const char*>()) {
+            nextPolicy = parseInputPolicy(doc["input_policy"].as<String>());
+        } else if (doc["policy"].is<const char*>()) {
+            nextPolicy = parseInputPolicy(doc["policy"].as<String>());
+        } else if (doc["value"].is<const char*>()) {
+            nextPolicy = parseInputPolicy(doc["value"].as<String>());
+        }
+        if (nextPolicy == INPUT_POLICY_WIRED_ONLY && !BOARD_SUPPORTS_WIRED_INPUT) {
+            response["status"] = "error";
+            response["error"] = "wired_input_policy_not_supported_on_this_board";
+            return;
+        }
+        inputPolicy = nextPolicy;
+        displayMenu();
+        response["status"] = "ok";
+        response["input_policy"] = inputPolicyToString(inputPolicy);
+        response["mode"] = emulationModeToString(currentEmulationMode);
+        return;
+    }
+    if (action == "set_input_policy") {
+        InputPolicy nextPolicy = inputPolicy;
+        if (doc["input_policy"].is<const char*>()) {
             nextPolicy = parseInputPolicy(doc["input_policy"].as<String>());
         } else if (doc["policy"].is<const char*>()) {
             nextPolicy = parseInputPolicy(doc["policy"].as<String>());
@@ -1488,6 +1571,8 @@ void handlePing() {
 void handleStatus() {
     JsonDocument doc;
     doc["device_name"] = DEVICE_NAME;
+    doc["ble_advertisement_name"] = getBleAdvertisementName();
+    doc["ble_profile"] = getBleProfileLabel();
     doc["ip"] = WiFi.localIP().toString();
     doc["mode"] = emulationModeToString(currentEmulationMode);
     doc["legacy_mode"] = modeToString(currentMode);
@@ -1517,6 +1602,8 @@ void handleGetMode() {
     doc["legacy_mode"] = modeToString(currentMode);
     doc["delivery_policy"] = deliveryPolicyToString(deliveryPolicy);
     doc["input_policy"] = inputPolicyToString(inputPolicy);
+    doc["ble_advertisement_name"] = getBleAdvertisementName();
+    doc["ble_profile"] = getBleProfileLabel();
     // Backward-compatible fields
     doc["output_mode"] = (modeAllowsGamepad(currentMode) ? "gamepad" : "mouse_keyboard");
     doc["output_delivery"] = deliveryPolicyToString(deliveryPolicy);
@@ -1552,15 +1639,19 @@ void handleSetMode() {
     }
 
     EmulationMode nextEmu = currentEmulationMode;
+    bool explicitModeRequest = false;
 
     if (doc["mode"].is<const char*>()) {
+        explicitModeRequest = true;
         nextEmu = parseEmulationModeString(doc["mode"].as<String>());
     }
     // backward compatibility aliases
     if (doc["hid_mode"].is<const char*>()) {
+        explicitModeRequest = true;
         nextEmu = parseEmulationModeString(doc["hid_mode"].as<String>());
     }
     if (doc["output_mode"].is<const char*>()) {
+        explicitModeRequest = true;
         nextEmu = parseEmulationModeString(doc["output_mode"].as<String>());
     }
 
@@ -1588,7 +1679,8 @@ void handleSetMode() {
         return;
     }
 
-    bool changed = (nextEmu != currentEmulationMode);
+    bool forceReinit = doc["force_reinit"].is<bool>() ? doc["force_reinit"].as<bool>() : false;
+    bool changed = (nextEmu != currentEmulationMode) || explicitModeRequest || forceReinit;
     applyEmulationMode(nextEmu);
     applyModeChange(changed);
     handleGetMode();
@@ -1739,6 +1831,8 @@ void onWSEvent(uint8_t clientId, WStype_t type, uint8_t* payload, size_t length)
             hello["legacy_mode"] = modeToString(currentMode);
             hello["delivery_policy"] = deliveryPolicyToString(deliveryPolicy);
             hello["input_policy"] = inputPolicyToString(inputPolicy);
+            hello["ble_advertisement_name"] = getBleAdvertisementName();
+            hello["ble_profile"] = getBleProfileLabel();
             hello["wired_priority_window_ms"] = WIRED_PRIORITY_WINDOW_MS;
             hello["ws_priority_window_ms"] = WS_PRIORITY_WINDOW_MS;
             sendWSJson(clientId, hello);
