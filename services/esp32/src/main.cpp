@@ -1590,6 +1590,11 @@ void executeGamepadCommand(RuntimeDelivery transport, const String& action, Json
             int y = doc["y"] | 0;
             int8_t mappedX = clampInt8(map(x, -32768, 32767, -127, 127));
             int8_t mappedY = clampInt8(map(y, -32768, 32767, -127, 127));
+            // Pokemon Automation wired-controller path uses inverted Y for Switch
+            // wired reports (see NintendoSwitch_SerialPABotBase_WiredController.cpp).
+            if (switchLayout) {
+                mappedY = -mappedY;
+            }
             if (strEqIgnoreCase(stick, "left")) {
                 UsbHidBridge::gamepadLeftStick(mappedX, mappedY);
             } else {

@@ -105,6 +105,15 @@ static uint8_t kReply3333[] = {
 bool SwitchProBT::begin() {
     if (_active) return true;
 
+#if !defined(CONFIG_BT_HID_ENABLED) || !(CONFIG_BT_HID_ENABLED)
+    // Pokemon Automation's BT Switch path relies on Classic HID support in the
+    // underlying ESP-IDF build. Arduino-ESP32 prebuilt libs in this workspace
+    // currently ship without CONFIG_BT_HID_ENABLED, so classic HID init cannot
+    // succeed.
+    Serial.println("[SwitchProBT] CONFIG_BT_HID_ENABLED is not enabled in current core build.");
+    return false;
+#endif
+
     g_switchProInstance = this;
     _connected = false;
     _discoverable = false;
