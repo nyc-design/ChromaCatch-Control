@@ -125,6 +125,13 @@ enum CommandSource {
     SOURCE_WIRED,
 };
 
+enum InputPolicy {
+    INPUT_POLICY_AUTO = 0,      // board default priority behavior
+    INPUT_POLICY_WIRED_ONLY,    // accept only wired serial input
+    INPUT_POLICY_WEBSOCKET_ONLY,// accept only websocket input
+    INPUT_POLICY_HTTP_ONLY,     // accept only http input
+};
+
 // ============================================================
 // Globals
 // ============================================================
@@ -144,6 +151,7 @@ SwitchProBT switchProBt;
 DeviceMode currentMode = MODE_COMBO;
 DeliveryPolicy deliveryPolicy = DELIVERY_AUTO;
 EmulationMode currentEmulationMode = EMU_BLUETOOTH_COMBO;
+InputPolicy inputPolicy = INPUT_POLICY_AUTO;
 
 String serialBuffer = "";
 unsigned long lastWiredCommandAtMs = 0;
@@ -296,12 +304,73 @@ const char* runtimeDeliveryToString(RuntimeDelivery d) {
 
 String getBleAdvertisementName() {
     if (!modeUsesBleOutput(currentMode)) return "n/a";
-#if defined(CONFIG_IDF_TARGET_ESP32)
-    if (BOARD_SUPPORTS_BT_SWITCH_PRO_MODE && isSwitchMode(currentMode)) {
-        return "Pro Controller";
+    switch (currentEmulationMode) {
+        case EMU_BLUETOOTH_COMBO: return "ChromaCatch K + B";
+        case EMU_BLUETOOTH_MOUSE_ONLY: return "ChromaCatch Mouse";
+        case EMU_BLUETOOTH_KEYBOARD_ONLY: return "ChromaCatch Keyboard";
+        case EMU_BLUETOOTH_XBOX_CONTROLLER: return "Xbox Wireless Controller";
+        case EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER: return "Pro Controller";
+        default: return String(DEVICE_NAME);
     }
-#endif
-    return String(DEVICE_NAME);
+}
+
+String getModeHeaderLabel() {
+    switch (currentEmulationMode) {
+        case EMU_BLUETOOTH_COMBO: return "K+B";
+        case EMU_BLUETOOTH_MOUSE_ONLY: return "MOUSE";
+        case EMU_BLUETOOTH_KEYBOARD_ONLY: return "KBD";
+        case EMU_WIRED_COMBO: return "WIRED K+B";
+        case EMU_WIRED_MOUSE_ONLY: return "WIRED MOUSE";
+        case EMU_WIRED_KEYBOARD_ONLY: return "WIRED KBD";
+        case EMU_BLUETOOTH_XBOX_CONTROLLER: return "XBOX";
+        case EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER: return "SWITCH BT";
+        case EMU_WIRED_SWITCH_PRO_CONTROLLER: return "SWITCH USB";
+        default: return "UNKNOWN";
+    }
+}
+
+const char* inputPolicyToString(InputPolicy p) {
+    switch (p) {
+        case INPUT_POLICY_WIRED_ONLY: return "wired";
+        case INPUT_POLICY_WEBSOCKET_ONLY: return "websocket";
+        case INPUT_POLICY_HTTP_ONLY: return "http";
+        case INPUT_POLICY_AUTO:
+        default:
+            return "auto";
+    }
+}
+
+InputPolicy parseInputPolicy(const String& rawInput) {
+    String raw = rawInput;
+    raw.toLowerCase();
+    raw.trim();
+    if (raw == "wired" || raw == "serial" || raw == "wired_only") return INPUT_POLICY_WIRED_ONLY;
+    if (raw == "websocket" || raw == "ws" || raw == "websocket_only") return INPUT_POLICY_WEBSOCKET_ONLY;
+    if (raw == "http" || raw == "wifi" || raw == "http_only") return INPUT_POLICY_HTTP_ONLY;
+    return INPUT_POLICY_AUTO;
+}
+
+bool isSourceAllowed(CommandSource source) {
+    switch (inputPolicy) {
+        case INPUT_POLICY_WIRED_ONLY: return source == SOURCE_WIRED;
+        case INPUT_POLICY_WEBSOCKET_ONLY: return source == SOURCE_WEBSOCKET;
+        case INPUT_POLICY_HTTP_ONLY: return source == SOURCE_WIFI;
+        case INPUT_POLICY_AUTO:
+        default:
+            return true;
+    }
+}
+
+int centeredCursorX(const String& text, int rectX, int rectW, int charPx = 6) {
+    int textW = static_cast<int>(text.length()) * charPx;
+    int x = rectX + ((rectW - textW) / 2);
+    if (x < rectX + 2) x = rectX + 2;
+    return x;
+}
+
+int centeredBaselineY(int rectY, int rectH) {
+    // Default built-in font is ~8px tall; baseline near bottom.
+    return rectY + ((rectH - 8) / 2) + 7;
 }
 
 void applyEmulationMode(EmulationMode mode) {
@@ -440,8 +509,8 @@ void renderDashboardNow() {
     bool bleConnected = isBLEConnected();
 
     String ip = wifiUp ? WiFi.localIP().toString() : "offline";
-    String mode = String(emulationModeToString(currentEmulationMode));
-    String policy = String(deliveryPolicyToString(deliveryPolicy));
+    String modeHeader = getModeHeaderLabel();
+    String inputPol = String(inputPolicyToString(inputPolicy));
     String activeDelivery = String(runtimeDeliveryToString(active));
     String usbState = isUSBMounted() ? "mounted" : "not-mounted";
     String bleState = !bleAvailable ? "disabled" : (bleConnected ? "connected" : "advertising");
@@ -460,19 +529,28 @@ void renderDashboardNow() {
         eink.drawRoundRect(0, 0, w, h, 6, GxEPD_BLACK);
 
         // Header
-        eink.fillRect(0, 0, w, 18, GxEPD_BLACK);
+        const int headerH = 20;
+        const int modeBoxW = 96;
+        eink.fillRect(0, 0, w, headerH, GxEPD_BLACK);
+        eink.drawFastVLine(w - modeBoxW, 0, headerH, GxEPD_WHITE);
         eink.setFont();
         eink.setTextSize(1);
         eink.setTextColor(GxEPD_WHITE);
-        eink.setCursor(6, 12);
-        eink.print("ChromaCatch Control");
-        eink.setCursor(w - 75, 12);
-        eink.print("MODE:");
-        eink.print(trimForDisplay(mode, 8));
+
+        String title = "ChromaCatch Control";
+        int titleX = centeredCursorX(title, 0, w - modeBoxW);
+        int titleY = centeredBaselineY(0, headerH);
+        eink.setCursor(titleX, titleY);
+        eink.print(title);
+
+        int modeX = centeredCursorX(modeHeader, w - modeBoxW, modeBoxW);
+        int modeY = centeredBaselineY(0, headerH);
+        eink.setCursor(modeX, modeY);
+        eink.print(modeHeader);
 
         // Body
         eink.setTextColor(GxEPD_BLACK);
-        int y = 30;
+        int y = 32;
         eink.setCursor(6, y);   eink.print("IP: "); eink.print(ip);
         y += 12;
         eink.setCursor(6, y);   eink.print("HTTP: "); eink.print(HTTP_PORT); eink.print("  WS: "); eink.print(WS_PORT);
@@ -481,18 +559,21 @@ void renderDashboardNow() {
         y += 12;
         eink.setCursor(6, y);   eink.print("DELIVERY: "); eink.print(activeDelivery);
         y += 12;
-        eink.setCursor(6, y);   eink.print("POLICY: "); eink.print(policy);
+        eink.setCursor(6, y);   eink.print("INPUT: "); eink.print(inputPol);
 
         // Right info panel
         int rightX = w / 2 + 2;
         int rightW = w - rightX - 4;
         eink.drawRoundRect(rightX, 22, rightW, h - 26, 4, GxEPD_BLACK);
-        eink.setCursor(rightX + 6, 34); eink.print("CONNECTIONS");
+        String panelTitle = "CONNECTIONS";
+        int panelTitleX = centeredCursorX(panelTitle, rightX + 4, rightW - 8);
+        eink.setCursor(panelTitleX, 33);
+        eink.print(panelTitle);
         eink.drawFastHLine(rightX + 4, 38, rightW - 8, GxEPD_BLACK);
-        eink.setCursor(rightX + 6, 50); eink.print("USB: "); eink.print(usbState);
-        eink.setCursor(rightX + 6, 62); eink.print("BLE: "); eink.print(bleState);
-        eink.setCursor(rightX + 6, 74); eink.print("ADV: "); eink.print(trimForDisplay(advName, 13));
-        eink.setCursor(rightX + 6, 86); eink.print("PRIO: ");
+        eink.setCursor(rightX + 6, 51); eink.print("USB: "); eink.print(usbState);
+        eink.setCursor(rightX + 6, 63); eink.print("BLE: "); eink.print(bleState);
+        eink.setCursor(rightX + 6, 75); eink.print("ADV: "); eink.print(trimForDisplay(advName, 13));
+        eink.setCursor(rightX + 6, 87); eink.print("PRIO: ");
         if (wiredPriorityActive()) eink.print("wired");
         else if (wsPriorityActive()) eink.print("websocket");
         else eink.print("none");
@@ -631,28 +712,30 @@ void initBLE() {
     }
 #endif
 
+    String advName = getBleAdvertisementName();
+
     if (modeUsesBleCombo(currentMode)) {
-        bleComboKb = new BleComboKeyboard(DEVICE_NAME, "ChromaCatch", 100);
+        bleComboKb = new BleComboKeyboard(advName.c_str(), "ChromaCatch", 100);
         bleComboMouse = new BleComboMouse(bleComboKb);
         bleComboKb->begin();
-        Serial.println("BLE combo (keyboard+mouse) started");
+        Serial.println("BLE combo (keyboard+mouse) started as: " + advName);
         return;
     }
 
     if (modeUsesBleGamepad(currentMode)) {
-        bleCompositeHid = new BleCompositeHID(std::string(DEVICE_NAME), "ChromaCatch", 100);
+        bleCompositeHid = new BleCompositeHID(std::string(advName.c_str()), "ChromaCatch", 100);
         if (isXboxMode(currentMode)) {
             auto* config = new XboxOneSControllerDeviceConfiguration();
             BLEHostConfiguration hostConfig = config->getIdealHostConfiguration();
             bleXboxGamepad = new XboxGamepadDevice(config);
             bleCompositeHid->addDevice(bleXboxGamepad);
             bleCompositeHid->begin(hostConfig);
-            Serial.println("BLE Xbox controller profile started");
+            Serial.println("BLE Xbox controller profile started as: " + advName);
         } else {
             bleGenericGamepad = new GamepadDevice();
             bleCompositeHid->addDevice(bleGenericGamepad);
             bleCompositeHid->begin();
-            Serial.println("BLE generic gamepad started");
+            Serial.println("BLE generic gamepad started as: " + advName);
         }
         return;
     }
@@ -1318,6 +1401,7 @@ void executeCommand(JsonDocument& doc, JsonDocument& response, CommandSource sou
     response["action"] = action;
     response["mode"] = emulationModeToString(currentEmulationMode);
     response["legacy_mode"] = modeToString(currentMode);
+    response["input_policy"] = inputPolicyToString(inputPolicy);
     if (source == SOURCE_WIRED) response["source"] = "wired";
     else if (source == SOURCE_WEBSOCKET) response["source"] = "websocket";
     else response["source"] = "wifi";
@@ -1341,28 +1425,25 @@ void executeCommand(JsonDocument& doc, JsonDocument& response, CommandSource sou
         return;
     }
     if (action == "set_delivery_policy") {
-        DeliveryPolicy nextPolicy = deliveryPolicy;
+        InputPolicy nextPolicy = inputPolicy;
         if (doc["delivery_policy"].is<const char*>()) {
-            nextPolicy = parseDeliveryPolicy(doc["delivery_policy"].as<String>());
-            displayMenu();
+            nextPolicy = parseInputPolicy(doc["delivery_policy"].as<String>());
+        } else if (doc["input_policy"].is<const char*>()) {
+            nextPolicy = parseInputPolicy(doc["input_policy"].as<String>());
         } else if (doc["policy"].is<const char*>()) {
-            nextPolicy = parseDeliveryPolicy(doc["policy"].as<String>());
-            displayMenu();
+            nextPolicy = parseInputPolicy(doc["policy"].as<String>());
         } else if (doc["value"].is<const char*>()) {
-            nextPolicy = parseDeliveryPolicy(doc["value"].as<String>());
-            displayMenu();
+            nextPolicy = parseInputPolicy(doc["value"].as<String>());
         }
-        EmulationMode nextMode = inferEmulationMode(currentMode, nextPolicy);
-        if (!emulationModeSupported(nextMode)) {
+        if (nextPolicy == INPUT_POLICY_WIRED_ONLY && !BOARD_SUPPORTS_WIRED_INPUT) {
             response["status"] = "error";
-            response["error"] = "delivery_policy_not_supported_for_current_mode";
+            response["error"] = "wired_input_policy_not_supported_on_this_board";
             return;
         }
-        applyEmulationMode(nextMode);
-        initBLE();
+        inputPolicy = nextPolicy;
         displayMenu();
         response["status"] = "ok";
-        response["delivery_policy"] = deliveryPolicyToString(deliveryPolicy);
+        response["input_policy"] = inputPolicyToString(inputPolicy);
         response["mode"] = emulationModeToString(currentEmulationMode);
         return;
     }
@@ -1411,6 +1492,7 @@ void handleStatus() {
     doc["mode"] = emulationModeToString(currentEmulationMode);
     doc["legacy_mode"] = modeToString(currentMode);
     doc["delivery_policy"] = deliveryPolicyToString(deliveryPolicy);
+    doc["input_policy"] = inputPolicyToString(inputPolicy);
     doc["active_delivery"] = runtimeDeliveryToString(chooseRuntimeDelivery());
     doc["usb_mounted"] = isUSBMounted();
     doc["ble_connected"] = isBLEConnected();
@@ -1434,6 +1516,7 @@ void handleGetMode() {
     doc["mode"] = emulationModeToString(currentEmulationMode);
     doc["legacy_mode"] = modeToString(currentMode);
     doc["delivery_policy"] = deliveryPolicyToString(deliveryPolicy);
+    doc["input_policy"] = inputPolicyToString(inputPolicy);
     // Backward-compatible fields
     doc["output_mode"] = (modeAllowsGamepad(currentMode) ? "gamepad" : "mouse_keyboard");
     doc["output_delivery"] = deliveryPolicyToString(deliveryPolicy);
@@ -1481,13 +1564,19 @@ void handleSetMode() {
         nextEmu = parseEmulationModeString(doc["output_mode"].as<String>());
     }
 
+    // delivery/output transport is deterministic per emulation mode.
+    // If policy fields are present, interpret them as INPUT policy only.
     if (doc["delivery_policy"].is<const char*>()) {
-        DeliveryPolicy overridePolicy = parseDeliveryPolicy(doc["delivery_policy"].as<String>());
-        nextEmu = inferEmulationMode(currentMode, overridePolicy);
+        InputPolicy nextInputPolicy = parseInputPolicy(doc["delivery_policy"].as<String>());
+        if (!(nextInputPolicy == INPUT_POLICY_WIRED_ONLY && !BOARD_SUPPORTS_WIRED_INPUT)) {
+            inputPolicy = nextInputPolicy;
+        }
     }
-    if (doc["output_delivery"].is<const char*>()) {
-        DeliveryPolicy overridePolicy = parseDeliveryPolicy(doc["output_delivery"].as<String>());
-        nextEmu = inferEmulationMode(currentMode, overridePolicy);
+    if (doc["input_policy"].is<const char*>()) {
+        InputPolicy nextInputPolicy = parseInputPolicy(doc["input_policy"].as<String>());
+        if (!(nextInputPolicy == INPUT_POLICY_WIRED_ONLY && !BOARD_SUPPORTS_WIRED_INPUT)) {
+            inputPolicy = nextInputPolicy;
+        }
     }
 
     if (!emulationModeSupported(nextEmu)) {
@@ -1554,7 +1643,16 @@ void handleCommand() {
         return;
     }
 
-    if (wiredPriorityActive()) {
+    if (!isSourceAllowed(SOURCE_WIFI)) {
+        JsonDocument deferred;
+        deferred["status"] = "deferred";
+        deferred["reason"] = "input_policy_blocked_http";
+        deferred["input_policy"] = inputPolicyToString(inputPolicy);
+        sendJson(409, deferred);
+        return;
+    }
+
+    if (inputPolicy == INPUT_POLICY_AUTO && wiredPriorityActive()) {
         JsonDocument deferred;
         deferred["status"] = "deferred";
         deferred["reason"] = "wired_priority_window_active";
@@ -1562,7 +1660,7 @@ void handleCommand() {
         sendJson(409, deferred);
         return;
     }
-    if (wsPriorityActive()) {
+    if (inputPolicy == INPUT_POLICY_AUTO && wsPriorityActive()) {
         JsonDocument deferred;
         deferred["status"] = "deferred";
         deferred["reason"] = "websocket_priority_window_active";
@@ -1601,7 +1699,17 @@ void sendWSJson(uint8_t clientId, JsonDocument& doc) {
 void processWSCommand(uint8_t clientId, JsonDocument& doc) {
     JsonDocument response;
 
-    if (wiredPriorityActive()) {
+    if (!isSourceAllowed(SOURCE_WEBSOCKET)) {
+        response["type"] = "ack";
+        response["status"] = "deferred";
+        response["reason"] = "input_policy_blocked_websocket";
+        response["input_policy"] = inputPolicyToString(inputPolicy);
+        if (doc["seq"].is<uint32_t>()) response["seq"] = doc["seq"].as<uint32_t>();
+        sendWSJson(clientId, response);
+        return;
+    }
+
+    if (inputPolicy == INPUT_POLICY_AUTO && wiredPriorityActive()) {
         response["type"] = "ack";
         response["status"] = "deferred";
         response["reason"] = "wired_priority_window_active";
@@ -1630,6 +1738,7 @@ void onWSEvent(uint8_t clientId, WStype_t type, uint8_t* payload, size_t length)
             hello["mode"] = emulationModeToString(currentEmulationMode);
             hello["legacy_mode"] = modeToString(currentMode);
             hello["delivery_policy"] = deliveryPolicyToString(deliveryPolicy);
+            hello["input_policy"] = inputPolicyToString(inputPolicy);
             hello["wired_priority_window_ms"] = WIRED_PRIORITY_WINDOW_MS;
             hello["ws_priority_window_ms"] = WS_PRIORITY_WINDOW_MS;
             sendWSJson(clientId, hello);
@@ -1687,6 +1796,10 @@ void onWSEvent(uint8_t clientId, WStype_t type, uint8_t* payload, size_t length)
 void processSerialCommand(const String& line) {
     if (!BOARD_SUPPORTS_WIRED_INPUT) {
         Serial.println("{\"status\":\"error\",\"error\":\"wired_input_not_supported_on_this_board\"}");
+        return;
+    }
+    if (!isSourceAllowed(SOURCE_WIRED)) {
+        Serial.println("{\"status\":\"deferred\",\"reason\":\"input_policy_blocked_wired\"}");
         return;
     }
 

@@ -37,6 +37,8 @@ Automated shiny hunting bot for Pokemon Go using AirPlay screen mirroring, compu
   - BLE Xbox mode now uses an Xbox-specific Composite HID profile (`ESP32-BLE-CompositeHID`) instead of generic BLE gamepad descriptors.
   - ESP32 BLE Switch mode now runs a dedicated Classic-BT HID "Pro Controller" backend with Switch subcommand reply handling (`0x01` output + `0x21/0x30` input reports) to improve pairing compatibility and home/wake behavior.
   - Wired Switch mode now uses `switch_ESP32` USB descriptor/profile path for Nintendo Switch-compatible wired gamepad enumeration on S3.
+  - Output delivery is deterministic per emulation mode (Bluetooth modes stay BLE, wired modes stay USB); source input policy is configurable (`auto|wired|websocket|http`) independently.
+  - BLE advertising name now changes per emulation mode (e.g. `ChromaCatch K + B`, `ChromaCatch Mouse`, `Xbox Wireless Controller`, `Pro Controller`).
   - Emulation presets include bluetooth/wired mouse+keyboard variants, bluetooth Xbox-controller profile, bluetooth Switch-pro profile (ESP32 only), and wired Switch-pro profile (S3 only). Mode discovery via `GET /mode` and remote configuration via `POST /mode`.
 - **Control SDK** (`services/control-sdk/`): Python SDK package for automation repos to consume control-plane REST + WebSocket APIs.
 - **Shared** (`services/shared/`): Protocol contract between services — message models, frame codec, constants.
