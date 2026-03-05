@@ -11,11 +11,11 @@ def c_literal(value: str) -> str:
 ssid = os.getenv("CC_WIFI_SSID") or os.getenv("WIFI_SSID")
 password = os.getenv("CC_WIFI_PASSWORD") or os.getenv("WIFI_PASSWORD")
 
-flags = []
+cpp_defines = []
 if ssid:
-    flags.append(f'-DCC_WIFI_SSID="{c_literal(ssid)}"')
+    cpp_defines.append(("CC_WIFI_SSID", f'\\"{c_literal(ssid)}\\"'))
 if password:
-    flags.append(f'-DCC_WIFI_PASSWORD="{c_literal(password)}"')
+    cpp_defines.append(("CC_WIFI_PASSWORD", f'\\"{c_literal(password)}\\"'))
 
-if flags:
-    env.Append(BUILD_FLAGS=flags)
+if cpp_defines:
+    env.Append(CPPDEFINES=cpp_defines)
