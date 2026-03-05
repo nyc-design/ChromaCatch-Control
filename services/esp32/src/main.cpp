@@ -42,8 +42,16 @@
 // ============================================================
 // USER CONFIGURATION -- Edit before flashing
 // ============================================================
-const char* WIFI_SSID       = "YOUR_WIFI_SSID";
-const char* WIFI_PASSWORD   = "YOUR_WIFI_PASSWORD";
+#ifndef CC_WIFI_SSID
+#define CC_WIFI_SSID "YOUR_WIFI_SSID"
+#endif
+
+#ifndef CC_WIFI_PASSWORD
+#define CC_WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
+#endif
+
+const char* WIFI_SSID       = CC_WIFI_SSID;
+const char* WIFI_PASSWORD   = CC_WIFI_PASSWORD;
 const int   HTTP_PORT       = 80;
 const int   WS_PORT         = 81;
 const char* DEVICE_NAME     = "ChromaCatch";
