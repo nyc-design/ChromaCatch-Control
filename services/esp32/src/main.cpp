@@ -25,10 +25,14 @@
 #include <ArduinoJson.h>
 #include <GxEPD2_BW.h>
 #include <Fonts/FreeMonoBold9pt7b.h>
+#include <string>
 
 #include <NimBLEDevice.h>
 #include <BleCombo.h>
-#include <BleGamepad.h>
+#include <BleCompositeHID.h>
+#include <GamepadDevice.h>
+#include <XboxGamepadDevice.h>
+#include <XboxGamepadConfiguration.h>
 
 #include "usb_hid_bridge.h"
 
@@ -129,7 +133,9 @@ WebSocketsServer wsServer(WS_PORT);
 // BLE outputs (created/destroyed on mode changes)
 BleComboKeyboard* bleComboKb = nullptr;
 BleComboMouse*    bleComboMouse = nullptr;
-BleGamepad*       bleGamepad = nullptr;
+BleCompositeHID*  bleCompositeHid = nullptr;
+GamepadDevice*    bleGenericGamepad = nullptr;
+XboxGamepadDevice* bleXboxGamepad = nullptr;
 
 DeviceMode currentMode = MODE_COMBO;
 DeliveryPolicy deliveryPolicy = DELIVERY_AUTO;
@@ -234,6 +240,13 @@ bool emulationModeSupported(EmulationMode mode) {
     }
 }
 
+UsbHidBridge::UsbGamepadProfile emulationModeToUsbProfile(EmulationMode mode) {
+    if (mode == EMU_WIRED_SWITCH_PRO_CONTROLLER) {
+        return UsbHidBridge::USB_GAMEPAD_PROFILE_SWITCH_PRO;
+    }
+    return UsbHidBridge::USB_GAMEPAD_PROFILE_GENERIC;
+}
+
 const char* emulationModeToString(EmulationMode mode) {
     switch (mode) {
         case EMU_BLUETOOTH_COMBO: return "bluetooth_combo";
@@ -321,6 +334,7 @@ void applyEmulationMode(EmulationMode mode) {
         default:
             break;
     }
+    UsbHidBridge::setGamepadProfile(emulationModeToUsbProfile(mode));
 }
 
 bool wiredPriorityActive() {
@@ -570,7 +584,12 @@ bool isUSBMounted() {
 void stopBLE() {
     if (bleComboMouse) { delete bleComboMouse; bleComboMouse = nullptr; }
     if (bleComboKb)    { delete bleComboKb;    bleComboKb = nullptr; }
-    if (bleGamepad)    { delete bleGamepad;    bleGamepad = nullptr; }
+    if (bleCompositeHid) {
+        bleCompositeHid->end();
+    }
+    if (bleXboxGamepad) { delete bleXboxGamepad; bleXboxGamepad = nullptr; }
+    if (bleGenericGamepad) { delete bleGenericGamepad; bleGenericGamepad = nullptr; }
+    if (bleCompositeHid) { delete bleCompositeHid; bleCompositeHid = nullptr; }
 }
 
 void initBLE() {
@@ -590,13 +609,20 @@ void initBLE() {
     }
 
     if (modeUsesBleGamepad(currentMode)) {
-        bleGamepad = new BleGamepad(DEVICE_NAME, "ChromaCatch", 100);
-        BleGamepadConfiguration cfg;
-        cfg.setAutoReport(false);
-        cfg.setButtonCount(16);
-        cfg.setHatSwitchCount(1);
-        bleGamepad->begin(&cfg);
-        Serial.println("BLE gamepad started");
+        bleCompositeHid = new BleCompositeHID(std::string(DEVICE_NAME), "ChromaCatch", 100);
+        if (isXboxMode(currentMode)) {
+            auto* config = new XboxOneSControllerDeviceConfiguration();
+            BLEHostConfiguration hostConfig = config->getIdealHostConfiguration();
+            bleXboxGamepad = new XboxGamepadDevice(config);
+            bleCompositeHid->addDevice(bleXboxGamepad);
+            bleCompositeHid->begin(hostConfig);
+            Serial.println("BLE Xbox controller profile started");
+        } else {
+            bleGenericGamepad = new GamepadDevice();
+            bleCompositeHid->addDevice(bleGenericGamepad);
+            bleCompositeHid->begin();
+            Serial.println("BLE generic gamepad started");
+        }
         return;
     }
 }
@@ -606,7 +632,7 @@ bool isBLEConnected() {
         return bleComboKb && bleComboKb->isConnected();
     }
     if (modeUsesBleGamepad(currentMode)) {
-        return bleGamepad && bleGamepad->isConnected();
+        return bleCompositeHid && bleCompositeHid->isConnected();
     }
     return false;
 }
@@ -676,8 +702,8 @@ uint8_t mapDPadToUsbHat(const String& name) {
     return UsbHidBridge::USB_HAT_CENTER;
 }
 
-int mapGamepadButtonBLE(const String& name, bool switchLayout) {
-    // BLE gamepad lib uses button numbers 1..N
+uint8_t mapGenericGamepadButtonBLE(const String& name, bool switchLayout) {
+    // Generic BLE gamepad uses button numbers 1..N
     if (strEqIgnoreCase(name, "A")) return switchLayout ? 2 : 1;
     if (strEqIgnoreCase(name, "B")) return switchLayout ? 1 : 2;
     if (strEqIgnoreCase(name, "X")) return switchLayout ? 4 : 3;
@@ -695,6 +721,37 @@ int mapGamepadButtonBLE(const String& name, bool switchLayout) {
     if (strEqIgnoreCase(name, "capture")) return 14;
 
     return 0;
+}
+
+uint16_t mapXboxButtonBLE(const String& name) {
+    if (strEqIgnoreCase(name, "A")) return XBOX_BUTTON_A;
+    if (strEqIgnoreCase(name, "B")) return XBOX_BUTTON_B;
+    if (strEqIgnoreCase(name, "X")) return XBOX_BUTTON_X;
+    if (strEqIgnoreCase(name, "Y")) return XBOX_BUTTON_Y;
+    if (strEqIgnoreCase(name, "L") || strEqIgnoreCase(name, "LB")) return XBOX_BUTTON_LB;
+    if (strEqIgnoreCase(name, "R") || strEqIgnoreCase(name, "RB")) return XBOX_BUTTON_RB;
+    if (strEqIgnoreCase(name, "minus") || strEqIgnoreCase(name, "select")) return XBOX_BUTTON_SELECT;
+    if (strEqIgnoreCase(name, "plus") || strEqIgnoreCase(name, "start")) return XBOX_BUTTON_START;
+    if (strEqIgnoreCase(name, "home")) return XBOX_BUTTON_HOME;
+    if (strEqIgnoreCase(name, "L3") || strEqIgnoreCase(name, "lstick")) return XBOX_BUTTON_LS;
+    if (strEqIgnoreCase(name, "R3") || strEqIgnoreCase(name, "rstick")) return XBOX_BUTTON_RS;
+    return 0;
+}
+
+bool isXboxLeftTriggerName(const String& name) {
+    return strEqIgnoreCase(name, "ZL") || strEqIgnoreCase(name, "LT");
+}
+
+bool isXboxRightTriggerName(const String& name) {
+    return strEqIgnoreCase(name, "ZR") || strEqIgnoreCase(name, "RT");
+}
+
+uint8_t mapDPadToXbox(const String& name) {
+    if (strEqIgnoreCase(name, "up") || strEqIgnoreCase(name, "DUP")) return XBOX_BUTTON_DPAD_NORTH;
+    if (strEqIgnoreCase(name, "right") || strEqIgnoreCase(name, "DRIGHT")) return XBOX_BUTTON_DPAD_EAST;
+    if (strEqIgnoreCase(name, "down") || strEqIgnoreCase(name, "DDOWN")) return XBOX_BUTTON_DPAD_SOUTH;
+    if (strEqIgnoreCase(name, "left") || strEqIgnoreCase(name, "DLEFT")) return XBOX_BUTTON_DPAD_WEST;
+    return XBOX_BUTTON_DPAD_NONE;
 }
 
 uint8_t mapGamepadButtonUSB(const String& name, bool switchLayout) {
@@ -944,46 +1001,109 @@ void executeGamepadCommand(RuntimeDelivery transport, const String& action, Json
     bool switchLayout = isSwitchMode(currentMode);
 
     if (transport == RUNTIME_BLE) {
-        if (!bleGamepad || !bleGamepad->isConnected()) {
+        if (!bleCompositeHid || !bleCompositeHid->isConnected()) {
             response["status"] = "error";
             response["error"] = "BLE gamepad not connected";
             return;
         }
 
+        bool xboxProfile = isXboxMode(currentMode) && bleXboxGamepad != nullptr;
+        bool genericProfile = bleGenericGamepad != nullptr;
+
         if (action == "button_press") {
             String button = doc["button"].as<String>();
+            if (xboxProfile) {
+                uint8_t dpad = mapDPadToXbox(button);
+                if (dpad != XBOX_BUTTON_DPAD_NONE) {
+                    bleXboxGamepad->pressDPadDirection(dpad);
+                } else if (isXboxLeftTriggerName(button)) {
+                    bleXboxGamepad->setLeftTrigger(XBOX_TRIGGER_MAX);
+                } else if (isXboxRightTriggerName(button)) {
+                    bleXboxGamepad->setRightTrigger(XBOX_TRIGGER_MAX);
+                } else if (strEqIgnoreCase(button, "capture")) {
+                    bleXboxGamepad->pressShare();
+                } else {
+                    uint16_t btn = mapXboxButtonBLE(button);
+                    if (btn == 0) {
+                        response["status"] = "error";
+                        response["error"] = "unknown button";
+                        return;
+                    }
+                    bleXboxGamepad->press(btn);
+                }
+                bleXboxGamepad->sendGamepadReport();
+                response["status"] = "ok";
+                return;
+            }
+
+            if (!genericProfile) {
+                response["status"] = "error";
+                response["error"] = "generic gamepad profile unavailable";
+                return;
+            }
+
             int hat = mapDPadToBleHat(button);
             if (hat >= 0) {
-                bleGamepad->setHat1(hat);
+                bleGenericGamepad->setHat1(hat);
             } else {
-                int btn = mapGamepadButtonBLE(button, switchLayout);
+                int btn = mapGenericGamepadButtonBLE(button, switchLayout);
                 if (btn <= 0) {
                     response["status"] = "error";
                     response["error"] = "unknown button";
                     return;
                 }
-                bleGamepad->press(btn);
+                bleGenericGamepad->press(btn);
             }
-            bleGamepad->sendReport();
+            bleGenericGamepad->sendGamepadReport();
             response["status"] = "ok";
             return;
         }
 
         if (action == "button_release") {
             String button = doc["button"].as<String>();
+            if (xboxProfile) {
+                uint8_t dpad = mapDPadToXbox(button);
+                if (dpad != XBOX_BUTTON_DPAD_NONE) {
+                    bleXboxGamepad->releaseDPad();
+                } else if (isXboxLeftTriggerName(button)) {
+                    bleXboxGamepad->setLeftTrigger(XBOX_TRIGGER_MIN);
+                } else if (isXboxRightTriggerName(button)) {
+                    bleXboxGamepad->setRightTrigger(XBOX_TRIGGER_MIN);
+                } else if (strEqIgnoreCase(button, "capture")) {
+                    bleXboxGamepad->releaseShare();
+                } else {
+                    uint16_t btn = mapXboxButtonBLE(button);
+                    if (btn == 0) {
+                        response["status"] = "error";
+                        response["error"] = "unknown button";
+                        return;
+                    }
+                    bleXboxGamepad->release(btn);
+                }
+                bleXboxGamepad->sendGamepadReport();
+                response["status"] = "ok";
+                return;
+            }
+
+            if (!genericProfile) {
+                response["status"] = "error";
+                response["error"] = "generic gamepad profile unavailable";
+                return;
+            }
+
             int hat = mapDPadToBleHat(button);
             if (hat >= 0) {
-                bleGamepad->setHat1(-1);
+                bleGenericGamepad->setHat1(-1);
             } else {
-                int btn = mapGamepadButtonBLE(button, switchLayout);
+                int btn = mapGenericGamepadButtonBLE(button, switchLayout);
                 if (btn <= 0) {
                     response["status"] = "error";
                     response["error"] = "unknown button";
                     return;
                 }
-                bleGamepad->release(btn);
+                bleGenericGamepad->release(btn);
             }
-            bleGamepad->sendReport();
+            bleGenericGamepad->sendGamepadReport();
             response["status"] = "ok";
             return;
         }
@@ -992,23 +1112,53 @@ void executeGamepadCommand(RuntimeDelivery transport, const String& action, Json
             String stick = doc["stick_id"].as<String>();
             int x = doc["x"] | 0;
             int y = doc["y"] | 0;
+            if (xboxProfile) {
+                if (strEqIgnoreCase(stick, "left")) {
+                    bleXboxGamepad->setLeftThumb(x, y);
+                } else {
+                    bleXboxGamepad->setRightThumb(x, y);
+                }
+                bleXboxGamepad->sendGamepadReport();
+                response["status"] = "ok";
+                return;
+            }
+
+            if (!genericProfile) {
+                response["status"] = "error";
+                response["error"] = "generic gamepad profile unavailable";
+                return;
+            }
+
             int mappedX = map(x, -32768, 32767, 0, 32767);
             int mappedY = map(y, -32768, 32767, 0, 32767);
             if (strEqIgnoreCase(stick, "left")) {
-                bleGamepad->setLeftThumb(mappedX, mappedY);
+                bleGenericGamepad->setLeftThumb(mappedX, mappedY);
             } else {
-                bleGamepad->setRightThumb(mappedX, mappedY);
+                bleGenericGamepad->setRightThumb(mappedX, mappedY);
             }
-            bleGamepad->sendReport();
+            bleGenericGamepad->sendGamepadReport();
             response["status"] = "ok";
             return;
         }
 
         if (action == "hat") {
             String dir = doc["direction"].as<String>();
+            if (xboxProfile) {
+                uint8_t dpad = mapDPadToXbox(dir);
+                if (dpad == XBOX_BUTTON_DPAD_NONE) bleXboxGamepad->releaseDPad();
+                else bleXboxGamepad->pressDPadDirection(dpad);
+                bleXboxGamepad->sendGamepadReport();
+                response["status"] = "ok";
+                return;
+            }
+            if (!genericProfile) {
+                response["status"] = "error";
+                response["error"] = "generic gamepad profile unavailable";
+                return;
+            }
             int hat = mapDPadToBleHat(dir);
-            bleGamepad->setHat1(hat >= 0 ? hat : -1);
-            bleGamepad->sendReport();
+            bleGenericGamepad->setHat1(hat >= 0 ? hat : -1);
+            bleGenericGamepad->sendGamepadReport();
             response["status"] = "ok";
             return;
         }
@@ -1195,6 +1345,7 @@ void handleStatus() {
     doc["ws_priority_window_ms"] = WS_PRIORITY_WINDOW_MS;
     doc["ws_port"] = WS_PORT;
     doc["ws_connected_clients"] = wsConnectedClients;
+    doc["usb_gamepad_profile"] = (UsbHidBridge::getGamepadProfile() == UsbHidBridge::USB_GAMEPAD_PROFILE_SWITCH_PRO) ? "switch_pro" : "generic";
     sendJson(200, doc);
 }
 
@@ -1574,8 +1725,8 @@ void setup() {
     displayInit();
 
     setupWiFi();
-    initUSBHID();
     applyEmulationMode(currentEmulationMode);
+    initUSBHID();
     initBLE();
 
     server.on("/ping", HTTP_GET, handlePing);

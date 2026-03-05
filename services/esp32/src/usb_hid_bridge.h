@@ -42,6 +42,14 @@ constexpr uint8_t USB_BUTTON_EAST = USB_BUTTON_B;
 constexpr uint8_t USB_BUTTON_NORTH = USB_BUTTON_X;
 constexpr uint8_t USB_BUTTON_WEST = USB_BUTTON_Y;
 
+enum UsbGamepadProfile : uint8_t {
+    USB_GAMEPAD_PROFILE_GENERIC = 0,
+    USB_GAMEPAD_PROFILE_SWITCH_PRO = 1,
+};
+
+void setGamepadProfile(UsbGamepadProfile profile);
+UsbGamepadProfile getGamepadProfile();
+
 void init();
 bool isMounted();
 
