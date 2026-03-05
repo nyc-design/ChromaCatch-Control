@@ -41,6 +41,7 @@ Automated shiny hunting bot for Pokemon Go using AirPlay screen mirroring, compu
   - BLE advertising name now changes per emulation mode (e.g. `ChromaCatch K + B`, `ChromaCatch Mouse`, `Xbox Wireless Controller`, `Pro Controller`).
   - Mode switch robustness: `POST /mode` now supports explicit BLE re-init (`force_reinit`) and exposes current BLE profile + advertised name in mode/status responses.
   - BLE ops hardening commands: `restart_ble`, `clear_ble_bonds`, and `set_input_policy` (plus backward-compatible `set_delivery_policy` as input policy alias).
+  - Onboard status LED now reflects emulation mode with mode-specific colors and connection state: blinking while output transport is disconnected, solid once connected (S3 RGB on built-in NeoPixel; ESP32 mono fallback uses the same blink/solid behavior).
   - Emulation presets include bluetooth/wired mouse+keyboard variants, bluetooth Xbox-controller profile, bluetooth Switch-pro profile (ESP32 only), and wired Switch-pro profile (S3 only). Mode discovery via `GET /mode` and remote configuration via `POST /mode`.
 - **Control SDK** (`services/control-sdk/`): Python SDK package for automation repos to consume control-plane REST + WebSocket APIs.
 - **Shared** (`services/shared/`): Protocol contract between services — message models, frame codec, constants.

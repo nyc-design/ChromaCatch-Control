@@ -82,6 +82,19 @@ constexpr bool BOARD_SUPPORTS_WIRED_OUTPUT = BOARD_IS_ESP32S3;
 constexpr bool BOARD_SUPPORTS_WIRED_INPUT = BOARD_IS_ESP32S3;
 constexpr bool BOARD_SUPPORTS_BT_SWITCH_PRO_MODE = BOARD_IS_ESP32;
 
+// Onboard status LED configuration:
+// - ESP32-S3 devkit variant has RGB_BUILTIN (WS2812 on GPIO48).
+// - Generic ESP32 dev board typically has a single-color LED on GPIO2.
+#if defined(RGB_BUILTIN)
+constexpr bool BOARD_HAS_RGB_STATUS_LED = true;
+#else
+constexpr bool BOARD_HAS_RGB_STATUS_LED = false;
+#endif
+constexpr bool BOARD_HAS_MONO_STATUS_LED = BOARD_IS_ESP32;
+const int MONO_STATUS_LED_PIN = 2;
+const bool MONO_STATUS_LED_ACTIVE_HIGH = true;
+const unsigned long STATUS_LED_BLINK_MS = 450;
+
 // ============================================================
 // Mode enums
 // ============================================================
@@ -178,6 +191,16 @@ DisplayState displayState;
 bool einkReady = false;
 bool customDisplayActive = false;
 GxEPD2_BW<GxEPD2_213_B74, GxEPD2_213_B74::HEIGHT> eink(GxEPD2_213_B74(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
+
+struct LedColor {
+    uint8_t r;
+    uint8_t g;
+    uint8_t b;
+};
+
+LedColor lastLedColor = {0, 0, 0};
+bool lastLedOn = false;
+bool ledInitialized = false;
 
 // Forward declarations used by display renderer.
 bool isUSBMounted();
@@ -382,6 +405,61 @@ int centeredCursorX(const String& text, int rectX, int rectW, int charPx = 6) {
 int centeredBaselineY(int rectY, int rectH) {
     // Default built-in font is ~8px tall; baseline near bottom.
     return rectY + ((rectH - 8) / 2) + 7;
+}
+
+LedColor modeToLedColor(EmulationMode mode) {
+    switch (mode) {
+        case EMU_BLUETOOTH_COMBO: return {0, 150, 150};           // cyan
+        case EMU_BLUETOOTH_MOUSE_ONLY: return {0, 60, 180};       // blue
+        case EMU_BLUETOOTH_KEYBOARD_ONLY: return {160, 0, 160};   // purple
+        case EMU_WIRED_COMBO: return {0, 180, 0};                 // green
+        case EMU_WIRED_MOUSE_ONLY: return {120, 180, 0};          // yellow-green
+        case EMU_WIRED_KEYBOARD_ONLY: return {180, 140, 0};       // amber
+        case EMU_BLUETOOTH_XBOX_CONTROLLER: return {0, 220, 0};   // xbox green
+        case EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER: return {220, 0, 0}; // red
+        case EMU_WIRED_SWITCH_PRO_CONTROLLER: return {220, 70, 0}; // orange
+        default: return {80, 80, 80};
+    }
+}
+
+void writeStatusLed(const LedColor& color, bool on) {
+    if (BOARD_HAS_RGB_STATUS_LED) {
+#if defined(RGB_BUILTIN)
+        if (on) neopixelWrite(RGB_BUILTIN, color.r, color.g, color.b);
+        else neopixelWrite(RGB_BUILTIN, 0, 0, 0);
+#endif
+    } else if (BOARD_HAS_MONO_STATUS_LED) {
+        bool high = on ? MONO_STATUS_LED_ACTIVE_HIGH : !MONO_STATUS_LED_ACTIVE_HIGH;
+        digitalWrite(MONO_STATUS_LED_PIN, high ? HIGH : LOW);
+    }
+}
+
+void initStatusLed() {
+    if (BOARD_HAS_MONO_STATUS_LED) {
+        pinMode(MONO_STATUS_LED_PIN, OUTPUT);
+        digitalWrite(MONO_STATUS_LED_PIN, MONO_STATUS_LED_ACTIVE_HIGH ? LOW : HIGH);
+    }
+    writeStatusLed({0, 0, 0}, false);
+    ledInitialized = true;
+}
+
+void updateStatusLed() {
+    if (!ledInitialized) return;
+
+    LedColor color = modeToLedColor(currentEmulationMode);
+    bool outputConnected = chooseRuntimeDelivery() != RUNTIME_NONE;
+    bool shouldBlink = !outputConnected;
+    bool on = !shouldBlink || (((millis() / STATUS_LED_BLINK_MS) % 2) == 0);
+
+    bool changed = (on != lastLedOn) ||
+                   (color.r != lastLedColor.r) ||
+                   (color.g != lastLedColor.g) ||
+                   (color.b != lastLedColor.b);
+    if (!changed) return;
+
+    writeStatusLed(color, on);
+    lastLedColor = color;
+    lastLedOn = on;
 }
 
 void configureNimBLEForCurrentMode() {
@@ -1570,6 +1648,7 @@ void handlePing() {
 
 void handleStatus() {
     JsonDocument doc;
+    LedColor ledColor = modeToLedColor(currentEmulationMode);
     doc["device_name"] = DEVICE_NAME;
     doc["ble_advertisement_name"] = getBleAdvertisementName();
     doc["ble_profile"] = getBleProfileLabel();
@@ -1593,6 +1672,8 @@ void handleStatus() {
     doc["ws_port"] = WS_PORT;
     doc["ws_connected_clients"] = wsConnectedClients;
     doc["usb_gamepad_profile"] = (UsbHidBridge::getGamepadProfile() == UsbHidBridge::USB_GAMEPAD_PROFILE_SWITCH_PRO) ? "switch_pro" : "generic";
+    doc["status_led_rgb"] = String(ledColor.r) + "," + String(ledColor.g) + "," + String(ledColor.b);
+    doc["status_led_behavior"] = (chooseRuntimeDelivery() == RUNTIME_NONE) ? "blinking" : "solid";
     sendJson(200, doc);
 }
 
@@ -2008,6 +2089,7 @@ void setup() {
     pinMode(GPIO_UP, INPUT_PULLUP);
     pinMode(GPIO_DOWN, INPUT_PULLUP);
     pinMode(GPIO_SEL, INPUT_PULLUP);
+    initStatusLed();
 
     displayInit();
 
@@ -2031,6 +2113,7 @@ void setup() {
     Serial.println("HTTP server started on port " + String(HTTP_PORT));
     Serial.println("WebSocket server started on port " + String(WS_PORT));
     displayMenu();
+    updateStatusLed();
     Serial.println(BOARD_SUPPORTS_WIRED_INPUT ? "Ready for commands (wired > websocket > http)" : "Ready for commands (websocket > http)");
 }
 
@@ -2040,6 +2123,7 @@ void loop() {
     handleButtons();
     handleSerialInput();
     updateDisplayExpiry();
+    updateStatusLed();
 #if defined(CONFIG_IDF_TARGET_ESP32)
     if (BOARD_SUPPORTS_BT_SWITCH_PRO_MODE && isSwitchMode(currentMode)) {
         switchProBt.tick();
