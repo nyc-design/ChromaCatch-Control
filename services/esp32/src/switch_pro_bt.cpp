@@ -129,10 +129,6 @@ bool SwitchProBT::begin() {
     esp_bt_controller_status_t ctrlStatus = esp_bt_controller_get_status();
     Serial.printf("[SwitchProBT] controller status (pre): %d\n", static_cast<int>(ctrlStatus));
     if (ctrlStatus == ESP_BT_CONTROLLER_STATUS_IDLE) {
-        esp_err_t rel = esp_bt_controller_mem_release(ESP_BT_MODE_BLE);
-        if (rel != ESP_OK && rel != ESP_ERR_INVALID_STATE) {
-            Serial.printf("[SwitchProBT] mem_release(BLE) failed: %d\n", static_cast<int>(rel));
-        }
         esp_bt_controller_config_t cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
         esp_err_t err = esp_bt_controller_init(&cfg);
         if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
@@ -144,13 +140,13 @@ bool SwitchProBT::begin() {
     ctrlStatus = esp_bt_controller_get_status();
     Serial.printf("[SwitchProBT] controller status (post-init): %d\n", static_cast<int>(ctrlStatus));
     if (ctrlStatus == ESP_BT_CONTROLLER_STATUS_INITED) {
-        // Arduino core typically runs BTDM mode; use BTDM enable for broad compatibility.
         esp_err_t err = esp_bt_controller_enable(ESP_BT_MODE_BTDM);
         if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
             Serial.printf("[SwitchProBT] controller_enable(BTDM) failed: %d\n", static_cast<int>(err));
             return false;
         }
     }
+    Serial.printf("[SwitchProBT] controller status (post-enable): %d\n", static_cast<int>(esp_bt_controller_get_status()));
 
     if (esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_UNINITIALIZED) {
         esp_err_t err = esp_bluedroid_init();
@@ -176,6 +172,15 @@ bool SwitchProBT::begin() {
     if (codErr != ESP_OK) {
         Serial.printf("[SwitchProBT] set_cod failed: %d\n", static_cast<int>(codErr));
     }
+
+    esp_err_t gapErr = esp_bt_gap_register_callback(&SwitchProBT::gapEventCallback);
+    if (gapErr != ESP_OK && gapErr != ESP_ERR_INVALID_STATE) {
+        Serial.printf("[SwitchProBT] gap_register_callback failed: %d\n", static_cast<int>(gapErr));
+    }
+
+    esp_bt_pin_type_t pinType = ESP_BT_PIN_TYPE_VARIABLE;
+    esp_bt_pin_code_t pinCode = {0};
+    esp_bt_gap_set_pin(pinType, 0, pinCode);
 
     esp_err_t err = esp_hidd_dev_init(&kBtHidConfig, ESP_HID_TRANSPORT_BT, &SwitchProBT::hiddEventCallback, &_dev);
     if (err != ESP_OK) {
@@ -229,6 +234,15 @@ void SwitchProBT::hiddEventCallback(void* handlerArgs, esp_event_base_t base, in
     (void)base;
     if (g_switchProInstance == nullptr) return;
     g_switchProInstance->onHiddEvent(static_cast<esp_hidd_event_t>(id), static_cast<esp_hidd_event_data_t*>(eventData));
+}
+
+void SwitchProBT::gapEventCallback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t* param) {
+    if (event == ESP_BT_GAP_PIN_REQ_EVT) {
+        esp_bt_pin_code_t pinCode = {'1', '2', '3', '4'};
+        esp_bt_gap_pin_reply(param->pin_req.bda, true, 4, pinCode);
+    } else if (event == ESP_BT_GAP_CFM_REQ_EVT) {
+        esp_bt_gap_ssp_confirm_reply(param->cfm_req.bda, true);
+    }
 }
 
 void SwitchProBT::onHiddEvent(esp_hidd_event_t event, esp_hidd_event_data_t* param) {

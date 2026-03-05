@@ -27,6 +27,7 @@ public:
 
 private:
     static void hiddEventCallback(void* handlerArgs, esp_event_base_t base, int32_t id, void* eventData);
+    static void gapEventCallback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t* param);
     void onHiddEvent(esp_hidd_event_t event, esp_hidd_event_data_t* param);
     void handleOutputReport(uint8_t reportId, const uint8_t* data, uint16_t len);
     void sendSubcommandReply(uint8_t* payload, size_t len);
