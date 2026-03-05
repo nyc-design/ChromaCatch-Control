@@ -1,35 +1,20 @@
 /**
- * ChromaCatch-Go ESP32-S3 Firmware v3
+ * ChromaCatch ESP32 Firmware (single codebase, dual targets)
  *
- * Goals:
- *  - Accept commands from BOTH WiFi (HTTP) and wired (USB Serial) concurrently
- *  - Prioritize wired commands when both are active
- *  - Support packaged HID modes for automation
- *  - Auto-select HID output transport: USB (if host mounted) else BLE (if connected)
- *  - Expose Waveshare e-ink display APIs
- *  - Accept command input over WebSocket with HTTP fallback
+ * Board targeting:
+ *  - ESP32-S3: USB wired + BLE modes, wired > websocket > http input priority.
+ *  - ESP32-WROOM: BLE-only modes, websocket > http input priority.
  *
- * Modes:
- *  1) combo                  (keyboard + mouse)
- *  2) keyboard_only
- *  3) mouse_only
- *  4) gamepad
- *  5) switch_controller
- *
- * HTTP API:
- *   GET  /ping
- *   GET  /status
- *   GET  /mode
- *   POST /mode
- *   POST /command
- *   GET  /display
- *   POST /display
- *   POST /display/clear
- *
- * WebSocket API:
- *   ws://<ip>:81
- *   JSON command in:  {"type":"command","seq":1,"action":"move","dx":1,"dy":2}
- *   JSON response out: {"type":"ack","seq":1,"status":"ok",...}
+ * Emulation modes:
+ *  - bluetooth_combo
+ *  - bluetooth_mouse_only
+ *  - bluetooth_keyboard_only
+ *  - wired_combo (S3 only)
+ *  - wired_mouse_only (S3 only)
+ *  - wired_keyboard_only (S3 only)
+ *  - bluetooth_xbox_controller
+ *  - bluetooth_switch_pro_controller (ESP32 only)
+ *  - wired_switch_pro_controller (S3 only)
  */
 
 #include <Arduino.h>
@@ -72,9 +57,25 @@ const int EPD_RST  = 16;
 const int EPD_BUSY = 15;
 const int EPD_ROTATION = 1; // landscape rotated layout
 
-// Wired command priority window. During this window, WiFi /command is deferred.
+// Command priority windows
 const unsigned long WIRED_PRIORITY_WINDOW_MS = 250;
 const unsigned long WS_PRIORITY_WINDOW_MS = 200;
+
+// Board capabilities
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+constexpr bool BOARD_IS_ESP32S3 = true;
+constexpr bool BOARD_IS_ESP32 = false;
+#elif defined(CONFIG_IDF_TARGET_ESP32)
+constexpr bool BOARD_IS_ESP32S3 = false;
+constexpr bool BOARD_IS_ESP32 = true;
+#else
+constexpr bool BOARD_IS_ESP32S3 = false;
+constexpr bool BOARD_IS_ESP32 = false;
+#endif
+
+constexpr bool BOARD_SUPPORTS_WIRED_OUTPUT = BOARD_IS_ESP32S3;
+constexpr bool BOARD_SUPPORTS_WIRED_INPUT = BOARD_IS_ESP32S3;
+constexpr bool BOARD_SUPPORTS_BT_SWITCH_PRO_MODE = BOARD_IS_ESP32;
 
 // ============================================================
 // Mode enums
@@ -100,6 +101,19 @@ enum RuntimeDelivery {
     RUNTIME_BLE,
 };
 
+enum EmulationMode {
+    EMU_BLUETOOTH_COMBO = 0,
+    EMU_BLUETOOTH_MOUSE_ONLY,
+    EMU_BLUETOOTH_KEYBOARD_ONLY,
+    EMU_WIRED_COMBO,
+    EMU_WIRED_MOUSE_ONLY,
+    EMU_WIRED_KEYBOARD_ONLY,
+    EMU_BLUETOOTH_XBOX_CONTROLLER,
+    EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER,
+    EMU_WIRED_SWITCH_PRO_CONTROLLER,
+    EMU_MODE_COUNT
+};
+
 enum CommandSource {
     SOURCE_WIFI = 0,
     SOURCE_WEBSOCKET,
@@ -119,6 +133,7 @@ BleGamepad*       bleGamepad = nullptr;
 
 DeviceMode currentMode = MODE_COMBO;
 DeliveryPolicy deliveryPolicy = DELIVERY_AUTO;
+EmulationMode currentEmulationMode = EMU_BLUETOOTH_COMBO;
 
 String serialBuffer = "";
 unsigned long lastWiredCommandAtMs = 0;
@@ -128,8 +143,8 @@ size_t wsConnectedClients = 0;
 
 // Menu
 int menuIndex = 0;
-const int MENU_ITEMS = 2;
-const char* menuLabels[] = {"Mode", "Delivery"};
+const int MENU_ITEMS = 1;
+const char* menuLabels[] = {"Mode"};
 unsigned long lastButtonPress = 0;
 const unsigned long DEBOUNCE_MS = 200;
 
@@ -169,6 +184,10 @@ bool isSwitchMode(DeviceMode mode) {
     return mode == MODE_SWITCH_CONTROLLER;
 }
 
+bool isXboxMode(DeviceMode mode) {
+    return mode == MODE_GAMEPAD;
+}
+
 bool modeAllowsMouse(DeviceMode mode) {
     return mode == MODE_COMBO || mode == MODE_MOUSE_ONLY;
 }
@@ -182,15 +201,52 @@ bool modeAllowsGamepad(DeviceMode mode) {
 }
 
 bool modeUsesBleOutput(DeviceMode mode) {
+    if (deliveryPolicy == DELIVERY_FORCE_USB) return false;
     return mode == MODE_COMBO || mode == MODE_KEYBOARD_ONLY || mode == MODE_MOUSE_ONLY || mode == MODE_GAMEPAD || mode == MODE_SWITCH_CONTROLLER;
 }
 
 bool modeUsesBleCombo(DeviceMode mode) {
+    if (!modeUsesBleOutput(mode)) return false;
     return mode == MODE_COMBO || mode == MODE_KEYBOARD_ONLY || mode == MODE_MOUSE_ONLY;
 }
 
 bool modeUsesBleGamepad(DeviceMode mode) {
+    if (!modeUsesBleOutput(mode)) return false;
     return mode == MODE_GAMEPAD || mode == MODE_SWITCH_CONTROLLER;
+}
+
+bool emulationModeSupported(EmulationMode mode) {
+    switch (mode) {
+        case EMU_BLUETOOTH_COMBO:
+        case EMU_BLUETOOTH_MOUSE_ONLY:
+        case EMU_BLUETOOTH_KEYBOARD_ONLY:
+        case EMU_BLUETOOTH_XBOX_CONTROLLER:
+            return true;
+        case EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER:
+            return BOARD_SUPPORTS_BT_SWITCH_PRO_MODE;
+        case EMU_WIRED_COMBO:
+        case EMU_WIRED_MOUSE_ONLY:
+        case EMU_WIRED_KEYBOARD_ONLY:
+        case EMU_WIRED_SWITCH_PRO_CONTROLLER:
+            return BOARD_SUPPORTS_WIRED_OUTPUT;
+        default:
+            return false;
+    }
+}
+
+const char* emulationModeToString(EmulationMode mode) {
+    switch (mode) {
+        case EMU_BLUETOOTH_COMBO: return "bluetooth_combo";
+        case EMU_BLUETOOTH_MOUSE_ONLY: return "bluetooth_mouse_only";
+        case EMU_BLUETOOTH_KEYBOARD_ONLY: return "bluetooth_keyboard_only";
+        case EMU_WIRED_COMBO: return "wired_combo";
+        case EMU_WIRED_MOUSE_ONLY: return "wired_mouse_only";
+        case EMU_WIRED_KEYBOARD_ONLY: return "wired_keyboard_only";
+        case EMU_BLUETOOTH_XBOX_CONTROLLER: return "bluetooth_xbox_controller";
+        case EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER: return "bluetooth_switch_pro_controller";
+        case EMU_WIRED_SWITCH_PRO_CONTROLLER: return "wired_switch_pro_controller";
+        default: return "bluetooth_combo";
+    }
 }
 
 const char* modeToString(DeviceMode mode) {
@@ -198,7 +254,7 @@ const char* modeToString(DeviceMode mode) {
         case MODE_COMBO: return "combo";
         case MODE_KEYBOARD_ONLY: return "keyboard_only";
         case MODE_MOUSE_ONLY: return "mouse_only";
-        case MODE_GAMEPAD: return "gamepad";
+        case MODE_GAMEPAD: return "xbox_controller";
         case MODE_SWITCH_CONTROLLER: return "switch_controller";
         default: return "combo";
     }
@@ -221,7 +277,54 @@ const char* runtimeDeliveryToString(RuntimeDelivery d) {
     }
 }
 
+void applyEmulationMode(EmulationMode mode) {
+    if (!emulationModeSupported(mode)) return;
+
+    currentEmulationMode = mode;
+    switch (mode) {
+        case EMU_BLUETOOTH_COMBO:
+            currentMode = MODE_COMBO;
+            deliveryPolicy = DELIVERY_FORCE_BLE;
+            break;
+        case EMU_BLUETOOTH_MOUSE_ONLY:
+            currentMode = MODE_MOUSE_ONLY;
+            deliveryPolicy = DELIVERY_FORCE_BLE;
+            break;
+        case EMU_BLUETOOTH_KEYBOARD_ONLY:
+            currentMode = MODE_KEYBOARD_ONLY;
+            deliveryPolicy = DELIVERY_FORCE_BLE;
+            break;
+        case EMU_WIRED_COMBO:
+            currentMode = MODE_COMBO;
+            deliveryPolicy = DELIVERY_FORCE_USB;
+            break;
+        case EMU_WIRED_MOUSE_ONLY:
+            currentMode = MODE_MOUSE_ONLY;
+            deliveryPolicy = DELIVERY_FORCE_USB;
+            break;
+        case EMU_WIRED_KEYBOARD_ONLY:
+            currentMode = MODE_KEYBOARD_ONLY;
+            deliveryPolicy = DELIVERY_FORCE_USB;
+            break;
+        case EMU_BLUETOOTH_XBOX_CONTROLLER:
+            currentMode = MODE_GAMEPAD;
+            deliveryPolicy = DELIVERY_FORCE_BLE;
+            break;
+        case EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER:
+            currentMode = MODE_SWITCH_CONTROLLER;
+            deliveryPolicy = DELIVERY_FORCE_BLE;
+            break;
+        case EMU_WIRED_SWITCH_PRO_CONTROLLER:
+            currentMode = MODE_SWITCH_CONTROLLER;
+            deliveryPolicy = DELIVERY_FORCE_USB;
+            break;
+        default:
+            break;
+    }
+}
+
 bool wiredPriorityActive() {
+    if (!BOARD_SUPPORTS_WIRED_INPUT) return false;
     return (millis() - lastWiredCommandAtMs) <= WIRED_PRIORITY_WINDOW_MS;
 }
 
@@ -229,23 +332,55 @@ bool wsPriorityActive() {
     return (millis() - lastWSCommandAtMs) <= WS_PRIORITY_WINDOW_MS;
 }
 
-DeviceMode parseModeString(const String& raw) {
-    if (raw.length() == 0) return currentMode;
+EmulationMode parseEmulationModeString(const String& rawInput) {
+    String raw = rawInput;
+    raw.toLowerCase();
+    raw.trim();
 
-    if (raw == "combo" || raw == "mouse_keyboard") return MODE_COMBO;
-    if (raw == "keyboard" || raw == "keyboard_only") return MODE_KEYBOARD_ONLY;
-    if (raw == "mouse" || raw == "mouse_only") return MODE_MOUSE_ONLY;
-    if (raw == "gamepad" || raw == "general_gamepad") return MODE_GAMEPAD;
-    if (raw == "switch" || raw == "switch_pro" || raw == "switch_controller") return MODE_SWITCH_CONTROLLER;
-    // Legacy compatibility aliases for removed BT-input mode.
-    if (raw == "switch_wired_bt_input" || raw == "switch_controller_wired_bt_input" || raw == "switch_wired") return MODE_SWITCH_CONTROLLER;
-    return currentMode;
+    if (raw == "bluetooth_combo" || raw == "combo" || raw == "mouse_keyboard") return EMU_BLUETOOTH_COMBO;
+    if (raw == "bluetooth_mouse_only" || raw == "mouse" || raw == "mouse_only") return EMU_BLUETOOTH_MOUSE_ONLY;
+    if (raw == "bluetooth_keyboard_only" || raw == "keyboard" || raw == "keyboard_only") return EMU_BLUETOOTH_KEYBOARD_ONLY;
+
+    if (raw == "wired_combo") return EMU_WIRED_COMBO;
+    if (raw == "wired_mouse_only") return EMU_WIRED_MOUSE_ONLY;
+    if (raw == "wired_keyboard_only") return EMU_WIRED_KEYBOARD_ONLY;
+
+    if (raw == "bluetooth_xbox_controller" || raw == "gamepad" || raw == "general_gamepad") return EMU_BLUETOOTH_XBOX_CONTROLLER;
+    if (raw == "bluetooth_switch_pro_controller") return EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER;
+    if (raw == "switch" || raw == "switch_pro" || raw == "switch_controller") {
+        return BOARD_SUPPORTS_BT_SWITCH_PRO_MODE ? EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER : EMU_WIRED_SWITCH_PRO_CONTROLLER;
+    }
+    if (raw == "wired_switch_pro_controller" || raw == "switch_wired") return EMU_WIRED_SWITCH_PRO_CONTROLLER;
+
+    return currentEmulationMode;
 }
 
-DeliveryPolicy parseDeliveryPolicy(const String& raw) {
+DeliveryPolicy parseDeliveryPolicy(const String& rawInput) {
+    String raw = rawInput;
+    raw.toLowerCase();
+    raw.trim();
+
     if (raw == "wired" || raw == "usb" || raw == "force_wired") return DELIVERY_FORCE_USB;
     if (raw == "bluetooth" || raw == "ble" || raw == "force_bluetooth") return DELIVERY_FORCE_BLE;
     return DELIVERY_AUTO;
+}
+
+EmulationMode inferEmulationMode(DeviceMode mode, DeliveryPolicy policy) {
+    if (mode == MODE_COMBO && policy == DELIVERY_FORCE_BLE) return EMU_BLUETOOTH_COMBO;
+    if (mode == MODE_MOUSE_ONLY && policy == DELIVERY_FORCE_BLE) return EMU_BLUETOOTH_MOUSE_ONLY;
+    if (mode == MODE_KEYBOARD_ONLY && policy == DELIVERY_FORCE_BLE) return EMU_BLUETOOTH_KEYBOARD_ONLY;
+    if (mode == MODE_COMBO && policy == DELIVERY_FORCE_USB) return EMU_WIRED_COMBO;
+    if (mode == MODE_MOUSE_ONLY && policy == DELIVERY_FORCE_USB) return EMU_WIRED_MOUSE_ONLY;
+    if (mode == MODE_KEYBOARD_ONLY && policy == DELIVERY_FORCE_USB) return EMU_WIRED_KEYBOARD_ONLY;
+    if (mode == MODE_GAMEPAD && policy == DELIVERY_FORCE_BLE) return EMU_BLUETOOTH_XBOX_CONTROLLER;
+    if (mode == MODE_SWITCH_CONTROLLER && policy == DELIVERY_FORCE_USB) return EMU_WIRED_SWITCH_PRO_CONTROLLER;
+    if (mode == MODE_SWITCH_CONTROLLER && policy == DELIVERY_FORCE_BLE) return EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER;
+    if (mode == MODE_SWITCH_CONTROLLER) return BOARD_SUPPORTS_BT_SWITCH_PRO_MODE ? EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER : EMU_WIRED_SWITCH_PRO_CONTROLLER;
+    if (mode == MODE_GAMEPAD) return EMU_BLUETOOTH_XBOX_CONTROLLER;
+    if (mode == MODE_COMBO) return BOARD_SUPPORTS_WIRED_OUTPUT ? EMU_WIRED_COMBO : EMU_BLUETOOTH_COMBO;
+    if (mode == MODE_MOUSE_ONLY) return BOARD_SUPPORTS_WIRED_OUTPUT ? EMU_WIRED_MOUSE_ONLY : EMU_BLUETOOTH_MOUSE_ONLY;
+    if (mode == MODE_KEYBOARD_ONLY) return BOARD_SUPPORTS_WIRED_OUTPUT ? EMU_WIRED_KEYBOARD_ONLY : EMU_BLUETOOTH_KEYBOARD_ONLY;
+    return EMU_BLUETOOTH_COMBO;
 }
 
 // ============================================================
@@ -277,7 +412,7 @@ void renderDashboardNow() {
     bool bleConnected = isBLEConnected();
 
     String ip = wifiUp ? WiFi.localIP().toString() : "offline";
-    String mode = String(modeToString(currentMode));
+    String mode = String(emulationModeToString(currentEmulationMode));
     String policy = String(deliveryPolicyToString(deliveryPolicy));
     String activeDelivery = String(runtimeDeliveryToString(active));
     String usbState = isUSBMounted() ? "mounted" : "not-mounted";
@@ -417,6 +552,10 @@ void updateDisplayExpiry() {
 // USB HID init & state
 // ============================================================
 void initUSBHID() {
+    if (!BOARD_SUPPORTS_WIRED_OUTPUT) {
+        Serial.println("USB HID not supported on this board");
+        return;
+    }
     UsbHidBridge::init();
     Serial.println("USB HID initialized");
 }
@@ -947,7 +1086,8 @@ void executeGamepadCommand(RuntimeDelivery transport, const String& action, Json
 void executeCommand(JsonDocument& doc, JsonDocument& response, CommandSource source) {
     String action = doc["action"].as<String>();
     response["action"] = action;
-    response["mode"] = modeToString(currentMode);
+    response["mode"] = emulationModeToString(currentEmulationMode);
+    response["legacy_mode"] = modeToString(currentMode);
     if (source == SOURCE_WIRED) response["source"] = "wired";
     else if (source == SOURCE_WEBSOCKET) response["source"] = "websocket";
     else response["source"] = "wifi";
@@ -955,29 +1095,45 @@ void executeCommand(JsonDocument& doc, JsonDocument& response, CommandSource sou
     // Control-plane actions (do not require active HID output transport)
     if (action == "set_mode") {
         if (doc["mode"].is<const char*>()) {
-            currentMode = parseModeString(doc["mode"].as<String>());
+            EmulationMode next = parseEmulationModeString(doc["mode"].as<String>());
+            if (!emulationModeSupported(next)) {
+                response["status"] = "error";
+                response["error"] = "mode_not_supported_on_this_board";
+                return;
+            }
+            applyEmulationMode(next);
             initBLE();
             displayMenu();
         }
         response["status"] = "ok";
-        response["mode"] = modeToString(currentMode);
+        response["mode"] = emulationModeToString(currentEmulationMode);
         response["delivery_policy"] = deliveryPolicyToString(deliveryPolicy);
         return;
     }
     if (action == "set_delivery_policy") {
+        DeliveryPolicy nextPolicy = deliveryPolicy;
         if (doc["delivery_policy"].is<const char*>()) {
-            deliveryPolicy = parseDeliveryPolicy(doc["delivery_policy"].as<String>());
+            nextPolicy = parseDeliveryPolicy(doc["delivery_policy"].as<String>());
             displayMenu();
         } else if (doc["policy"].is<const char*>()) {
-            deliveryPolicy = parseDeliveryPolicy(doc["policy"].as<String>());
+            nextPolicy = parseDeliveryPolicy(doc["policy"].as<String>());
             displayMenu();
         } else if (doc["value"].is<const char*>()) {
-            deliveryPolicy = parseDeliveryPolicy(doc["value"].as<String>());
+            nextPolicy = parseDeliveryPolicy(doc["value"].as<String>());
             displayMenu();
         }
+        EmulationMode nextMode = inferEmulationMode(currentMode, nextPolicy);
+        if (!emulationModeSupported(nextMode)) {
+            response["status"] = "error";
+            response["error"] = "delivery_policy_not_supported_for_current_mode";
+            return;
+        }
+        applyEmulationMode(nextMode);
+        initBLE();
+        displayMenu();
         response["status"] = "ok";
         response["delivery_policy"] = deliveryPolicyToString(deliveryPolicy);
-        response["mode"] = modeToString(currentMode);
+        response["mode"] = emulationModeToString(currentEmulationMode);
         return;
     }
 
@@ -1022,11 +1178,17 @@ void handleStatus() {
     JsonDocument doc;
     doc["device_name"] = DEVICE_NAME;
     doc["ip"] = WiFi.localIP().toString();
-    doc["mode"] = modeToString(currentMode);
+    doc["mode"] = emulationModeToString(currentEmulationMode);
+    doc["legacy_mode"] = modeToString(currentMode);
     doc["delivery_policy"] = deliveryPolicyToString(deliveryPolicy);
     doc["active_delivery"] = runtimeDeliveryToString(chooseRuntimeDelivery());
     doc["usb_mounted"] = isUSBMounted();
     doc["ble_connected"] = isBLEConnected();
+    doc["board"] = BOARD_IS_ESP32S3 ? "esp32s3" : (BOARD_IS_ESP32 ? "esp32" : "unknown");
+    doc["supports_wired_output"] = BOARD_SUPPORTS_WIRED_OUTPUT;
+    doc["supports_wired_input"] = BOARD_SUPPORTS_WIRED_INPUT;
+    doc["supports_bt_switch_pro_mode"] = BOARD_SUPPORTS_BT_SWITCH_PRO_MODE;
+    doc["input_priority"] = BOARD_SUPPORTS_WIRED_INPUT ? "wired>websocket>http" : "websocket>http";
     doc["wired_priority_active"] = wiredPriorityActive();
     doc["ws_priority_active"] = wsPriorityActive();
     doc["wired_priority_window_ms"] = WIRED_PRIORITY_WINDOW_MS;
@@ -1038,12 +1200,20 @@ void handleStatus() {
 
 void handleGetMode() {
     JsonDocument doc;
-    doc["mode"] = modeToString(currentMode);
+    doc["mode"] = emulationModeToString(currentEmulationMode);
+    doc["legacy_mode"] = modeToString(currentMode);
     doc["delivery_policy"] = deliveryPolicyToString(deliveryPolicy);
     // Backward-compatible fields
     doc["output_mode"] = (modeAllowsGamepad(currentMode) ? "gamepad" : "mouse_keyboard");
     doc["output_delivery"] = deliveryPolicyToString(deliveryPolicy);
-    doc["input_mode"] = "auto_dual";
+    doc["input_mode"] = BOARD_SUPPORTS_WIRED_INPUT ? "wired_websocket_http_priority" : "websocket_http_priority";
+    JsonArray supported = doc["supported_modes"].to<JsonArray>();
+    for (int i = 0; i < static_cast<int>(EMU_MODE_COUNT); i++) {
+        EmulationMode candidate = static_cast<EmulationMode>(i);
+        if (emulationModeSupported(candidate)) {
+            supported.add(emulationModeToString(candidate));
+        }
+    }
     sendJson(200, doc);
 }
 
@@ -1067,31 +1237,39 @@ void handleSetMode() {
         return;
     }
 
-    DeviceMode nextMode = currentMode;
-    DeliveryPolicy nextPolicy = deliveryPolicy;
+    EmulationMode nextEmu = currentEmulationMode;
 
     if (doc["mode"].is<const char*>()) {
-        nextMode = parseModeString(doc["mode"].as<String>());
+        nextEmu = parseEmulationModeString(doc["mode"].as<String>());
     }
-    // compatibility with existing callers
+    // backward compatibility aliases
     if (doc["hid_mode"].is<const char*>()) {
-        nextMode = parseModeString(doc["hid_mode"].as<String>());
+        nextEmu = parseEmulationModeString(doc["hid_mode"].as<String>());
     }
     if (doc["output_mode"].is<const char*>()) {
-        nextMode = parseModeString(doc["output_mode"].as<String>());
+        nextEmu = parseEmulationModeString(doc["output_mode"].as<String>());
     }
 
     if (doc["delivery_policy"].is<const char*>()) {
-        nextPolicy = parseDeliveryPolicy(doc["delivery_policy"].as<String>());
+        DeliveryPolicy overridePolicy = parseDeliveryPolicy(doc["delivery_policy"].as<String>());
+        nextEmu = inferEmulationMode(currentMode, overridePolicy);
     }
     if (doc["output_delivery"].is<const char*>()) {
-        nextPolicy = parseDeliveryPolicy(doc["output_delivery"].as<String>());
+        DeliveryPolicy overridePolicy = parseDeliveryPolicy(doc["output_delivery"].as<String>());
+        nextEmu = inferEmulationMode(currentMode, overridePolicy);
     }
 
-    bool changed = (nextMode != currentMode) || (nextPolicy != deliveryPolicy);
-    currentMode = nextMode;
-    deliveryPolicy = nextPolicy;
+    if (!emulationModeSupported(nextEmu)) {
+        JsonDocument error;
+        error["status"] = "error";
+        error["error"] = "mode_not_supported_on_this_board";
+        error["requested_mode"] = emulationModeToString(nextEmu);
+        sendJson(400, error);
+        return;
+    }
 
+    bool changed = (nextEmu != currentEmulationMode);
+    applyEmulationMode(nextEmu);
     applyModeChange(changed);
     handleGetMode();
 }
@@ -1218,7 +1396,8 @@ void onWSEvent(uint8_t clientId, WStype_t type, uint8_t* payload, size_t length)
             JsonDocument hello;
             hello["type"] = "hello";
             hello["status"] = "ok";
-            hello["mode"] = modeToString(currentMode);
+            hello["mode"] = emulationModeToString(currentEmulationMode);
+            hello["legacy_mode"] = modeToString(currentMode);
             hello["delivery_policy"] = deliveryPolicyToString(deliveryPolicy);
             hello["wired_priority_window_ms"] = WIRED_PRIORITY_WINDOW_MS;
             hello["ws_priority_window_ms"] = WS_PRIORITY_WINDOW_MS;
@@ -1275,6 +1454,11 @@ void onWSEvent(uint8_t clientId, WStype_t type, uint8_t* payload, size_t length)
 // Serial input handling (wired command channel)
 // ============================================================
 void processSerialCommand(const String& line) {
+    if (!BOARD_SUPPORTS_WIRED_INPUT) {
+        Serial.println("{\"status\":\"error\",\"error\":\"wired_input_not_supported_on_this_board\"}");
+        return;
+    }
+
     JsonDocument doc;
     DeserializationError err = deserializeJson(doc, line);
     if (err) {
@@ -1293,6 +1477,8 @@ void processSerialCommand(const String& line) {
 }
 
 void handleSerialInput() {
+    if (!BOARD_SUPPORTS_WIRED_INPUT) return;
+
     while (Serial.available()) {
         char c = Serial.read();
         if (c == '\n' || c == '\r') {
@@ -1314,16 +1500,16 @@ void handleSerialInput() {
 // Buttons / menu
 // ============================================================
 void cycleModeForward() {
-    int next = (static_cast<int>(currentMode) + 1) % static_cast<int>(MODE_COUNT);
-    currentMode = static_cast<DeviceMode>(next);
-    initBLE();
-    displayMenu();
-}
-
-void cycleDeliveryPolicyForward() {
-    int next = (static_cast<int>(deliveryPolicy) + 1) % 3;
-    deliveryPolicy = static_cast<DeliveryPolicy>(next);
-    displayMenu();
+    int start = static_cast<int>(currentEmulationMode);
+    for (int i = 1; i <= static_cast<int>(EMU_MODE_COUNT); i++) {
+        EmulationMode next = static_cast<EmulationMode>((start + i) % static_cast<int>(EMU_MODE_COUNT));
+        if (emulationModeSupported(next)) {
+            applyEmulationMode(next);
+            initBLE();
+            displayMenu();
+            return;
+        }
+    }
 }
 
 void handleButtons() {
@@ -1341,8 +1527,7 @@ void handleButtons() {
     }
     else if (digitalRead(GPIO_SEL) == LOW) {
         lastButtonPress = millis();
-        if (menuIndex == 0) cycleModeForward();
-        else cycleDeliveryPolicyForward();
+        cycleModeForward();
     }
 }
 
@@ -1380,7 +1565,7 @@ void setupWiFi() {
 // ============================================================
 void setup() {
     Serial.begin(115200);
-    Serial.println("\n=== ChromaCatch-Go ESP32-S3 v3 ===");
+    Serial.println("\n=== ChromaCatch ESP32 Firmware ===");
 
     pinMode(GPIO_UP, INPUT_PULLUP);
     pinMode(GPIO_DOWN, INPUT_PULLUP);
@@ -1390,6 +1575,7 @@ void setup() {
 
     setupWiFi();
     initUSBHID();
+    applyEmulationMode(currentEmulationMode);
     initBLE();
 
     server.on("/ping", HTTP_GET, handlePing);
@@ -1407,7 +1593,7 @@ void setup() {
     Serial.println("HTTP server started on port " + String(HTTP_PORT));
     Serial.println("WebSocket server started on port " + String(WS_PORT));
     displayMenu();
-    Serial.println("Ready for commands (wired > websocket > http)");
+    Serial.println(BOARD_SUPPORTS_WIRED_INPUT ? "Ready for commands (wired > websocket > http)" : "Ready for commands (websocket > http)");
 }
 
 void loop() {
