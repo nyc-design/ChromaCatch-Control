@@ -2275,6 +2275,7 @@ void setup() {
 void loop() {
     server.handleClient();
     wsServer.loop();
+    UsbHidBridge::tick();
     handleButtons();
     handleSerialInput();
     updateDisplayExpiry();

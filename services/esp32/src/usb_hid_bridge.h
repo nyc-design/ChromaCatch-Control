@@ -67,5 +67,6 @@ void gamepadRelease(uint8_t button);
 void gamepadHat(uint8_t hat);
 void gamepadLeftStick(int x, int y);   // expects -127..127
 void gamepadRightStick(int x, int y);  // expects -127..127
+void tick();
 
 } // namespace UsbHidBridge

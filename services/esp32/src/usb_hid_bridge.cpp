@@ -296,4 +296,17 @@ void gamepadRightStick(int x, int y) {
 #endif
 }
 
+void tick() {
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+#if CONFIG_TINYUSB_HID_ENABLED
+    if (!initialized) return;
+    if (gamepadProfile == USB_GAMEPAD_PROFILE_SWITCH_PRO) {
+        // switch_ESP32 expects loop() to periodically flush neutral/updated
+        // reports for robust host-side controller presence.
+        switchGamepad.loop();
+    }
+#endif
+#endif
+}
+
 } // namespace UsbHidBridge
