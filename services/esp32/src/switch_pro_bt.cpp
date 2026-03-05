@@ -137,11 +137,6 @@ static uint8_t kReply1098[] = {
     0x19, 0xd0, 0x4c, 0xae, 0x40, 0xe1, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00
 };
-static uint8_t kReply3333[] = {
-    0x21, 0x31, 0x8E, 0x00, 0x00, 0x00, 0x00, 0x08, 0x80, 0x00, 0x08, 0x80,
-    0x00, 0xA0, 0x21, 0x01, 0x00, 0x00, 0x00
-};
-
 double unitFromIntAxis(int value) {
     value = std::max(-32768, std::min(32767, value));
     if (value <= 0) {
@@ -450,8 +445,11 @@ void SwitchProBT::handleOutputReport(uint8_t reportId, const uint8_t* data, uint
         case 0x40: sendSubcommandReply(kReply4001, sizeof(kReply4001)); break;
         case 0x48: sendSubcommandReply(kReply4801, sizeof(kReply4801)); break;
         case 0x21:
-            if (len > 10 && data[10] == 0x21) sendSubcommandReply(kReply3333, sizeof(kReply3333));
-            else sendSubcommandReply(kReply2100, sizeof(kReply2100));
+            // BlueCon / EasyCon behavior: only ACK known MCU set-mode command
+            // with 0x21->0x00 payload; unknown MCU subcommands are ignored.
+            if (len > 10 && data[10] == 0x21) {
+                sendSubcommandReply(kReply2100, sizeof(kReply2100));
+            }
             break;
         case 0x10: {
             if (len < 15) break;
@@ -570,13 +568,13 @@ void SwitchProBT::sendStandardInputReport() {
     if (_dev == nullptr || !_connected || !_started) return;
     uint8_t payload[12] = {0};
     payload[0] = _timer++;
-    payload[1] = 0x8E;      // battery + wired bit pattern used by common emulators
+    payload[1] = 0x80;      // controller state/battery byte for normal 0x30 input reports
     payload[2] = _btnRight;
     payload[3] = _btnShared;
     payload[4] = _btnLeft;
     packStick(_lx, _ly, &payload[5]);
     packStick(_rx, _ry, &payload[8]);
-    payload[11] = 0x00;     // neutral vibrator byte (matches PA neutral state)
+    payload[11] = 0x08;     // vibration ACK marker (BlueCon/EasyCon-compatible)
     esp_hidd_dev_input_set(_dev, 0, 0x30, payload, sizeof(payload));
 }
 
