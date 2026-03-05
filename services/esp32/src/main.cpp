@@ -23,6 +23,7 @@
 #include <WebServer.h>
 #include <WebSocketsServer.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>
 #include <GxEPD2_BW.h>
 #include <Fonts/FreeMonoBold9pt7b.h>
 #include <string>
@@ -33,6 +34,7 @@
 #include <GamepadDevice.h>
 #include <XboxGamepadDevice.h>
 #include <XboxGamepadConfiguration.h>
+#include "esp_mac.h"
 
 #include "usb_hid_bridge.h"
 #include "switch_pro_bt.h"
@@ -83,14 +85,12 @@ constexpr bool BOARD_SUPPORTS_WIRED_INPUT = BOARD_IS_ESP32S3;
 constexpr bool BOARD_SUPPORTS_BT_SWITCH_PRO_MODE = BOARD_IS_ESP32;
 
 // Onboard status LED configuration:
-// - ESP32-S3 devkit variant has RGB_BUILTIN (WS2812 on GPIO48).
-// - Generic ESP32 dev board typically has a single-color LED on GPIO2.
-#if defined(RGB_BUILTIN)
-constexpr bool BOARD_HAS_RGB_STATUS_LED = true;
-#else
-constexpr bool BOARD_HAS_RGB_STATUS_LED = false;
-#endif
-constexpr bool BOARD_HAS_MONO_STATUS_LED = BOARD_IS_ESP32;
+// Override these if your board uses different RGB data pins.
+const int STATUS_RGB_PIN_ESP32 = 2;
+const int STATUS_RGB_PIN_ESP32_ALT = 8;
+const int STATUS_RGB_PIN_ESP32S3 = 48;
+const int STATUS_RGB_PIN_ESP32S3_ALT = 38;
+const bool STATUS_LED_ENABLE_MONO_FALLBACK = false;
 const int MONO_STATUS_LED_PIN = 2;
 const bool MONO_STATUS_LED_ACTIVE_HIGH = true;
 const unsigned long STATUS_LED_BLINK_MS = 450;
@@ -150,6 +150,11 @@ enum InputPolicy {
 // ============================================================
 WebServer server(HTTP_PORT);
 WebSocketsServer wsServer(WS_PORT);
+Preferences prefs;
+bool prefsReady = false;
+constexpr const char* PREFS_NAMESPACE = "ccctl";
+constexpr const char* PREF_KEY_MODE = "mode";
+constexpr const char* PREF_KEY_INPUT_POLICY = "in_policy";
 
 // BLE outputs (created/destroyed on mode changes)
 BleComboKeyboard* bleComboKb = nullptr;
@@ -201,6 +206,9 @@ struct LedColor {
 LedColor lastLedColor = {0, 0, 0};
 bool lastLedOn = false;
 bool ledInitialized = false;
+int statusLedRgbPinPrimary = -1;
+int statusLedRgbPinSecondary = -1;
+bool statusLedMonoEnabled = false;
 
 // Forward declarations used by display renderer.
 bool isUSBMounted();
@@ -407,6 +415,78 @@ int centeredBaselineY(int rectY, int rectH) {
     return rectY + ((rectH - 8) / 2) + 7;
 }
 
+void initPreferences() {
+    if (prefsReady) return;
+    prefsReady = prefs.begin(PREFS_NAMESPACE, false);
+}
+
+void persistRuntimeConfig() {
+    initPreferences();
+    if (!prefsReady) return;
+    prefs.putInt(PREF_KEY_MODE, static_cast<int>(currentEmulationMode));
+    prefs.putInt(PREF_KEY_INPUT_POLICY, static_cast<int>(inputPolicy));
+}
+
+void loadPersistedRuntimeConfig() {
+    initPreferences();
+    if (!prefsReady) return;
+
+    int savedModeRaw = prefs.getInt(PREF_KEY_MODE, static_cast<int>(EMU_BLUETOOTH_COMBO));
+    int savedInputPolicyRaw = prefs.getInt(PREF_KEY_INPUT_POLICY, static_cast<int>(INPUT_POLICY_AUTO));
+
+    EmulationMode savedMode = static_cast<EmulationMode>(savedModeRaw);
+    if (savedModeRaw >= 0 &&
+        savedModeRaw < static_cast<int>(EMU_MODE_COUNT) &&
+        emulationModeSupported(savedMode)) {
+        currentEmulationMode = savedMode;
+    }
+
+    if (savedInputPolicyRaw >= static_cast<int>(INPUT_POLICY_AUTO) &&
+        savedInputPolicyRaw <= static_cast<int>(INPUT_POLICY_HTTP_ONLY)) {
+        InputPolicy savedPolicy = static_cast<InputPolicy>(savedInputPolicyRaw);
+        if (!(savedPolicy == INPUT_POLICY_WIRED_ONLY && !BOARD_SUPPORTS_WIRED_INPUT)) {
+            inputPolicy = savedPolicy;
+        }
+    }
+}
+
+void deriveModeSpecificBleAddress(uint8_t out[6], EmulationMode mode) {
+    uint8_t baseAddr[6] = {0};
+    esp_read_mac(baseAddr, ESP_MAC_BT);
+    memcpy(out, baseAddr, 6);
+
+    uint8_t modeByte = static_cast<uint8_t>(mode);
+    out[1] ^= static_cast<uint8_t>(0x31 + modeByte * 17);
+    out[2] ^= static_cast<uint8_t>(0x59 + modeByte * 29);
+    out[3] ^= static_cast<uint8_t>(0xC7 + modeByte * 11);
+    out[4] ^= static_cast<uint8_t>(0xA3 + modeByte * 7);
+    out[5] ^= static_cast<uint8_t>(0x7D + modeByte * 5);
+
+    // static random address type (two MSBs must be 1).
+    out[0] = static_cast<uint8_t>((out[0] & 0x3F) | 0xC0);
+}
+
+String formatMac(const uint8_t addr[6]) {
+    char out[18];
+    snprintf(out, sizeof(out), "%02X:%02X:%02X:%02X:%02X:%02X",
+             addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]);
+    return String(out);
+}
+
+String getModeSpecificBleMacString() {
+    uint8_t modeAddr[6] = {0};
+    deriveModeSpecificBleAddress(modeAddr, currentEmulationMode);
+    return formatMac(modeAddr);
+}
+
+void configureNimBLEIdentityForCurrentMode() {
+    if (!modeUsesBleOutput(currentMode)) return;
+    uint8_t modeAddr[6] = {0};
+    deriveModeSpecificBleAddress(modeAddr, currentEmulationMode);
+    NimBLEDevice::setOwnAddrType(BLE_OWN_ADDR_RANDOM);
+    NimBLEDevice::setOwnAddr(modeAddr);
+}
+
 LedColor modeToLedColor(EmulationMode mode) {
     switch (mode) {
         case EMU_BLUETOOTH_COMBO: return {0, 150, 150};           // cyan
@@ -423,19 +503,31 @@ LedColor modeToLedColor(EmulationMode mode) {
 }
 
 void writeStatusLed(const LedColor& color, bool on) {
-    if (BOARD_HAS_RGB_STATUS_LED) {
-#if defined(RGB_BUILTIN)
-        if (on) neopixelWrite(RGB_BUILTIN, color.r, color.g, color.b);
-        else neopixelWrite(RGB_BUILTIN, 0, 0, 0);
-#endif
-    } else if (BOARD_HAS_MONO_STATUS_LED) {
+    if (statusLedRgbPinPrimary >= 0) {
+        if (on) neopixelWrite(statusLedRgbPinPrimary, color.r, color.g, color.b);
+        else neopixelWrite(statusLedRgbPinPrimary, 0, 0, 0);
+    }
+    if (statusLedRgbPinSecondary >= 0) {
+        if (on) neopixelWrite(statusLedRgbPinSecondary, color.r, color.g, color.b);
+        else neopixelWrite(statusLedRgbPinSecondary, 0, 0, 0);
+    }
+    if (statusLedMonoEnabled) {
         bool high = on ? MONO_STATUS_LED_ACTIVE_HIGH : !MONO_STATUS_LED_ACTIVE_HIGH;
         digitalWrite(MONO_STATUS_LED_PIN, high ? HIGH : LOW);
     }
 }
 
 void initStatusLed() {
-    if (BOARD_HAS_MONO_STATUS_LED) {
+    if (BOARD_IS_ESP32S3) {
+        statusLedRgbPinPrimary = STATUS_RGB_PIN_ESP32S3;
+        statusLedRgbPinSecondary = STATUS_RGB_PIN_ESP32S3_ALT;
+    } else if (BOARD_IS_ESP32) {
+        statusLedRgbPinPrimary = STATUS_RGB_PIN_ESP32;
+        statusLedRgbPinSecondary = STATUS_RGB_PIN_ESP32_ALT;
+    }
+    statusLedMonoEnabled = STATUS_LED_ENABLE_MONO_FALLBACK;
+
+    if (statusLedMonoEnabled) {
         pinMode(MONO_STATUS_LED_PIN, OUTPUT);
         digitalWrite(MONO_STATUS_LED_PIN, MONO_STATUS_LED_ACTIVE_HIGH ? LOW : HIGH);
     }
@@ -522,6 +614,7 @@ void applyEmulationMode(EmulationMode mode) {
             break;
     }
     UsbHidBridge::setGamepadProfile(emulationModeToUsbProfile(mode));
+    persistRuntimeConfig();
 }
 
 bool wiredPriorityActive() {
@@ -818,6 +911,7 @@ void initBLE() {
 
     String advName = getBleAdvertisementName();
     configureNimBLEForCurrentMode();
+    configureNimBLEIdentityForCurrentMode();
 
     if (modeUsesBleCombo(currentMode)) {
         bleComboKb = new BleComboKeyboard(advName.c_str(), "ChromaCatch", 100);
@@ -1581,10 +1675,31 @@ void executeCommand(JsonDocument& doc, JsonDocument& response, CommandSource sou
             return;
         }
         inputPolicy = nextPolicy;
+        persistRuntimeConfig();
         displayMenu();
         response["status"] = "ok";
         response["input_policy"] = inputPolicyToString(inputPolicy);
         response["mode"] = emulationModeToString(currentEmulationMode);
+        return;
+    }
+    if (action == "set_led_pins") {
+        if (doc["rgb_pin_primary"].is<int>()) {
+            statusLedRgbPinPrimary = doc["rgb_pin_primary"].as<int>();
+        }
+        if (doc["rgb_pin_secondary"].is<int>()) {
+            statusLedRgbPinSecondary = doc["rgb_pin_secondary"].as<int>();
+        }
+        if (doc["mono_enabled"].is<bool>()) {
+            statusLedMonoEnabled = doc["mono_enabled"].as<bool>();
+            if (statusLedMonoEnabled) {
+                pinMode(MONO_STATUS_LED_PIN, OUTPUT);
+            }
+        }
+        updateStatusLed();
+        response["status"] = "ok";
+        response["status_led_rgb_pin_primary"] = statusLedRgbPinPrimary;
+        response["status_led_rgb_pin_secondary"] = statusLedRgbPinSecondary;
+        response["status_led_mono_enabled"] = statusLedMonoEnabled;
         return;
     }
     if (action == "set_input_policy") {
@@ -1602,6 +1717,7 @@ void executeCommand(JsonDocument& doc, JsonDocument& response, CommandSource sou
             return;
         }
         inputPolicy = nextPolicy;
+        persistRuntimeConfig();
         displayMenu();
         response["status"] = "ok";
         response["input_policy"] = inputPolicyToString(inputPolicy);
@@ -1652,6 +1768,7 @@ void handleStatus() {
     doc["device_name"] = DEVICE_NAME;
     doc["ble_advertisement_name"] = getBleAdvertisementName();
     doc["ble_profile"] = getBleProfileLabel();
+    doc["ble_mode_scoped_mac"] = getModeSpecificBleMacString();
     doc["ip"] = WiFi.localIP().toString();
     doc["mode"] = emulationModeToString(currentEmulationMode);
     doc["legacy_mode"] = modeToString(currentMode);
@@ -1674,6 +1791,14 @@ void handleStatus() {
     doc["usb_gamepad_profile"] = (UsbHidBridge::getGamepadProfile() == UsbHidBridge::USB_GAMEPAD_PROFILE_SWITCH_PRO) ? "switch_pro" : "generic";
     doc["status_led_rgb"] = String(ledColor.r) + "," + String(ledColor.g) + "," + String(ledColor.b);
     doc["status_led_behavior"] = (chooseRuntimeDelivery() == RUNTIME_NONE) ? "blinking" : "solid";
+    doc["status_led_rgb_pin_primary"] = statusLedRgbPinPrimary;
+    doc["status_led_rgb_pin_secondary"] = statusLedRgbPinSecondary;
+    doc["status_led_mono_enabled"] = statusLedMonoEnabled;
+#if defined(CONFIG_IDF_TARGET_ESP32)
+    if (BOARD_SUPPORTS_BT_SWITCH_PRO_MODE && isSwitchMode(currentMode)) {
+        doc["bt_classic_discoverable"] = switchProBt.isDiscoverable();
+    }
+#endif
     sendJson(200, doc);
 }
 
@@ -1685,6 +1810,7 @@ void handleGetMode() {
     doc["input_policy"] = inputPolicyToString(inputPolicy);
     doc["ble_advertisement_name"] = getBleAdvertisementName();
     doc["ble_profile"] = getBleProfileLabel();
+    doc["ble_mode_scoped_mac"] = getModeSpecificBleMacString();
     // Backward-compatible fields
     doc["output_mode"] = (modeAllowsGamepad(currentMode) ? "gamepad" : "mouse_keyboard");
     doc["output_delivery"] = deliveryPolicyToString(deliveryPolicy);
@@ -1742,12 +1868,14 @@ void handleSetMode() {
         InputPolicy nextInputPolicy = parseInputPolicy(doc["delivery_policy"].as<String>());
         if (!(nextInputPolicy == INPUT_POLICY_WIRED_ONLY && !BOARD_SUPPORTS_WIRED_INPUT)) {
             inputPolicy = nextInputPolicy;
+            persistRuntimeConfig();
         }
     }
     if (doc["input_policy"].is<const char*>()) {
         InputPolicy nextInputPolicy = parseInputPolicy(doc["input_policy"].as<String>());
         if (!(nextInputPolicy == INPUT_POLICY_WIRED_ONLY && !BOARD_SUPPORTS_WIRED_INPUT)) {
             inputPolicy = nextInputPolicy;
+            persistRuntimeConfig();
         }
     }
 
@@ -1914,6 +2042,7 @@ void onWSEvent(uint8_t clientId, WStype_t type, uint8_t* payload, size_t length)
             hello["input_policy"] = inputPolicyToString(inputPolicy);
             hello["ble_advertisement_name"] = getBleAdvertisementName();
             hello["ble_profile"] = getBleProfileLabel();
+            hello["ble_mode_scoped_mac"] = getModeSpecificBleMacString();
             hello["wired_priority_window_ms"] = WIRED_PRIORITY_WINDOW_MS;
             hello["ws_priority_window_ms"] = WS_PRIORITY_WINDOW_MS;
             sendWSJson(clientId, hello);
@@ -2092,6 +2221,7 @@ void setup() {
     initStatusLed();
 
     displayInit();
+    loadPersistedRuntimeConfig();
 
     setupWiFi();
     applyEmulationMode(currentEmulationMode);

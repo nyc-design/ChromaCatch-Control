@@ -17,6 +17,7 @@ public:
     void end();
     bool isActive() const;
     bool isConnected() const;
+    bool isDiscoverable() const;
 
     bool setButton(const String& name, bool pressed);
     bool setStick(const String& stickId, int x, int y);
@@ -39,9 +40,11 @@ private:
     esp_hidd_dev_t* _dev = nullptr;
     bool _active = false;
     bool _connected = false;
+    bool _discoverable = false;
     bool _started = false;
     uint8_t _timer = 0;
     unsigned long _lastTickMs = 0;
+    unsigned long _lastDiscoverableRefreshMs = 0;
 
     uint8_t _btnRight = 0;
     uint8_t _btnShared = 0;

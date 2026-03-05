@@ -75,6 +75,10 @@ static uint8_t kReply4801[] = {
     0x21, 0x04, 0x8E, 0x00, 0x00, 0x00, 0x01, 0x18, 0x80, 0x01, 0x18, 0x80,
     0x80, 0x80, 0x48, 0x00, 0x00, 0x00, 0x00
 };
+static uint8_t kReply3401[] = {
+    0x21, 0x12, 0x8E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x80,
+    0x00, 0x80, 0x22, 0x00, 0x00, 0x00, 0x00
+};
 static uint8_t kReply2100[] = {
     0x21, 0x03, 0x8E, 0x84, 0x00, 0x12, 0x01, 0x18, 0x80, 0x01, 0x18, 0x80,
     0x80, 0x80, 0x21, 0x00, 0x00, 0x00, 0x00
@@ -91,6 +95,10 @@ static uint8_t kReply1010[] = {
     0x21, 0x04, 0x8E, 0x84, 0x00, 0x12, 0x01, 0x18, 0x80, 0x01, 0x18, 0x80,
     0x80, 0x90, 0x10, 0x10, 0x80, 0x00, 0x00, 0x18, 0x00, 0x00
 };
+static uint8_t kReply3333[] = {
+    0x21, 0x31, 0x8E, 0x00, 0x00, 0x00, 0x00, 0x08, 0x80, 0x00, 0x08, 0x80,
+    0x00, 0xA0, 0x21, 0x01, 0x00, 0x00, 0x00
+};
 
 }  // namespace
 
@@ -99,6 +107,7 @@ bool SwitchProBT::begin() {
 
     g_switchProInstance = this;
     _connected = false;
+    _discoverable = false;
     _started = false;
     _timer = 0;
     _btnRight = 0;
@@ -119,6 +128,7 @@ bool SwitchProBT::begin() {
 
     esp_bt_controller_status_t ctrlStatus = esp_bt_controller_get_status();
     if (ctrlStatus == ESP_BT_CONTROLLER_STATUS_IDLE) {
+        esp_bt_controller_mem_release(ESP_BT_MODE_BLE);
         esp_bt_controller_config_t cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
         esp_err_t err = esp_bt_controller_init(&cfg);
         if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return false;
@@ -126,7 +136,7 @@ bool SwitchProBT::begin() {
 
     ctrlStatus = esp_bt_controller_get_status();
     if (ctrlStatus == ESP_BT_CONTROLLER_STATUS_INITED) {
-        esp_err_t err = esp_bt_controller_enable(ESP_BT_MODE_BTDM);
+        esp_err_t err = esp_bt_controller_enable(ESP_BT_MODE_CLASSIC_BT);
         if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return false;
     }
 
@@ -141,15 +151,18 @@ bool SwitchProBT::begin() {
 
     esp_bt_dev_set_device_name(kBtHidConfig.device_name);
     esp_bt_cod_t cod = {0};
-    cod.major = ESP_BT_COD_MAJOR_DEV_PERIPHERAL;
-    cod.minor = 0;
-    esp_bt_gap_set_cod(cod, ESP_BT_SET_COD_MAJOR_MINOR);
+    cod.major = 5;
+    cod.minor = 2;
+    cod.service = 1;
+    esp_bt_gap_set_cod(cod, ESP_BT_SET_COD_ALL);
 
     esp_err_t err = esp_hidd_dev_init(&kBtHidConfig, ESP_HID_TRANSPORT_BT, &SwitchProBT::hiddEventCallback, &_dev);
     if (err != ESP_OK) return false;
 
     _active = true;
+    _discoverable = true;
     _lastTickMs = millis();
+    _lastDiscoverableRefreshMs = millis();
     return true;
 }
 
@@ -170,6 +183,7 @@ void SwitchProBT::end() {
     _dev = nullptr;
     _active = false;
     _connected = false;
+    _discoverable = false;
     _started = false;
     g_switchProInstance = nullptr;
 }
@@ -180,6 +194,10 @@ bool SwitchProBT::isActive() const {
 
 bool SwitchProBT::isConnected() const {
     return _connected;
+}
+
+bool SwitchProBT::isDiscoverable() const {
+    return _discoverable;
 }
 
 void SwitchProBT::hiddEventCallback(void* handlerArgs, esp_event_base_t base, int32_t id, void* eventData) {
@@ -195,17 +213,20 @@ void SwitchProBT::onHiddEvent(esp_hidd_event_t event, esp_hidd_event_data_t* par
             _started = (param != nullptr && param->start.status == ESP_OK);
             if (_started) {
                 esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
+                _discoverable = true;
             }
             break;
         case ESP_HIDD_CONNECT_EVENT:
             _connected = (param != nullptr && param->connect.status == ESP_OK);
             if (_connected) {
                 esp_bt_gap_set_scan_mode(ESP_BT_NON_CONNECTABLE, ESP_BT_NON_DISCOVERABLE);
+                _discoverable = false;
             }
             break;
         case ESP_HIDD_DISCONNECT_EVENT:
             _connected = false;
             esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
+            _discoverable = true;
             break;
         case ESP_HIDD_OUTPUT_EVENT:
             if (param != nullptr) {
@@ -240,10 +261,14 @@ void SwitchProBT::handleOutputReport(uint8_t reportId, const uint8_t* data, uint
         case 0x03: sendSubcommandReply(kReply03, sizeof(kReply03)); break;
         case 0x04: sendSubcommandReply(kReply04, sizeof(kReply04)); break;
         case 0x08: sendSubcommandReply(kReply08, sizeof(kReply08)); break;
+        case 0x22: sendSubcommandReply(kReply3401, sizeof(kReply3401)); break;
         case 0x30: sendSubcommandReply(kReply3001, sizeof(kReply3001)); break;
         case 0x40: sendSubcommandReply(kReply4001, sizeof(kReply4001)); break;
         case 0x48: sendSubcommandReply(kReply4801, sizeof(kReply4801)); break;
-        case 0x21: sendSubcommandReply(kReply2100, sizeof(kReply2100)); break;
+        case 0x21:
+            if (len > 10 && data[10] == 0x21) sendSubcommandReply(kReply3333, sizeof(kReply3333));
+            else sendSubcommandReply(kReply2100, sizeof(kReply2100));
+            break;
         case 0x10: {
             if (len < 15) break;
             uint32_t addr = static_cast<uint32_t>(data[10]) |
@@ -252,6 +277,10 @@ void SwitchProBT::handleOutputReport(uint8_t reportId, const uint8_t* data, uint
                             (static_cast<uint32_t>(data[13]) << 24);
             switch (addr) {
                 case 0x6000: sendSubcommandReply(kReply1060, sizeof(kReply1060)); break;
+                case 0x6050: sendSubcommandReply(kReply1060, sizeof(kReply1060)); break;
+                case 0x6080: sendSubcommandReply(kReply1010, sizeof(kReply1010)); break;
+                case 0x6098: sendSubcommandReply(kReply1010, sizeof(kReply1010)); break;
+                case 0x603D: sendSubcommandReply(kReply1020, sizeof(kReply1020)); break;
                 case 0x6020: sendSubcommandReply(kReply1020, sizeof(kReply1020)); break;
                 case 0x8010: sendSubcommandReply(kReply1010, sizeof(kReply1010)); break;
                 default: break;
@@ -381,7 +410,17 @@ void SwitchProBT::sendState() {
 }
 
 void SwitchProBT::tick() {
-    if (!_connected || !_started) return;
+    if (!_started) return;
+
+    if (!_connected) {
+        if (millis() - _lastDiscoverableRefreshMs > 2000) {
+            _lastDiscoverableRefreshMs = millis();
+            esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
+            _discoverable = true;
+        }
+        return;
+    }
+
     if (millis() - _lastTickMs < 16) return;
     _lastTickMs = millis();
     sendStandardInputReport();
