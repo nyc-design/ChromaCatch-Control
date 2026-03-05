@@ -87,9 +87,9 @@ constexpr bool BOARD_SUPPORTS_BT_SWITCH_PRO_MODE = BOARD_IS_ESP32;
 // Onboard status LED configuration:
 // Override these if your board uses different RGB data pins.
 const int STATUS_RGB_PIN_ESP32 = 2;
-const int STATUS_RGB_PIN_ESP32_ALT = 8;
+const int STATUS_RGB_PIN_ESP32_ALT = -1;
 const int STATUS_RGB_PIN_ESP32S3 = 48;
-const int STATUS_RGB_PIN_ESP32S3_ALT = 38;
+const int STATUS_RGB_PIN_ESP32S3_ALT = -1;
 const bool STATUS_LED_ENABLE_MONO_FALLBACK = false;
 const int MONO_STATUS_LED_PIN = 2;
 const bool MONO_STATUS_LED_ACTIVE_HIGH = true;
@@ -481,6 +481,9 @@ String getModeSpecificBleMacString() {
 
 void configureNimBLEIdentityForCurrentMode() {
     if (!modeUsesBleOutput(currentMode)) return;
+    // NimBLE address APIs require the host stack to be initialized on this build;
+    // calling them pre-init causes mutex asserts on ESP32.
+    if (!NimBLEDevice::isInitialized()) return;
     uint8_t modeAddr[6] = {0};
     deriveModeSpecificBleAddress(modeAddr, currentEmulationMode);
     NimBLEDevice::setOwnAddrType(BLE_OWN_ADDR_RANDOM);
