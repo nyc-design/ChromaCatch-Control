@@ -235,6 +235,7 @@ bool SwitchProBT::begin() {
     _ly = 2048;
     _rx = 2048;
     _ry = 2048;
+    _legacyHid = false;
 
     const uint8_t* btAddr = esp_bt_dev_get_address();
     if (btAddr != nullptr) {
@@ -247,6 +248,7 @@ bool SwitchProBT::begin() {
     esp_bt_controller_status_t ctrlStatus = esp_bt_controller_get_status();
     Serial.printf("[SwitchProBT] controller status (pre): %d\n", static_cast<int>(ctrlStatus));
     if (ctrlStatus == ESP_BT_CONTROLLER_STATUS_IDLE) {
+        esp_bt_controller_mem_release(ESP_BT_MODE_BLE);
         esp_bt_controller_config_t cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
         esp_err_t err = esp_bt_controller_init(&cfg);
         if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
@@ -258,9 +260,9 @@ bool SwitchProBT::begin() {
     ctrlStatus = esp_bt_controller_get_status();
     Serial.printf("[SwitchProBT] controller status (post-init): %d\n", static_cast<int>(ctrlStatus));
     if (ctrlStatus == ESP_BT_CONTROLLER_STATUS_INITED) {
-        esp_err_t err = esp_bt_controller_enable(ESP_BT_MODE_BTDM);
+        esp_err_t err = esp_bt_controller_enable(ESP_BT_MODE_CLASSIC_BT);
         if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-            Serial.printf("[SwitchProBT] controller_enable(BTDM) failed: %d\n", static_cast<int>(err));
+            Serial.printf("[SwitchProBT] controller_enable(CLASSIC_BT) failed: %d\n", static_cast<int>(err));
             return false;
         }
     }
@@ -313,7 +315,10 @@ bool SwitchProBT::begin() {
     esp_err_t err = esp_hidd_dev_init(&kBtHidConfig, ESP_HID_TRANSPORT_BT, &SwitchProBT::hiddEventCallback, &_dev);
     if (err != ESP_OK) {
         Serial.printf("[SwitchProBT] hidd_dev_init failed: %d\n", static_cast<int>(err));
-        return false;
+        _dev = nullptr;
+        if (!beginLegacyHid()) {
+            return false;
+        }
     }
 
     _active = true;
@@ -325,7 +330,9 @@ bool SwitchProBT::begin() {
 
 void SwitchProBT::end() {
     if (!_active) return;
-    if (_dev != nullptr) {
+    if (_legacyHid) {
+        endLegacyHid();
+    } else if (_dev != nullptr) {
         esp_hidd_dev_deinit(_dev);
     }
     if (esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_ENABLED) {
@@ -362,6 +369,11 @@ void SwitchProBT::hiddEventCallback(void* handlerArgs, esp_event_base_t base, in
     (void)base;
     if (g_switchProInstance == nullptr) return;
     g_switchProInstance->onHiddEvent(static_cast<esp_hidd_event_t>(id), static_cast<esp_hidd_event_data_t*>(eventData));
+}
+
+void SwitchProBT::legacyHiddCallback(esp_hidd_cb_event_t event, esp_hidd_cb_param_t* param) {
+    if (g_switchProInstance == nullptr) return;
+    g_switchProInstance->onLegacyHiddEvent(event, param);
 }
 
 void SwitchProBT::gapEventCallback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t* param) {
@@ -415,6 +427,78 @@ void SwitchProBT::onHiddEvent(esp_hidd_event_t event, esp_hidd_event_data_t* par
         default:
             break;
     }
+}
+
+void SwitchProBT::onLegacyHiddEvent(esp_hidd_cb_event_t event, esp_hidd_cb_param_t* param) {
+    switch (event) {
+        case ESP_HIDD_INIT_EVT: {
+            static esp_hidd_app_param_t appParam;
+            static esp_hidd_qos_param_t qos;
+            memset(&appParam, 0, sizeof(appParam));
+            memset(&qos, 0, sizeof(qos));
+            appParam.name = "Pro Controller";
+            appParam.description = "Wireless Gamepad";
+            appParam.provider = "Nintendo";
+            appParam.subclass = ESP_HID_CLASS_GPD;
+            appParam.desc_list = kSwitchProHidDescriptor;
+            appParam.desc_list_len = sizeof(kSwitchProHidDescriptor);
+            esp_bt_hid_device_register_app(&appParam, &qos, &qos);
+            break;
+        }
+        case ESP_HIDD_REGISTER_APP_EVT:
+            if (param != nullptr && param->register_app.status == ESP_HIDD_SUCCESS) {
+                _started = true;
+                esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
+                _discoverable = true;
+            }
+            break;
+        case ESP_HIDD_OPEN_EVT:
+            _connected = (param != nullptr && param->open.conn_status == ESP_HIDD_CONN_STATE_CONNECTED);
+            if (_connected) {
+                esp_bt_gap_set_scan_mode(ESP_BT_NON_CONNECTABLE, ESP_BT_NON_DISCOVERABLE);
+                _discoverable = false;
+            }
+            break;
+        case ESP_HIDD_CLOSE_EVT:
+            _connected = false;
+            esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
+            _discoverable = true;
+            break;
+        case ESP_HIDD_INTR_DATA_EVT:
+            if (param != nullptr) {
+                handleOutputReport(param->intr_data.report_id, param->intr_data.data, param->intr_data.len);
+            }
+            break;
+        case ESP_HIDD_SET_REPORT_EVT:
+            if (param != nullptr) {
+                handleOutputReport(param->set_report.report_id, param->set_report.data, param->set_report.len);
+            }
+            break;
+        default:
+            break;
+    }
+}
+
+bool SwitchProBT::beginLegacyHid() {
+    _legacyHid = true;
+    esp_err_t regErr = esp_bt_hid_device_register_callback(&SwitchProBT::legacyHiddCallback);
+    if (regErr != ESP_OK && regErr != ESP_ERR_INVALID_STATE) {
+        Serial.printf("[SwitchProBT] legacy register_callback failed: %d\n", static_cast<int>(regErr));
+        return false;
+    }
+    esp_err_t initErr = esp_bt_hid_device_init();
+    if (initErr != ESP_OK && initErr != ESP_ERR_INVALID_STATE) {
+        Serial.printf("[SwitchProBT] legacy hid_device_init failed: %d\n", static_cast<int>(initErr));
+        return false;
+    }
+    return true;
+}
+
+void SwitchProBT::endLegacyHid() {
+    if (!_legacyHid) return;
+    esp_bt_hid_device_unregister_app();
+    esp_bt_hid_device_deinit();
+    _legacyHid = false;
 }
 
 void SwitchProBT::handleOutputReport(uint8_t reportId, const uint8_t* data, uint16_t len) {
@@ -475,9 +559,18 @@ void SwitchProBT::handleOutputReport(uint8_t reportId, const uint8_t* data, uint
 }
 
 void SwitchProBT::sendSubcommandReply(uint8_t* payload, size_t len) {
-    if (_dev == nullptr || !_connected || !_started || payload == nullptr || len < 2) return;
+    if (!_connected || !_started || payload == nullptr || len < 2) return;
     payload[1] = _timer++;
-    esp_hidd_dev_input_set(_dev, 0, payload[0], payload + 1, len - 1);
+    if (_legacyHid) {
+        esp_bt_hid_device_send_report(
+            ESP_HIDD_REPORT_TYPE_INTRDATA,
+            payload[0],
+            len - 1,
+            payload + 1
+        );
+    } else if (_dev != nullptr) {
+        esp_hidd_dev_input_set(_dev, 0, payload[0], payload + 1, len - 1);
+    }
 }
 
 void SwitchProBT::packStick(uint16_t x, uint16_t y, uint8_t out[3]) {
@@ -564,8 +657,22 @@ bool SwitchProBT::setHat(const String& direction) {
     return true;
 }
 
+void SwitchProBT::setRawState(
+    uint8_t btnRight, uint8_t btnShared, uint8_t btnLeft,
+    uint16_t lx, uint16_t ly, uint16_t rx, uint16_t ry
+) {
+    _btnRight = btnRight;
+    _btnShared = btnShared;
+    _btnLeft = btnLeft;
+    _lx = lx;
+    _ly = ly;
+    _rx = rx;
+    _ry = ry;
+    sendStandardInputReport();
+}
+
 void SwitchProBT::sendStandardInputReport() {
-    if (_dev == nullptr || !_connected || !_started) return;
+    if (!_connected || !_started) return;
     uint8_t payload[12] = {0};
     payload[0] = _timer++;
     payload[1] = 0x80;      // controller state/battery byte for normal 0x30 input reports
@@ -575,7 +682,16 @@ void SwitchProBT::sendStandardInputReport() {
     packStick(_lx, _ly, &payload[5]);
     packStick(_rx, _ry, &payload[8]);
     payload[11] = 0x08;     // vibration ACK marker (BlueCon/EasyCon-compatible)
-    esp_hidd_dev_input_set(_dev, 0, 0x30, payload, sizeof(payload));
+    if (_legacyHid) {
+        esp_bt_hid_device_send_report(
+            ESP_HIDD_REPORT_TYPE_INTRDATA,
+            0x30,
+            sizeof(payload),
+            payload
+        );
+    } else if (_dev != nullptr) {
+        esp_hidd_dev_input_set(_dev, 0, 0x30, payload, sizeof(payload));
+    }
 }
 
 void SwitchProBT::sendState() {

@@ -27,6 +27,8 @@
 #include <GxEPD2_BW.h>
 #include <Fonts/FreeMonoBold9pt7b.h>
 #include <string>
+#include <vector>
+#include <deque>
 
 #include <NimBLEDevice.h>
 #include <BleCombo.h>
@@ -180,10 +182,71 @@ EmulationMode currentEmulationMode = EMU_BLUETOOTH_COMBO;
 InputPolicy inputPolicy = INPUT_POLICY_AUTO;
 
 String serialBuffer = "";
+std::vector<uint8_t> serialBinaryBuffer;
+bool serialTextMode = false;
 unsigned long lastWiredCommandAtMs = 0;
 unsigned long lastWSCommandAtMs = 0;
 uint32_t wsMsgCounter = 0;
 size_t wsConnectedClients = 0;
+
+// SerialPABotBase compatibility (PA-aligned framing + core message IDs)
+constexpr uint8_t PABB_PROTOCOL_OVERHEAD = 6;
+constexpr uint8_t PABB_PROTOCOL_MAX_PACKET_SIZE = 64;
+
+constexpr uint8_t PABB_MSG_ERROR_INVALID_TYPE = 0x03;
+constexpr uint8_t PABB_MSG_ERROR_INVALID_REQUEST = 0x04;
+constexpr uint8_t PABB_MSG_ERROR_COMMAND_DROPPED = 0x06;
+constexpr uint8_t PABB_MSG_ACK_COMMAND = 0x10;
+constexpr uint8_t PABB_MSG_ACK_REQUEST = 0x11;
+constexpr uint8_t PABB_MSG_ACK_REQUEST_I8 = 0x12;
+constexpr uint8_t PABB_MSG_ACK_REQUEST_I32 = 0x14;
+constexpr uint8_t PABB_MSG_ACK_REQUEST_DATA = 0x1f;
+
+constexpr uint8_t PABB_MSG_REQUEST_PROTOCOL_VERSION = 0x41;
+constexpr uint8_t PABB_MSG_REQUEST_PROGRAM_VERSION = 0x42;
+constexpr uint8_t PABB_MSG_REQUEST_PROGRAM_ID = 0x43;
+constexpr uint8_t PABB_MSG_REQUEST_PROGRAM_NAME = 0x44;
+constexpr uint8_t PABB_MSG_REQUEST_CONTROLLER_LIST = 0x45;
+constexpr uint8_t PABB_MSG_REQUEST_QUEUE_SIZE = 0x46;
+constexpr uint8_t PABB_MSG_REQUEST_READ_CONTROLLER_MODE = 0x47;
+constexpr uint8_t PABB_MSG_REQUEST_CHANGE_CONTROLLER_MODE = 0x48;
+constexpr uint8_t PABB_MSG_REQUEST_RESET_TO_CONTROLLER = 0x49;
+constexpr uint8_t PABB_MSG_REQUEST_COMMAND_FINISHED = 0x4a;
+constexpr uint8_t PABB_MSG_REQUEST_STATUS = 0x50;
+constexpr uint8_t PABB_MSG_REQUEST_READ_MAC_ADDRESS = 0x51;
+constexpr uint8_t PABB_MSG_REQUEST_PAIRED_MAC_ADDRESS = 0x52;
+constexpr uint8_t PABB_MSG_REQUEST_NS1_OEM_CONTROLLER_READ_SPI = 0x60;
+constexpr uint8_t PABB_MSG_REQUEST_NS1_OEM_CONTROLLER_WRITE_SPI = 0x61;
+constexpr uint8_t PABB_MSG_REQUEST_NS1_OEM_CONTROLLER_PLAYER_LIGHTS = 0x62;
+
+constexpr uint8_t PABB_MSG_COMMAND_HID_KEYBOARD_STATE = 0x82;
+constexpr uint8_t PABB_MSG_COMMAND_NS_WIRED_CONTROLLER_STATE = 0x90;
+constexpr uint8_t PABB_MSG_COMMAND_NS1_OEM_CONTROLLER_BUTTONS = 0xa0;
+constexpr uint8_t PABB_MSG_COMMAND_NS1_OEM_CONTROLLER_FULL_STATE = 0xa1;
+
+constexpr uint8_t PABB_PID_PABOTBASE_ESP32 = 0x10;
+constexpr uint8_t PABB_PID_PABOTBASE_ESP32S3 = 0x12;
+constexpr uint32_t PABB_PROTOCOL_VERSION = 2025120800;
+constexpr uint32_t PABB_PROGRAM_VERSION = 2025120800;
+constexpr uint8_t PABB_QUEUE_SIZE = 4;
+constexpr uint32_t PABB_CID_NONE = 0x0000;
+constexpr uint32_t PABB_CID_StandardHid_Keyboard = 0x0100;
+constexpr uint32_t PABB_CID_NintendoSwitch_WiredController = 0x1000;
+constexpr uint32_t PABB_CID_NintendoSwitch_WiredProController = 0x1100;
+constexpr uint32_t PABB_CID_NintendoSwitch_WirelessProController = 0x1180;
+
+uint32_t pabbOutgoingSeq = 1;
+
+struct PabbTimedCommand {
+    uint8_t type;
+    uint32_t seq;
+    uint16_t milliseconds;
+    std::vector<uint8_t> payload;
+};
+std::deque<PabbTimedCommand> pabbCommandQueue;
+bool pabbCommandActive = false;
+PabbTimedCommand pabbActiveCommand{};
+unsigned long pabbActiveCommandEndMs = 0;
 
 // Menu
 int menuIndex = 0;
@@ -222,6 +285,8 @@ bool statusLedMonoEnabled = false;
 bool isUSBMounted();
 bool isBLEConnected();
 RuntimeDelivery chooseRuntimeDelivery();
+void processPabbMessage(uint8_t type, const uint8_t* body, size_t bodyLen);
+void servicePabbCommandQueue();
 
 // ============================================================
 // Helpers
@@ -625,6 +690,8 @@ void applyEmulationMode(EmulationMode mode) {
             break;
     }
     UsbHidBridge::setGamepadProfile(emulationModeToUsbProfile(mode));
+    pabbCommandQueue.clear();
+    pabbCommandActive = false;
     persistRuntimeConfig();
 }
 
@@ -2122,6 +2189,550 @@ void onWSEvent(uint8_t clientId, WStype_t type, uint8_t* payload, size_t length)
 // ============================================================
 // Serial input handling (wired command channel)
 // ============================================================
+namespace {
+
+uint32_t readLE32(const uint8_t* ptr) {
+    return static_cast<uint32_t>(ptr[0]) |
+           (static_cast<uint32_t>(ptr[1]) << 8) |
+           (static_cast<uint32_t>(ptr[2]) << 16) |
+           (static_cast<uint32_t>(ptr[3]) << 24);
+}
+
+void writeLE32(uint8_t* ptr, uint32_t value) {
+    ptr[0] = static_cast<uint8_t>(value & 0xff);
+    ptr[1] = static_cast<uint8_t>((value >> 8) & 0xff);
+    ptr[2] = static_cast<uint8_t>((value >> 16) & 0xff);
+    ptr[3] = static_cast<uint8_t>((value >> 24) & 0xff);
+}
+
+uint32_t pabbCRC32C(const uint8_t* data, size_t len) {
+    uint32_t crc = 0xffffffffu;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (int b = 0; b < 8; b++) {
+            if (crc & 1) crc = (crc >> 1) ^ 0x82F63B78u;
+            else crc >>= 1;
+        }
+    }
+    return crc;
+}
+
+void sendPabbMessage(uint8_t type, const uint8_t* body, size_t bodyLen) {
+    if (bodyLen + PABB_PROTOCOL_OVERHEAD > PABB_PROTOCOL_MAX_PACKET_SIZE) return;
+
+    const size_t packetLen = bodyLen + PABB_PROTOCOL_OVERHEAD;
+    uint8_t packet[PABB_PROTOCOL_MAX_PACKET_SIZE] = {0};
+    packet[0] = static_cast<uint8_t>(~packetLen);
+    packet[1] = type;
+    if (body != nullptr && bodyLen > 0) {
+        memcpy(packet + 2, body, bodyLen);
+    }
+    uint32_t crc = pabbCRC32C(packet, packetLen - sizeof(uint32_t));
+    writeLE32(packet + packetLen - sizeof(uint32_t), crc);
+    Serial.write(packet, packetLen);
+}
+
+void sendPabbErrorType(uint8_t type) {
+    sendPabbMessage(PABB_MSG_ERROR_INVALID_TYPE, &type, 1);
+}
+
+void sendPabbErrorSeq(uint8_t errType, uint32_t seq) {
+    uint8_t body[4];
+    writeLE32(body, seq);
+    sendPabbMessage(errType, body, sizeof(body));
+}
+
+void sendPabbAckRequest(uint32_t seq) {
+    uint8_t body[4];
+    writeLE32(body, seq);
+    sendPabbMessage(PABB_MSG_ACK_REQUEST, body, sizeof(body));
+}
+
+void sendPabbAckCommand(uint32_t seq) {
+    uint8_t body[4];
+    writeLE32(body, seq);
+    sendPabbMessage(PABB_MSG_ACK_COMMAND, body, sizeof(body));
+}
+
+void sendPabbAckRequestI8(uint32_t seq, uint8_t value) {
+    uint8_t body[5];
+    writeLE32(body, seq);
+    body[4] = value;
+    sendPabbMessage(PABB_MSG_ACK_REQUEST_I8, body, sizeof(body));
+}
+
+void sendPabbAckRequestI32(uint32_t seq, uint32_t value) {
+    uint8_t body[8];
+    writeLE32(body, seq);
+    writeLE32(body + 4, value);
+    sendPabbMessage(PABB_MSG_ACK_REQUEST_I32, body, sizeof(body));
+}
+
+void sendPabbAckRequestData(uint32_t seq, const uint8_t* data, size_t dataLen) {
+    if (dataLen + sizeof(uint32_t) > 56) return;
+    uint8_t body[60] = {0};
+    writeLE32(body, seq);
+    if (data != nullptr && dataLen > 0) {
+        memcpy(body + sizeof(uint32_t), data, dataLen);
+    }
+    sendPabbMessage(PABB_MSG_ACK_REQUEST_DATA, body, sizeof(uint32_t) + dataLen);
+}
+
+uint8_t boardProgramId() {
+    return BOARD_IS_ESP32S3 ? PABB_PID_PABOTBASE_ESP32S3 : PABB_PID_PABOTBASE_ESP32;
+}
+
+uint32_t emulationModeToPabbControllerId(EmulationMode mode) {
+    switch (mode) {
+        case EMU_WIRED_SWITCH_PRO_CONTROLLER:
+            return PABB_CID_NintendoSwitch_WiredProController;
+        case EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER:
+            return PABB_CID_NintendoSwitch_WirelessProController;
+        case EMU_BLUETOOTH_KEYBOARD_ONLY:
+        case EMU_WIRED_KEYBOARD_ONLY:
+            return PABB_CID_StandardHid_Keyboard;
+        default:
+            return PABB_CID_NONE;
+    }
+}
+
+EmulationMode pabbControllerIdToEmulationMode(uint32_t controllerId) {
+    switch (controllerId) {
+        case PABB_CID_StandardHid_Keyboard:
+            return BOARD_SUPPORTS_WIRED_OUTPUT ? EMU_WIRED_KEYBOARD_ONLY : EMU_BLUETOOTH_KEYBOARD_ONLY;
+        case PABB_CID_NintendoSwitch_WiredController:
+        case PABB_CID_NintendoSwitch_WiredProController:
+            return BOARD_SUPPORTS_WIRED_OUTPUT ? EMU_WIRED_SWITCH_PRO_CONTROLLER : EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER;
+        case PABB_CID_NintendoSwitch_WirelessProController:
+            return BOARD_SUPPORTS_BT_SWITCH_PRO_MODE ? EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER : EMU_WIRED_SWITCH_PRO_CONTROLLER;
+        default:
+            return currentEmulationMode;
+    }
+}
+
+bool pabbControllerIdKnown(uint32_t controllerId) {
+    switch (controllerId) {
+        case PABB_CID_NONE:
+        case PABB_CID_StandardHid_Keyboard:
+        case PABB_CID_NintendoSwitch_WiredController:
+        case PABB_CID_NintendoSwitch_WiredProController:
+        case PABB_CID_NintendoSwitch_WirelessProController:
+            return true;
+        default:
+            return false;
+    }
+}
+
+std::vector<uint32_t> pabbSupportedControllers() {
+    std::vector<uint32_t> ids;
+    ids.push_back(PABB_CID_NONE);
+    ids.push_back(PABB_CID_StandardHid_Keyboard);
+    if (BOARD_SUPPORTS_WIRED_OUTPUT) {
+        ids.push_back(PABB_CID_NintendoSwitch_WiredController);
+        ids.push_back(PABB_CID_NintendoSwitch_WiredProController);
+    }
+    if (BOARD_SUPPORTS_BT_SWITCH_PRO_MODE) {
+        ids.push_back(PABB_CID_NintendoSwitch_WirelessProController);
+    }
+    return ids;
+}
+
+uint8_t pabbWiredButtons0 = 0;
+uint8_t pabbWiredButtons1 = 0;
+
+void applyPAWiredState(const uint8_t* report, size_t reportLen) {
+    if (!BOARD_SUPPORTS_WIRED_OUTPUT || report == nullptr || reportLen < 7) return;
+    if (currentEmulationMode != EMU_WIRED_SWITCH_PRO_CONTROLLER) return;
+
+    const uint8_t buttons0 = report[0];
+    const uint8_t buttons1 = report[1];
+    const uint8_t dpadByte = report[2];
+    const int lx = static_cast<int>(report[3]) - 128;
+    const int ly = static_cast<int>(report[4]) - 128;
+    const int rx = static_cast<int>(report[5]) - 128;
+    const int ry = static_cast<int>(report[6]) - 128;
+
+    auto updateButton = [&](uint8_t prevMaskByte, uint8_t nextMaskByte, uint8_t bit, uint8_t mapped) {
+        bool prevPressed = (prevMaskByte & (1 << bit)) != 0;
+        bool nextPressed = (nextMaskByte & (1 << bit)) != 0;
+        if (prevPressed == nextPressed) return;
+        if (nextPressed) UsbHidBridge::gamepadPress(mapped);
+        else UsbHidBridge::gamepadRelease(mapped);
+    };
+
+    // buttons0: Y/B/A/X/L/R/ZL/ZR
+    updateButton(pabbWiredButtons0, buttons0, 0, UsbHidBridge::USB_BUTTON_WEST);   // Y
+    updateButton(pabbWiredButtons0, buttons0, 1, UsbHidBridge::USB_BUTTON_SOUTH);  // B
+    updateButton(pabbWiredButtons0, buttons0, 2, UsbHidBridge::USB_BUTTON_EAST);   // A
+    updateButton(pabbWiredButtons0, buttons0, 3, UsbHidBridge::USB_BUTTON_NORTH);  // X
+    updateButton(pabbWiredButtons0, buttons0, 4, UsbHidBridge::USB_BUTTON_TL);     // L
+    updateButton(pabbWiredButtons0, buttons0, 5, UsbHidBridge::USB_BUTTON_TR);     // R
+    updateButton(pabbWiredButtons0, buttons0, 6, UsbHidBridge::USB_BUTTON_TL2);    // ZL
+    updateButton(pabbWiredButtons0, buttons0, 7, UsbHidBridge::USB_BUTTON_TR2);    // ZR
+
+    // buttons1: minus/plus/l3/r3/home/capture/gr/gl
+    updateButton(pabbWiredButtons1, buttons1, 0, UsbHidBridge::USB_BUTTON_SELECT); // minus
+    updateButton(pabbWiredButtons1, buttons1, 1, UsbHidBridge::USB_BUTTON_START);  // plus
+    updateButton(pabbWiredButtons1, buttons1, 2, UsbHidBridge::USB_BUTTON_THUMBL); // l3
+    updateButton(pabbWiredButtons1, buttons1, 3, UsbHidBridge::USB_BUTTON_THUMBR); // r3
+    updateButton(pabbWiredButtons1, buttons1, 4, UsbHidBridge::USB_BUTTON_MODE);   // home
+    updateButton(pabbWiredButtons1, buttons1, 5, UsbHidBridge::USB_BUTTON_MODE);   // capture (best effort)
+    updateButton(pabbWiredButtons1, buttons1, 6, UsbHidBridge::USB_BUTTON_MODE);   // GR
+    updateButton(pabbWiredButtons1, buttons1, 7, UsbHidBridge::USB_BUTTON_MODE);   // GL
+
+    uint8_t hat = UsbHidBridge::USB_HAT_CENTER;
+    switch (dpadByte & 0x0f) {
+        case 0: hat = UsbHidBridge::USB_HAT_UP; break;
+        case 1: hat = UsbHidBridge::USB_HAT_UP_RIGHT; break;
+        case 2: hat = UsbHidBridge::USB_HAT_RIGHT; break;
+        case 3: hat = UsbHidBridge::USB_HAT_DOWN_RIGHT; break;
+        case 4: hat = UsbHidBridge::USB_HAT_DOWN; break;
+        case 5: hat = UsbHidBridge::USB_HAT_DOWN_LEFT; break;
+        case 6: hat = UsbHidBridge::USB_HAT_LEFT; break;
+        case 7: hat = UsbHidBridge::USB_HAT_UP_LEFT; break;
+        default: hat = UsbHidBridge::USB_HAT_CENTER; break;
+    }
+    UsbHidBridge::gamepadHat(hat);
+    UsbHidBridge::gamepadLeftStick(lx, ly);
+    UsbHidBridge::gamepadRightStick(rx, ry);
+
+    pabbWiredButtons0 = buttons0;
+    pabbWiredButtons1 = buttons1;
+}
+
+void neutralizePAWiredState() {
+    uint8_t neutral[7] = {0, 0, 8, 128, 128, 128, 128};
+    applyPAWiredState(neutral, sizeof(neutral));
+}
+
+uint8_t pabbKeyboardModifiers = 0;
+uint8_t pabbKeyboardKeys[6] = {0};
+
+uint8_t pabbModifierToKeycode(uint8_t bit) {
+    switch (bit) {
+        // Standard HID keyboard modifier keycodes (USBHIDKeyboard-compatible)
+        case 0: return 0x80; // Left Ctrl
+        case 1: return 0x81; // Left Shift
+        case 2: return 0x82; // Left Alt
+        case 3: return 0x83; // Left GUI
+        case 4: return 0x84; // Right Ctrl
+        case 5: return 0x85; // Right Shift
+        case 6: return 0x86; // Right Alt
+        case 7: return 0x87; // Right GUI
+        default: return 0;
+    }
+}
+
+void applyPAKeyboardState(const uint8_t* report, size_t reportLen) {
+    if (!BOARD_SUPPORTS_WIRED_OUTPUT || report == nullptr || reportLen < 8) return;
+    if (!(currentEmulationMode == EMU_WIRED_KEYBOARD_ONLY ||
+          currentEmulationMode == EMU_WIRED_COMBO ||
+          currentEmulationMode == EMU_BLUETOOTH_KEYBOARD_ONLY ||
+          currentEmulationMode == EMU_BLUETOOTH_COMBO)) return;
+
+    uint8_t nextModifiers = report[0];
+    const uint8_t* nextKeys = report + 2;
+
+    for (uint8_t bit = 0; bit < 8; bit++) {
+        bool prevPressed = (pabbKeyboardModifiers & (1 << bit)) != 0;
+        bool nextPressed = (nextModifiers & (1 << bit)) != 0;
+        if (prevPressed == nextPressed) continue;
+        uint8_t key = pabbModifierToKeycode(bit);
+        if (key == 0) continue;
+        if (nextPressed) UsbHidBridge::keyboardPress(key);
+        else UsbHidBridge::keyboardRelease(key);
+    }
+
+    for (uint8_t i = 0; i < 6; i++) {
+        uint8_t key = pabbKeyboardKeys[i];
+        if (key == 0) continue;
+        bool stillPresent = false;
+        for (uint8_t j = 0; j < 6; j++) {
+            if (nextKeys[j] == key) {
+                stillPresent = true;
+                break;
+            }
+        }
+        if (!stillPresent) {
+            UsbHidBridge::keyboardRelease(key);
+        }
+    }
+
+    for (uint8_t i = 0; i < 6; i++) {
+        uint8_t key = nextKeys[i];
+        if (key == 0) continue;
+        bool alreadyPressed = false;
+        for (uint8_t j = 0; j < 6; j++) {
+            if (pabbKeyboardKeys[j] == key) {
+                alreadyPressed = true;
+                break;
+            }
+        }
+        if (!alreadyPressed) {
+            UsbHidBridge::keyboardPress(key);
+        }
+    }
+
+    pabbKeyboardModifiers = nextModifiers;
+    memcpy(pabbKeyboardKeys, nextKeys, 6);
+}
+
+void neutralizePAKeyboardState() {
+    uint8_t neutral[8] = {0};
+    applyPAKeyboardState(neutral, sizeof(neutral));
+}
+
+void decodeOemJoystick(const uint8_t in[3], uint16_t& x, uint16_t& y) {
+    x = static_cast<uint16_t>(in[0] | ((in[1] & 0x0f) << 8));
+    y = static_cast<uint16_t>((in[1] >> 4) | (in[2] << 4));
+}
+
+void applyPAOemButtonsState(const uint8_t* payload, size_t payloadLen) {
+#if defined(CONFIG_IDF_TARGET_ESP32)
+    if (!BOARD_SUPPORTS_BT_SWITCH_PRO_MODE || payload == nullptr || payloadLen < 10) return;
+    if (currentEmulationMode != EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER) return;
+
+    uint16_t lx = 2048, ly = 2048, rx = 2048, ry = 2048;
+    decodeOemJoystick(payload + 3, lx, ly);
+    decodeOemJoystick(payload + 6, rx, ry);
+    switchProBt.setRawState(payload[0], payload[1], payload[2], lx, ly, rx, ry);
+#else
+    (void)payload;
+    (void)payloadLen;
+#endif
+}
+
+void neutralizePAOemState() {
+#if defined(CONFIG_IDF_TARGET_ESP32)
+    if (!BOARD_SUPPORTS_BT_SWITCH_PRO_MODE) return;
+    switchProBt.setRawState(0, 0, 0, 2048, 2048, 2048, 2048);
+#endif
+}
+
+void sendPabbCommandFinished(uint32_t originalSeq) {
+    uint8_t body[12];
+    writeLE32(body, pabbOutgoingSeq++);
+    writeLE32(body + 4, originalSeq);
+    writeLE32(body + 8, millis());
+    sendPabbMessage(PABB_MSG_REQUEST_COMMAND_FINISHED, body, sizeof(body));
+}
+
+void enqueuePabbTimedCommand(uint8_t type, uint32_t seq, uint16_t milliseconds, const uint8_t* payload, size_t payloadLen) {
+    if (pabbCommandQueue.size() >= PABB_QUEUE_SIZE) {
+        sendPabbErrorSeq(PABB_MSG_ERROR_COMMAND_DROPPED, seq);
+        return;
+    }
+    PabbTimedCommand command;
+    command.type = type;
+    command.seq = seq;
+    command.milliseconds = milliseconds;
+    command.payload.assign(payload, payload + payloadLen);
+    pabbCommandQueue.push_back(std::move(command));
+    sendPabbAckCommand(seq);
+}
+
+void processPabbRequest(uint8_t type, const uint8_t* body, size_t bodyLen) {
+    if (bodyLen < sizeof(uint32_t)) {
+        sendPabbErrorType(type);
+        return;
+    }
+    uint32_t seq = readLE32(body);
+
+    switch (type) {
+        case PABB_MSG_REQUEST_PROTOCOL_VERSION:
+            sendPabbAckRequestI32(seq, PABB_PROTOCOL_VERSION);
+            return;
+        case PABB_MSG_REQUEST_PROGRAM_VERSION:
+            sendPabbAckRequestI32(seq, PABB_PROGRAM_VERSION);
+            return;
+        case PABB_MSG_REQUEST_PROGRAM_ID:
+            sendPabbAckRequestI8(seq, boardProgramId());
+            return;
+        case PABB_MSG_REQUEST_PROGRAM_NAME: {
+            static const char kName[] = "ChromaCatch";
+            sendPabbAckRequestData(seq, reinterpret_cast<const uint8_t*>(kName), sizeof(kName) - 1);
+            return;
+        }
+        case PABB_MSG_REQUEST_CONTROLLER_LIST: {
+            std::vector<uint32_t> ids = pabbSupportedControllers();
+            std::vector<uint8_t> bytes(ids.size() * sizeof(uint32_t), 0);
+            for (size_t i = 0; i < ids.size(); i++) {
+                writeLE32(bytes.data() + i * 4, ids[i]);
+            }
+            sendPabbAckRequestData(seq, bytes.data(), bytes.size());
+            return;
+        }
+        case PABB_MSG_REQUEST_QUEUE_SIZE:
+            sendPabbAckRequestI8(seq, PABB_QUEUE_SIZE);
+            return;
+        case PABB_MSG_REQUEST_READ_CONTROLLER_MODE:
+            sendPabbAckRequestI32(seq, emulationModeToPabbControllerId(currentEmulationMode));
+            return;
+        case PABB_MSG_REQUEST_CHANGE_CONTROLLER_MODE:
+        case PABB_MSG_REQUEST_RESET_TO_CONTROLLER: {
+            if (bodyLen < 8) {
+                sendPabbErrorSeq(PABB_MSG_ERROR_INVALID_REQUEST, seq);
+                return;
+            }
+            uint32_t requestedController = readLE32(body + 4);
+            if (!pabbControllerIdKnown(requestedController)) {
+                sendPabbErrorSeq(PABB_MSG_ERROR_INVALID_REQUEST, seq);
+                return;
+            }
+            EmulationMode requestedMode = pabbControllerIdToEmulationMode(requestedController);
+            if (!emulationModeSupported(requestedMode)) {
+                sendPabbErrorSeq(PABB_MSG_ERROR_INVALID_REQUEST, seq);
+                return;
+            }
+            applyEmulationMode(requestedMode);
+            initBLE();
+            displayMenu();
+            sendPabbAckRequestI32(seq, emulationModeToPabbControllerId(currentEmulationMode));
+            return;
+        }
+        case PABB_MSG_REQUEST_STATUS: {
+            uint32_t status = 0;
+            bool connected = chooseRuntimeDelivery() != RUNTIME_NONE;
+            if (connected) status |= 1; // connected
+            if (connected) status |= 2; // ready
+            if (isBLEConnected()) status |= 4; // paired
+            sendPabbAckRequestI32(seq, status);
+            return;
+        }
+        case PABB_MSG_REQUEST_READ_MAC_ADDRESS:
+        case PABB_MSG_REQUEST_PAIRED_MAC_ADDRESS: {
+            uint8_t mac[6] = {0};
+            uint8_t modeAddr[6] = {0};
+            deriveModeSpecificBleAddress(modeAddr, currentEmulationMode);
+            memcpy(mac, modeAddr, sizeof(mac));
+            if (type == PABB_MSG_REQUEST_PAIRED_MAC_ADDRESS && !isBLEConnected()) {
+                memset(mac, 0, sizeof(mac));
+            }
+            sendPabbAckRequestData(seq, mac, sizeof(mac));
+            return;
+        }
+        case PABB_MSG_REQUEST_NS1_OEM_CONTROLLER_READ_SPI: {
+            // BT Switch SPI reads are handled on the Switch HID output-report side.
+            // PA serial request path receives a best-effort empty ACK payload.
+            sendPabbAckRequestData(seq, nullptr, 0);
+            return;
+        }
+        case PABB_MSG_REQUEST_NS1_OEM_CONTROLLER_WRITE_SPI:
+            sendPabbAckRequest(seq);
+            return;
+        case PABB_MSG_REQUEST_NS1_OEM_CONTROLLER_PLAYER_LIGHTS:
+            sendPabbAckRequestI8(seq, 0x01);
+            return;
+        case PABB_MSG_REQUEST_COMMAND_FINISHED:
+        case PABB_MSG_ACK_REQUEST:
+        case PABB_MSG_ACK_COMMAND:
+        case PABB_MSG_ACK_REQUEST_I8:
+        case PABB_MSG_ACK_REQUEST_I32:
+        case PABB_MSG_ACK_REQUEST_DATA:
+            // Host-side acks/command-finished are accepted and ignored.
+            return;
+        default:
+            sendPabbErrorType(type);
+            return;
+    }
+}
+
+void processPabbCommand(uint8_t type, const uint8_t* body, size_t bodyLen) {
+    if (bodyLen < 6) {
+        sendPabbErrorType(type);
+        return;
+    }
+    uint32_t seq = readLE32(body);
+    uint16_t milliseconds = static_cast<uint16_t>(body[4] | (body[5] << 8));
+    const uint8_t* payload = body + 6;
+    size_t payloadLen = bodyLen - 6;
+
+    switch (type) {
+        case PABB_MSG_COMMAND_HID_KEYBOARD_STATE:
+            enqueuePabbTimedCommand(type, seq, milliseconds, payload, payloadLen);
+            return;
+        case PABB_MSG_COMMAND_NS_WIRED_CONTROLLER_STATE:
+            enqueuePabbTimedCommand(type, seq, milliseconds, payload, payloadLen);
+            return;
+        case PABB_MSG_COMMAND_NS1_OEM_CONTROLLER_BUTTONS:
+            enqueuePabbTimedCommand(type, seq, milliseconds, payload, payloadLen);
+            return;
+        case PABB_MSG_COMMAND_NS1_OEM_CONTROLLER_FULL_STATE:
+            enqueuePabbTimedCommand(type, seq, milliseconds, payload, payloadLen);
+            return;
+        default:
+            sendPabbErrorType(type);
+            return;
+    }
+}
+
+} // namespace
+
+void processPabbMessage(uint8_t type, const uint8_t* body, size_t bodyLen) {
+    if (!BOARD_SUPPORTS_WIRED_INPUT) return;
+    if (!isSourceAllowed(SOURCE_WIRED)) return;
+
+    lastWiredCommandAtMs = millis();
+
+    if ((type & 0xc0) == 0x40 || (type & 0xf0) == 0x10 || (type & 0xf0) == 0x00) {
+        processPabbRequest(type, body, bodyLen);
+        return;
+    }
+    if (type >= 0x80) {
+        processPabbCommand(type, body, bodyLen);
+        return;
+    }
+    sendPabbErrorType(type);
+}
+
+void servicePabbCommandQueue() {
+    if (!BOARD_SUPPORTS_WIRED_INPUT) return;
+
+    if (!pabbCommandActive && !pabbCommandQueue.empty()) {
+        pabbActiveCommand = std::move(pabbCommandQueue.front());
+        pabbCommandQueue.pop_front();
+        pabbCommandActive = true;
+        pabbActiveCommandEndMs = millis() + pabbActiveCommand.milliseconds;
+
+        switch (pabbActiveCommand.type) {
+            case PABB_MSG_COMMAND_HID_KEYBOARD_STATE:
+                applyPAKeyboardState(pabbActiveCommand.payload.data(), pabbActiveCommand.payload.size());
+                break;
+            case PABB_MSG_COMMAND_NS_WIRED_CONTROLLER_STATE:
+                applyPAWiredState(pabbActiveCommand.payload.data(), pabbActiveCommand.payload.size());
+                break;
+            case PABB_MSG_COMMAND_NS1_OEM_CONTROLLER_BUTTONS:
+                applyPAOemButtonsState(pabbActiveCommand.payload.data(), pabbActiveCommand.payload.size());
+                break;
+            case PABB_MSG_COMMAND_NS1_OEM_CONTROLLER_FULL_STATE:
+                applyPAOemButtonsState(pabbActiveCommand.payload.data(), pabbActiveCommand.payload.size());
+                break;
+            default:
+                break;
+        }
+    }
+
+    if (!pabbCommandActive) return;
+    if (static_cast<int32_t>(millis() - pabbActiveCommandEndMs) < 0) return;
+
+    switch (pabbActiveCommand.type) {
+        case PABB_MSG_COMMAND_HID_KEYBOARD_STATE:
+            neutralizePAKeyboardState();
+            break;
+        case PABB_MSG_COMMAND_NS_WIRED_CONTROLLER_STATE:
+            neutralizePAWiredState();
+            break;
+        case PABB_MSG_COMMAND_NS1_OEM_CONTROLLER_BUTTONS:
+        case PABB_MSG_COMMAND_NS1_OEM_CONTROLLER_FULL_STATE:
+            neutralizePAOemState();
+            break;
+        default:
+            break;
+    }
+    sendPabbCommandFinished(pabbActiveCommand.seq);
+    pabbCommandActive = false;
+}
+
 void processSerialCommand(const String& line) {
     if (!BOARD_SUPPORTS_WIRED_INPUT) {
         Serial.println("{\"status\":\"error\",\"error\":\"wired_input_not_supported_on_this_board\"}");
@@ -2149,23 +2760,74 @@ void processSerialCommand(const String& line) {
     Serial.println(out);
 }
 
+void processSerialBinaryBuffer() {
+    while (!serialBinaryBuffer.empty()) {
+        uint8_t lead = serialBinaryBuffer[0];
+        if (lead == 0x00) {
+            serialBinaryBuffer.erase(serialBinaryBuffer.begin());
+            continue;
+        }
+
+        uint8_t packetLen = static_cast<uint8_t>(~lead);
+        if (packetLen < PABB_PROTOCOL_OVERHEAD || packetLen > PABB_PROTOCOL_MAX_PACKET_SIZE) {
+            serialBinaryBuffer.erase(serialBinaryBuffer.begin());
+            continue;
+        }
+        if (serialBinaryBuffer.size() < packetLen) {
+            return;
+        }
+
+        uint32_t expected = readLE32(serialBinaryBuffer.data() + packetLen - sizeof(uint32_t));
+        uint32_t actual = pabbCRC32C(serialBinaryBuffer.data(), packetLen - sizeof(uint32_t));
+        if (expected != actual) {
+            serialBinaryBuffer.erase(serialBinaryBuffer.begin());
+            continue;
+        }
+
+        uint8_t type = serialBinaryBuffer[1];
+        size_t bodyLen = packetLen - PABB_PROTOCOL_OVERHEAD;
+        const uint8_t* body = serialBinaryBuffer.data() + 2;
+        processPabbMessage(type, body, bodyLen);
+        serialBinaryBuffer.erase(serialBinaryBuffer.begin(), serialBinaryBuffer.begin() + packetLen);
+    }
+}
+
 void handleSerialInput() {
     if (!BOARD_SUPPORTS_WIRED_INPUT) return;
 
     while (Serial.available()) {
-        char c = Serial.read();
-        if (c == '\n' || c == '\r') {
-            if (serialBuffer.length() > 0) {
-                processSerialCommand(serialBuffer);
-                serialBuffer = "";
+        uint8_t byte = static_cast<uint8_t>(Serial.read());
+
+        if (serialTextMode) {
+            char c = static_cast<char>(byte);
+            if (c == '\n' || c == '\r') {
+                if (serialBuffer.length() > 0) {
+                    processSerialCommand(serialBuffer);
+                    serialBuffer = "";
+                }
+                serialTextMode = false;
+            } else {
+                serialBuffer += c;
+                if (serialBuffer.length() > 2048) {
+                    Serial.println("{\"status\":\"error\",\"error\":\"serial buffer overflow\"}");
+                    serialBuffer = "";
+                    serialTextMode = false;
+                }
             }
-        } else {
-            serialBuffer += c;
-            if (serialBuffer.length() > 2048) {
-                Serial.println("{\"status\":\"error\",\"error\":\"serial buffer overflow\"}");
-                serialBuffer = "";
-            }
+            continue;
         }
+
+        if (serialBinaryBuffer.empty() && serialBuffer.length() == 0 && (byte == '{' || byte == '[')) {
+            serialTextMode = true;
+            serialBuffer += static_cast<char>(byte);
+            continue;
+        }
+
+        serialBinaryBuffer.push_back(byte);
+        if (serialBinaryBuffer.size() > 512) {
+            serialBinaryBuffer.clear();
+        }
+        processSerialBinaryBuffer();
     }
 }
 
@@ -2278,6 +2940,7 @@ void loop() {
     UsbHidBridge::tick();
     handleButtons();
     handleSerialInput();
+    servicePabbCommandQueue();
     updateDisplayExpiry();
     updateStatusLed();
 #if defined(CONFIG_IDF_TARGET_ESP32)
