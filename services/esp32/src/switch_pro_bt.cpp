@@ -51,7 +51,8 @@ static esp_hid_device_config_t kBtHidConfig = {
 
 // 0x21 replies (payload contains report id + report body).
 static uint8_t kReply02[] = {
-    0x21, 0x01, 0x8E, 0x84, 0x00, 0x12, 0x00, 0x08, 0x80, 0x00, 0x08, 0x80,
+    // Keep device-info reply aligned with widely used Pro Controller emulators.
+    0x21, 0x01, 0x40, 0x84, 0x00, 0x12, 0x00, 0x08, 0x80, 0x00, 0x08, 0x80,
     0x00, 0x82, 0x02, 0x03, 0x48, 0x03, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x03, 0x01, 0x00, 0x00
 };
@@ -287,8 +288,18 @@ bool SwitchProBT::begin() {
 
     esp_bt_dev_set_device_name(kBtHidConfig.device_name);
     esp_bt_cod_t cod = {0};
+#if defined(ESP_BT_COD_MAJOR_DEV_PERIPHERAL)
+    cod.major = ESP_BT_COD_MAJOR_DEV_PERIPHERAL;
+#else
     cod.major = 5;
+#endif
+#if defined(ESP_BT_COD_MINOR_PERIPHERAL_GAMEPAD)
+    cod.minor = ESP_BT_COD_MINOR_PERIPHERAL_GAMEPAD;
+#elif defined(ESP_BT_COD_MINOR_PERIPHERAL_POINTING)
+    cod.minor = ESP_BT_COD_MINOR_PERIPHERAL_POINTING;
+#else
     cod.minor = 2;
+#endif
     cod.service = 1;
     esp_err_t codErr = esp_bt_gap_set_cod(cod, ESP_BT_SET_COD_ALL);
     if (codErr != ESP_OK) {
@@ -585,7 +596,8 @@ void SwitchProBT::tick() {
         return;
     }
 
-    if (millis() - _lastTickMs < 16) return;
+    // Pokemon Automation's wireless controller path is tuned around ~15ms cadence.
+    if (millis() - _lastTickMs < 15) return;
     _lastTickMs = millis();
     sendStandardInputReport();
 }
