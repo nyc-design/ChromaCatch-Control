@@ -61,11 +61,16 @@ const int GPIO_UP   = 35;
 const int GPIO_DOWN = 34;
 const int GPIO_SEL  = 33;
 
-// Waveshare e-ink SPI pins (update for your wiring)
-const int EPD_CS   = 10;
-const int EPD_DC   = 9;
-const int EPD_RST  = 8;
-const int EPD_BUSY = 7;
+// Waveshare 2.13" E-Ink Display HAT V4 (250x122) SPI wiring:
+// ESP32 -> Display
+// 18 -> CLK, 17 -> DIN(MOSI), 5 -> CS, 4 -> DC, 16 -> RST, 15 -> BUSY
+const int EPD_CLK  = 18;
+const int EPD_DIN  = 17;
+const int EPD_CS   = 5;
+const int EPD_DC   = 4;
+const int EPD_RST  = 16;
+const int EPD_BUSY = 15;
+const int EPD_ROTATION = 1; // landscape rotated layout
 
 // Wired command priority window. During this window, WiFi /command is deferred.
 const unsigned long WIRED_PRIORITY_WINDOW_MS = 250;
@@ -138,7 +143,8 @@ struct DisplayState {
 };
 DisplayState displayState;
 bool einkReady = false;
-GxEPD2_BW<GxEPD2_213_BN, GxEPD2_213_BN::HEIGHT> eink(GxEPD2_213_BN(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
+bool customDisplayActive = false;
+GxEPD2_BW<GxEPD2_213_B74, GxEPD2_213_B74::HEIGHT> eink(GxEPD2_213_B74(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
 
 // ============================================================
 // Helpers
@@ -242,15 +248,90 @@ DeliveryPolicy parseDeliveryPolicy(const String& raw) {
 // ============================================================
 void displayInit() {
     Serial.println("[E-ink] Initializing...");
+    SPI.begin(EPD_CLK, -1, EPD_DIN, EPD_CS); // CLK, MISO(unused), MOSI, SS
     eink.init(115200, true, 50, false);
-    eink.setRotation(1);
+    eink.setRotation(EPD_ROTATION);
     eink.setTextColor(GxEPD_BLACK);
     eink.setFont(&FreeMonoBold9pt7b);
     einkReady = true;
     Serial.println("[E-ink] Initialized");
 }
 
-void renderDisplayNow() {
+String trimForDisplay(const String& input, size_t maxLen) {
+    if (input.length() <= maxLen) return input;
+    if (maxLen <= 3) return input.substring(0, maxLen);
+    return input.substring(0, maxLen - 3) + "...";
+}
+
+void renderDashboardNow() {
+    if (!einkReady) return;
+
+    RuntimeDelivery active = chooseRuntimeDelivery();
+    bool wifiUp = WiFi.status() == WL_CONNECTED;
+    bool bleAvailable = modeUsesBleOutput(currentMode);
+    bool bleConnected = isBLEConnected();
+
+    String ip = wifiUp ? WiFi.localIP().toString() : "offline";
+    String mode = String(modeToString(currentMode));
+    String policy = String(deliveryPolicyToString(deliveryPolicy));
+    String activeDelivery = String(runtimeDeliveryToString(active));
+    String usbState = isUSBMounted() ? "mounted" : "not-mounted";
+    String bleState = !bleAvailable ? "disabled" : (bleConnected ? "connected" : "advertising");
+    String advName = bleAvailable ? String(DEVICE_NAME) : "n/a";
+    String wsState = wsConnectedClients > 0 ? (String(wsConnectedClients) + " client(s)") : "idle";
+
+    int w = eink.width();
+    int h = eink.height();
+
+    eink.setFullWindow();
+    eink.firstPage();
+    do {
+        eink.fillScreen(GxEPD_WHITE);
+
+        // Outer border
+        eink.drawRoundRect(0, 0, w, h, 6, GxEPD_BLACK);
+
+        // Header
+        eink.fillRect(0, 0, w, 18, GxEPD_BLACK);
+        eink.setFont();
+        eink.setTextSize(1);
+        eink.setTextColor(GxEPD_WHITE);
+        eink.setCursor(6, 12);
+        eink.print("ChromaCatch Control");
+        eink.setCursor(w - 75, 12);
+        eink.print("MODE:");
+        eink.print(trimForDisplay(mode, 8));
+
+        // Body
+        eink.setTextColor(GxEPD_BLACK);
+        int y = 30;
+        eink.setCursor(6, y);   eink.print("IP: "); eink.print(ip);
+        y += 12;
+        eink.setCursor(6, y);   eink.print("HTTP: "); eink.print(HTTP_PORT); eink.print("  WS: "); eink.print(WS_PORT);
+        y += 12;
+        eink.setCursor(6, y);   eink.print("WS LINK: "); eink.print(wsState);
+        y += 12;
+        eink.setCursor(6, y);   eink.print("DELIVERY: "); eink.print(activeDelivery);
+        y += 12;
+        eink.setCursor(6, y);   eink.print("POLICY: "); eink.print(policy);
+
+        // Right info panel
+        int rightX = w / 2 + 2;
+        int rightW = w - rightX - 4;
+        eink.drawRoundRect(rightX, 22, rightW, h - 26, 4, GxEPD_BLACK);
+        eink.setCursor(rightX + 6, 34); eink.print("CONNECTIONS");
+        eink.drawFastHLine(rightX + 4, 38, rightW - 8, GxEPD_BLACK);
+        eink.setCursor(rightX + 6, 50); eink.print("USB: "); eink.print(usbState);
+        eink.setCursor(rightX + 6, 62); eink.print("BLE: "); eink.print(bleState);
+        eink.setCursor(rightX + 6, 74); eink.print("ADV: "); eink.print(trimForDisplay(advName, 13));
+        eink.setCursor(rightX + 6, 86); eink.print("PRIO: ");
+        if (wiredPriorityActive()) eink.print("wired");
+        else if (wsPriorityActive()) eink.print("websocket");
+        else eink.print("none");
+    } while (eink.nextPage());
+}
+
+void renderCustomDisplayNow() {
     Serial.println("\n=== E-ink ===");
     Serial.println(displayState.line1);
     Serial.println(displayState.line2);
@@ -263,11 +344,23 @@ void renderDisplayNow() {
     eink.firstPage();
     do {
         eink.fillScreen(GxEPD_WHITE);
-        eink.setCursor(2, 22);
+
+        int w = eink.width();
+        int h = eink.height();
+        eink.drawRoundRect(0, 0, w, h, 6, GxEPD_BLACK);
+        eink.fillRect(0, 0, w, 18, GxEPD_BLACK);
+        eink.setFont();
+        eink.setTextSize(1);
+        eink.setTextColor(GxEPD_WHITE);
+        eink.setCursor(6, 12);
+        eink.print("Display Message");
+
+        eink.setTextColor(GxEPD_BLACK);
+        eink.setCursor(6, 32);
         eink.print(displayState.line1);
-        eink.setCursor(2, 50);
+        eink.setCursor(6, 52);
         eink.print(displayState.line2);
-        eink.setCursor(2, 78);
+        eink.setCursor(6, 72);
         eink.print(displayState.line3);
     } while (eink.nextPage());
 }
@@ -278,7 +371,8 @@ void displaySet(const String& l1, const String& l2 = "", const String& l3 = "", 
     displayState.line3 = l3;
     displayState.sticky = sticky;
     displayState.expiresAtMs = sticky ? 0 : (millis() + ttlMs);
-    renderDisplayNow();
+    customDisplayActive = true;
+    renderCustomDisplayNow();
 }
 
 void displayClear() {
@@ -287,33 +381,29 @@ void displayClear() {
     displayState.line3 = "";
     displayState.sticky = true;
     displayState.expiresAtMs = 0;
-    renderDisplayNow();
+    customDisplayActive = false;
+    renderDashboardNow();
 }
 
 void displayMenu() {
-    String mode = String(modeToString(currentMode));
-    String policy = String(deliveryPolicyToString(deliveryPolicy));
-
-    Serial.println("\n=== ChromaCatch Menu ===");
-    for (int i = 0; i < MENU_ITEMS; i++) {
-        String prefix = (i == menuIndex) ? "> " : "  ";
-        if (i == 0) {
-            Serial.println(prefix + String(menuLabels[i]) + ": " + mode);
-        } else {
-            Serial.println(prefix + String(menuLabels[i]) + ": " + policy);
-        }
+    // Default screen: live dashboard unless a sticky custom message is active.
+    if (customDisplayActive && displayState.sticky) {
+        renderCustomDisplayNow();
+        return;
     }
-    Serial.println("========================");
-
-    displaySet(mode, "delivery=" + policy, "wired>ws>http", true, 0);
+    customDisplayActive = false;
+    renderDashboardNow();
 }
 
 void displayStatus(const String& l1, const String& l2 = "", const String& l3 = "") {
+    // Do not override user-pinned sticky custom message.
+    if (customDisplayActive && displayState.sticky) return;
     displaySet(l1, l2, l3, false, 1500);
 }
 
 void updateDisplayExpiry() {
-    if (!displayState.sticky && displayState.expiresAtMs > 0 && millis() >= displayState.expiresAtMs) {
+    if (customDisplayActive && !displayState.sticky && displayState.expiresAtMs > 0 && millis() >= displayState.expiresAtMs) {
+        customDisplayActive = false;
         displayMenu();
     }
 }
@@ -1007,6 +1097,8 @@ void handleDisplayGet() {
     doc["line2"] = displayState.line2;
     doc["line3"] = displayState.line3;
     doc["sticky"] = displayState.sticky;
+    doc["custom_active"] = customDisplayActive;
+    doc["default_screen"] = "dashboard";
     sendJson(200, doc);
 }
 
@@ -1117,6 +1209,7 @@ void onWSEvent(uint8_t clientId, WStype_t type, uint8_t* payload, size_t length)
         case WStype_CONNECTED: {
             wsConnectedClients = wsServer.connectedClients();
             Serial.printf("[WS] Client %u connected (%u total)\n", clientId, static_cast<unsigned>(wsConnectedClients));
+            displayMenu();
             JsonDocument hello;
             hello["type"] = "hello";
             hello["status"] = "ok";
@@ -1130,6 +1223,7 @@ void onWSEvent(uint8_t clientId, WStype_t type, uint8_t* payload, size_t length)
         case WStype_DISCONNECTED:
             wsConnectedClients = wsServer.connectedClients();
             Serial.printf("[WS] Client %u disconnected (%u total)\n", clientId, static_cast<unsigned>(wsConnectedClients));
+            displayMenu();
             break;
         case WStype_TEXT: {
             wsMsgCounter++;
