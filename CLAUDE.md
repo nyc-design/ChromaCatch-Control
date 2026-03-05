@@ -45,8 +45,12 @@ Automated shiny hunting bot for Pokemon Go using AirPlay screen mirroring, compu
   - BLE ops hardening commands: `restart_ble`, `clear_ble_bonds`, and `set_input_policy` (plus backward-compatible `set_delivery_policy` as input policy alias).
   - Build-time Wi-Fi config now supports environment injection: set `CC_WIFI_SSID` / `CC_WIFI_PASSWORD` (or `WIFI_SSID` / `WIFI_PASSWORD`) before `pio run` to avoid editing firmware source on pulls.
   - Added dedicated `platformio` environment `esp32s3_switch` with `ARDUINO_USB_CDC_ON_BOOT=0` for cleaner Nintendo Switch USB controller enumeration on S3.
+  - `esp32` environment now builds with dual framework (`arduino, espidf`) plus `sdkconfig.defaults.esp32` to enable Classic BT HID (`CONFIG_BT_HID_ENABLED=y`) required for Switch Pro Bluetooth emulation.
   - Switch wired stick mapping now follows Pokemon Automation semantics (inverted Y on wired Switch reports).
-  - ESP32 classic-BT Switch mode now emits an explicit startup diagnostic when the installed Arduino-ESP32 core lacks `CONFIG_BT_HID_ENABLED` (classic HID disabled in prebuilt SDK), instead of silently failing with generic `hidd_dev_init` errors.
+  - ESP32 classic-BT Switch mode now mirrors Pokemon Automation state semantics more closely: OEM button-byte mapping, 12-bit stick packing, and joystick magnitude projection thresholds (`min=1874`, `max=320`) used by PA’s Pro Controller path.
+  - ESP32 classic-BT Switch mode still emits an explicit startup diagnostic when classic HID support is missing in the active SDK config, instead of silently failing with generic `hidd_dev_init` errors.
+  - BLE shutdown path now guards `NimBLEDevice::deinit()` behind `NimBLEDevice::isInitialized()`, preventing ESP32 boot-time mutex asserts when starting directly in classic-BT Switch mode.
+  - ESP32 dual-framework (`arduino, espidf`) builds now auto-patch known `ESP32-BLE-CompositeHID` warning-as-error issues (constructor init-order + class-memaccess) so `esp32` environment compiles reliably under ESP-IDF `-Werror`.
   - Onboard status LED now reflects emulation mode with mode-specific colors and connection state: blinking while output transport is disconnected, solid once connected (S3 RGB on built-in NeoPixel; ESP32 mono fallback uses the same blink/solid behavior).
   - Emulation presets include bluetooth/wired mouse+keyboard variants, bluetooth Xbox-controller profile, bluetooth Switch-pro profile (ESP32 only), and wired Switch-pro profile (S3 only). Mode discovery via `GET /mode` and remote configuration via `POST /mode`.
 - **Control SDK** (`services/control-sdk/`): Python SDK package for automation repos to consume control-plane REST + WebSocket APIs.

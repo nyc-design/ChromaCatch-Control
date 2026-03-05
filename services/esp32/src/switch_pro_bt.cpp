@@ -2,11 +2,15 @@
 
 #if defined(CONFIG_IDF_TARGET_ESP32)
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 
 namespace {
 
 SwitchProBT* g_switchProInstance = nullptr;
+constexpr uint16_t kProControllerJoystickMinThreshold = 1874;
+constexpr uint16_t kProControllerJoystickMaxThreshold = 320;
 
 // Switch Pro classic-BT HID descriptor (report IDs 0x21/0x30/0x31/0x32/0x33/0x3f, output 0x01/0x10/0x11/0x12).
 static uint8_t kSwitchProHidDescriptor[] = {
@@ -99,6 +103,78 @@ static uint8_t kReply3333[] = {
     0x21, 0x31, 0x8E, 0x00, 0x00, 0x00, 0x00, 0x08, 0x80, 0x00, 0x08, 0x80,
     0x00, 0xA0, 0x21, 0x01, 0x00, 0x00, 0x00
 };
+
+double unitFromIntAxis(int value) {
+    value = std::max(-32768, std::min(32767, value));
+    if (value <= 0) {
+        return static_cast<double>(value) / 32768.0;
+    }
+    return static_cast<double>(value) / 32767.0;
+}
+
+void maxOutMagnitude(double& x, double& y) {
+    const double mag = x * x + y * y;
+    if (mag == 0.0) return;
+    const double absX = std::fabs(x);
+    const double absY = std::fabs(y);
+    if (absX < absY) {
+        x /= absY;
+        y = y < 0 ? -1.0 : 1.0;
+    } else {
+        y /= absX;
+        x = x < 0 ? -1.0 : 1.0;
+    }
+}
+
+double projectToRange(double x, double lo, double hi) {
+    if (x <= -1.0) return -1.0;
+    if (x >= 1.0) return 1.0;
+    return x * (hi - lo) + lo;
+}
+
+uint16_t linearFloatToU12(double f) {
+    if (f <= 0) {
+        f = std::max(-1.0, f);
+        f = f * 2048.0 + 2048.0;
+        return static_cast<uint16_t>(f + 0.5);
+    }
+    f = std::min(1.0, f);
+    f = f * 2047.0 + 2048.0;
+    return static_cast<uint16_t>(f + 0.5);
+}
+
+void encodeProControllerStick(int xIn, int yIn, uint16_t& xOut, uint16_t& yOut) {
+    // Mirrors Pokemon Automation's encode_joystick() behavior for OEM report 0x30.
+    double fx = unitFromIntAxis(xIn);
+    double fy = unitFromIntAxis(yIn);
+    const double magSquared = fx * fx + fy * fy;
+
+    fx = std::max(-1.0, std::min(1.0, fx));
+    fy = std::max(-1.0, std::min(1.0, fy));
+
+    if (magSquared == 0.0) {
+        xOut = 2048;
+        yOut = 2048;
+        return;
+    }
+
+    if (magSquared >= 1.0) {
+        maxOutMagnitude(fx, fy);
+        xOut = linearFloatToU12(fx);
+        yOut = linearFloatToU12(fy);
+        return;
+    }
+
+    const double lo = 1.0 - static_cast<double>(kProControllerJoystickMinThreshold) / 2048.0;
+    const double hi = 1.0 - static_cast<double>(kProControllerJoystickMaxThreshold) / 2048.0;
+
+    const double trueMag = std::sqrt(magSquared);
+    const double reportMag = projectToRange(trueMag, lo, hi);
+    const double scale = reportMag / trueMag;
+
+    xOut = linearFloatToU12(fx * scale);
+    yOut = linearFloatToU12(fy * scale);
+}
 
 }  // namespace
 
@@ -345,13 +421,6 @@ void SwitchProBT::sendSubcommandReply(uint8_t* payload, size_t len) {
     esp_hidd_dev_input_set(_dev, 0, payload[0], payload + 1, len - 1);
 }
 
-uint16_t SwitchProBT::toSwitchAxis12(int value) {
-    long mapped = map(value, -32768, 32767, 0, 4095);
-    if (mapped < 0) mapped = 0;
-    if (mapped > 4095) mapped = 4095;
-    return static_cast<uint16_t>(mapped);
-}
-
 void SwitchProBT::packStick(uint16_t x, uint16_t y, uint8_t out[3]) {
     out[0] = x & 0xFF;
     out[1] = static_cast<uint8_t>(((x >> 8) & 0x0F) | ((y & 0x0F) << 4));
@@ -419,11 +488,9 @@ bool SwitchProBT::setButton(const String& name, bool pressed) {
 
 bool SwitchProBT::setStick(const String& stickId, int x, int y) {
     if (stickId.equalsIgnoreCase("left")) {
-        _lx = toSwitchAxis12(x);
-        _ly = toSwitchAxis12(y);
+        encodeProControllerStick(x, y, _lx, _ly);
     } else if (stickId.equalsIgnoreCase("right")) {
-        _rx = toSwitchAxis12(x);
-        _ry = toSwitchAxis12(y);
+        encodeProControllerStick(x, y, _rx, _ry);
     } else {
         return false;
     }
@@ -448,7 +515,7 @@ void SwitchProBT::sendStandardInputReport() {
     payload[4] = _btnLeft;
     packStick(_lx, _ly, &payload[5]);
     packStick(_rx, _ry, &payload[8]);
-    payload[11] = 0x08;     // vibrator report marker
+    payload[11] = 0x00;     // neutral vibrator byte (matches PA neutral state)
     esp_hidd_dev_input_set(_dev, 0, 0x30, payload, sizeof(payload));
 }
 

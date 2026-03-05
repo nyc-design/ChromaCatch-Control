@@ -895,10 +895,19 @@ void stopBLE() {
     if (bleCompositeHid) {
         bleCompositeHid->end();
     }
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdelete-non-virtual-dtor"
+#endif
     if (bleXboxGamepad) { delete bleXboxGamepad; bleXboxGamepad = nullptr; }
     if (bleGenericGamepad) { delete bleGenericGamepad; bleGenericGamepad = nullptr; }
     if (bleCompositeHid) { delete bleCompositeHid; bleCompositeHid = nullptr; }
-    NimBLEDevice::deinit(true);
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+    if (NimBLEDevice::isInitialized()) {
+        NimBLEDevice::deinit(true);
+    }
 }
 
 void initBLE() {

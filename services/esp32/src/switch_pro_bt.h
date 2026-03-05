@@ -33,7 +33,6 @@ private:
     void sendSubcommandReply(uint8_t* payload, size_t len);
     void sendStandardInputReport();
 
-    static uint16_t toSwitchAxis12(int value);
     static void packStick(uint16_t x, uint16_t y, uint8_t out[3]);
     static uint8_t buttonMask(const String& name, uint8_t& byteIndex);
     static uint8_t hatToLeftByteMask(const String& direction);
