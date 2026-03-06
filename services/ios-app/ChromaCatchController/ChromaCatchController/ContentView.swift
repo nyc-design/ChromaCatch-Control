@@ -20,11 +20,6 @@ struct ContentView: View {
                     Label("Input", systemImage: "gamecontroller.fill")
                 }
 
-            SpoofTab()
-                .tabItem {
-                    Label("Spoof", systemImage: "location.fill")
-                }
-
             SettingsTab()
                 .tabItem {
                     Label("Settings", systemImage: "gearshape.fill")
