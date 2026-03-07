@@ -446,7 +446,11 @@ void SwitchProUSB::handleSpiFlashRead(const uint8_t* data, uint16_t len) {
 // Report senders
 // ============================================================
 void SwitchProUSB::sendInputReport(uint8_t reportId, const uint8_t* data, size_t len) {
-    _hid.SendReport(reportId, data, len);
+    // Use tud_hid_n_report() directly instead of _hid.SendReport().
+    // SendReport() blocks on a semaphore waiting for transfer completion,
+    // which deadlocks when called from _onOutput (TinyUSB callback context).
+    // tud_hid_n_report() is non-blocking and queues the transfer.
+    tud_hid_n_report(0, reportId, data, len);
 }
 
 void SwitchProUSB::fillInputHeader(uint8_t* buf) {
