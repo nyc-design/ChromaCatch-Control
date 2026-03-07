@@ -270,13 +270,11 @@ class AppCoordinator: ObservableObject {
     /// Convenience: start all subsystems at once.
     func start() {
         startBackend()
-        startLocation()
     }
 
     /// Convenience: stop all subsystems at once.
     func stop() {
         stopBackend()
-        stopLocation()
     }
 
     // MARK: - Backend Subsystem (Video + Commands)
@@ -318,7 +316,6 @@ class AppCoordinator: ObservableObject {
             }
         }
 
-        startSharedSubsystems()
         addLog("Backend connection started")
     }
 
@@ -334,7 +331,6 @@ class AppCoordinator: ObservableObject {
         esp32PingTimer?.invalidate()
         esp32PingTimer = nil
 
-        if !isLocationRunning { stopSharedSubsystems() }
         addLog("Backend stopped")
     }
 
