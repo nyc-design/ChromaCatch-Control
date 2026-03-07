@@ -168,7 +168,7 @@ static const uint8_t kProControllerDescriptor[] = {
 };
 
 constexpr uint16_t kNintendoVid = 0x057E;
-constexpr uint16_t kNintendoSwitch2ProPid = 0x2069;
+constexpr uint16_t kNintendoProPid = 0x2009;
 constexpr uint16_t kNintendoUsbVersion = 0x0200;
 constexpr uint16_t kNintendoFirmwareVersion = 0x0200;
 
@@ -238,16 +238,17 @@ SwitchProUSB::SwitchProUSB() : _hid() {
     static bool registered = false;
     refreshIdentityFromEfuse();
 
-    // Set Switch 2 Pro-like USB identity
+    // Keep legacy Pro Controller USB identity for Switch compatibility.
+    // (Switch/Switch 2 currently rejects our 0x2069 identity on this stack.)
     USB.VID(kNintendoVid);
-    USB.PID(kNintendoSwitch2ProPid);
+    USB.PID(kNintendoProPid);
     USB.usbVersion(kNintendoUsbVersion);
     USB.firmwareVersion(kNintendoFirmwareVersion);
     USB.usbClass(0);
     USB.usbSubClass(0);
     USB.usbProtocol(0);
     USB.manufacturerName("Nintendo Co., Ltd.");
-    USB.productName("Pro Controller 2");
+    USB.productName("Pro Controller");
     USB.serialNumber(_serialNumber);
     if (!registered) {
         registered = true;
