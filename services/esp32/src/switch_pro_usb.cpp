@@ -6,125 +6,126 @@
 #include <cstring>
 
 // ============================================================
-// Pro Controller USB HID descriptor
-// Matches the real Pro Controller descriptor with vendor-defined
-// report IDs for input (0x30, 0x21, 0x81) and output (0x01, 0x10, 0x80, 0x82).
-// Reference: radiantwf/esp32-circuitpython-switch-joystick
+// Pro Controller HID descriptor — identical to the BT descriptor
+// used by the real Pro Controller and Pokemon Automation.
+// This is the key: the Switch uses the SAME descriptor for both
+// wired USB and Bluetooth Pro Controllers.
 // ============================================================
 static const uint8_t kProControllerDescriptor[] = {
-    0x05, 0x01,                     // Usage Page (Generic Desktop)
-    0x15, 0x00,                     // Logical Minimum (0)
-    0x09, 0x04,                     // Usage (Joystick)
-    0xA1, 0x01,                     // Collection (Application)
+    0x05, 0x01,        // Usage Page (Generic Desktop)
+    0x09, 0x05,        // Usage (Game Pad)
+    0xA1, 0x01,        // Collection (Application)
 
-    // --- Report ID 0x30: Standard full input report ---
-    0x85, 0x30,                     //   Report ID (0x30)
-    0x05, 0x01,                     //   Usage Page (Generic Desktop)
-    0x05, 0x09,                     //   Usage Page (Button)
-    0x19, 0x01,                     //   Usage Minimum (1)
-    0x29, 0x0A,                     //   Usage Maximum (10)
-    0x15, 0x00,                     //   Logical Minimum (0)
-    0x25, 0x01,                     //   Logical Maximum (1)
-    0x75, 0x01,                     //   Report Size (1)
-    0x95, 0x0A,                     //   Report Count (10)
-    0x55, 0x00,                     //   Unit Exponent (0)
-    0x65, 0x00,                     //   Unit (None)
-    0x81, 0x02,                     //   Input (Data,Var,Abs)
-    0x05, 0x09,                     //   Usage Page (Button)
-    0x19, 0x0B,                     //   Usage Minimum (11)
-    0x29, 0x0E,                     //   Usage Maximum (14)
-    0x15, 0x00,                     //   Logical Minimum (0)
-    0x25, 0x01,                     //   Logical Maximum (1)
-    0x75, 0x01,                     //   Report Size (1)
-    0x95, 0x04,                     //   Report Count (4)
-    0x81, 0x02,                     //   Input (Data,Var,Abs)
-    0x75, 0x01,                     //   Report Size (1)
-    0x95, 0x02,                     //   Report Count (2)
-    0x81, 0x03,                     //   Input (Const)
-    0x0B, 0x01, 0x00, 0x01, 0x00,  //   Usage (Generic Desktop: Pointer)
-    0xA1, 0x00,                     //   Collection (Physical)
-    0x0B, 0x30, 0x00, 0x01, 0x00,  //     Usage (X)
-    0x0B, 0x31, 0x00, 0x01, 0x00,  //     Usage (Y)
-    0x0B, 0x32, 0x00, 0x01, 0x00,  //     Usage (Z)
-    0x0B, 0x35, 0x00, 0x01, 0x00,  //     Usage (Rz)
-    0x15, 0x00,                     //     Logical Minimum (0)
-    0x27, 0xFF, 0xFF, 0x00, 0x00,  //     Logical Maximum (65534)
-    0x75, 0x10,                     //     Report Size (16)
-    0x95, 0x04,                     //     Report Count (4)
-    0x81, 0x02,                     //     Input (Data,Var,Abs)
-    0xC0,                           //   End Collection
-    0x0B, 0x39, 0x00, 0x01, 0x00,  //   Usage (Hat Switch)
-    0x15, 0x00,                     //   Logical Minimum (0)
-    0x25, 0x07,                     //   Logical Maximum (7)
-    0x35, 0x00,                     //   Physical Minimum (0)
-    0x46, 0x3B, 0x01,              //   Physical Maximum (315)
-    0x65, 0x14,                     //   Unit (Degrees)
-    0x75, 0x04,                     //   Report Size (4)
-    0x95, 0x01,                     //   Report Count (1)
-    0x81, 0x02,                     //   Input (Data,Var,Abs)
-    0x05, 0x09,                     //   Usage Page (Button)
-    0x19, 0x0F,                     //   Usage Minimum (15)
-    0x29, 0x12,                     //   Usage Maximum (18)
-    0x15, 0x00,                     //   Logical Minimum (0)
-    0x25, 0x01,                     //   Logical Maximum (1)
-    0x75, 0x01,                     //   Report Size (1)
-    0x95, 0x04,                     //   Report Count (4)
-    0x81, 0x02,                     //   Input (Data,Var,Abs)
-    0x75, 0x08,                     //   Report Size (8)
-    0x95, 0x34,                     //   Report Count (52)
-    0x81, 0x03,                     //   Input (Const) — IMU data placeholder
+    // --- Vendor-defined input reports ---
+    0x06, 0x01, 0xFF,  //   Usage Page (Vendor Defined 0xFF01)
 
-    // --- Report ID 0x21: Subcommand reply ---
-    0x06, 0x00, 0xFF,              //   Usage Page (Vendor Defined 0xFF00)
-    0x85, 0x21,                     //   Report ID (0x21)
-    0x09, 0x01,                     //   Usage (Vendor 0x01)
-    0x75, 0x08,                     //   Report Size (8)
-    0x95, 0x3F,                     //   Report Count (63)
-    0x81, 0x03,                     //   Input (Const)
+    // Report ID 0x21: Subcommand reply (48 bytes)
+    0x85, 0x21,        //   Report ID (0x21)
+    0x09, 0x21,        //   Usage (0x21)
+    0x75, 0x08,        //   Report Size (8)
+    0x95, 0x30,        //   Report Count (48)
+    0x81, 0x02,        //   Input (Data,Var,Abs)
 
-    // --- Report ID 0x81: USB command reply ---
-    0x85, 0x81,                     //   Report ID (0x81)
-    0x09, 0x02,                     //   Usage (Vendor 0x02)
-    0x75, 0x08,                     //   Report Size (8)
-    0x95, 0x3F,                     //   Report Count (63)
-    0x81, 0x03,                     //   Input (Const)
+    // Report ID 0x30: Standard full input report (48 bytes)
+    0x85, 0x30,        //   Report ID (0x30)
+    0x09, 0x30,        //   Usage (0x30)
+    0x75, 0x08,        //   Report Size (8)
+    0x95, 0x30,        //   Report Count (48)
+    0x81, 0x02,        //   Input (Data,Var,Abs)
 
-    // --- Report ID 0x01: Subcommand output ---
-    0x85, 0x01,                     //   Report ID (0x01)
-    0x09, 0x03,                     //   Usage (Vendor 0x03)
-    0x75, 0x08,                     //   Report Size (8)
-    0x95, 0x3F,                     //   Report Count (63)
-    0x91, 0x83,                     //   Output (Const,Var,Abs,Vol)
+    // Report ID 0x31: NFC/IR MCU FW update (361 bytes)
+    0x85, 0x31,        //   Report ID (0x31)
+    0x09, 0x31,        //   Usage (0x31)
+    0x75, 0x08,        //   Report Size (8)
+    0x96, 0x69, 0x01,  //   Report Count (361)
+    0x81, 0x02,        //   Input (Data,Var,Abs)
 
-    // --- Report ID 0x10: Rumble output ---
-    0x85, 0x10,                     //   Report ID (0x10)
-    0x09, 0x04,                     //   Usage (Vendor 0x04)
-    0x75, 0x08,                     //   Report Size (8)
-    0x95, 0x3F,                     //   Report Count (63)
-    0x91, 0x83,                     //   Output (Const,Var,Abs,Vol)
+    // Report ID 0x32 (361 bytes)
+    0x85, 0x32,        //   Report ID (0x32)
+    0x09, 0x32,        //   Usage (0x32)
+    0x75, 0x08,        //   Report Size (8)
+    0x96, 0x69, 0x01,  //   Report Count (361)
+    0x81, 0x02,        //   Input (Data,Var,Abs)
 
-    // --- Report ID 0x80: USB handshake output ---
-    0x85, 0x80,                     //   Report ID (0x80)
-    0x09, 0x05,                     //   Usage (Vendor 0x05)
-    0x75, 0x08,                     //   Report Size (8)
-    0x95, 0x3F,                     //   Report Count (63)
-    0x91, 0x83,                     //   Output (Const,Var,Abs,Vol)
+    // Report ID 0x33 (361 bytes)
+    0x85, 0x33,        //   Report ID (0x33)
+    0x09, 0x33,        //   Usage (0x33)
+    0x75, 0x08,        //   Report Size (8)
+    0x96, 0x69, 0x01,  //   Report Count (361)
+    0x81, 0x02,        //   Input (Data,Var,Abs)
 
-    // --- Report ID 0x82: Additional output ---
-    0x85, 0x82,                     //   Report ID (0x82)
-    0x09, 0x06,                     //   Usage (Vendor 0x06)
-    0x75, 0x08,                     //   Report Size (8)
-    0x95, 0x3F,                     //   Report Count (63)
-    0x91, 0x83,                     //   Output (Const,Var,Abs,Vol)
+    // Report ID 0x3F: Simple button report (used during initial pairing)
+    // 16 buttons + hat + 4 analog sticks (16-bit each)
+    0x85, 0x3F,        //   Report ID (0x3F)
+    0x05, 0x09,        //   Usage Page (Button)
+    0x19, 0x01,        //   Usage Minimum (1)
+    0x29, 0x10,        //   Usage Maximum (16)
+    0x15, 0x00,        //   Logical Minimum (0)
+    0x25, 0x01,        //   Logical Maximum (1)
+    0x75, 0x01,        //   Report Size (1)
+    0x95, 0x10,        //   Report Count (16)
+    0x81, 0x02,        //   Input (Data,Var,Abs)
+    0x05, 0x01,        //   Usage Page (Generic Desktop)
+    0x09, 0x39,        //   Usage (Hat Switch)
+    0x15, 0x00,        //   Logical Minimum (0)
+    0x25, 0x07,        //   Logical Maximum (7)
+    0x75, 0x04,        //   Report Size (4)
+    0x95, 0x01,        //   Report Count (1)
+    0x81, 0x42,        //   Input (Data,Var,Abs,Null)
+    0x05, 0x09,        //   Usage Page (Button)
+    0x75, 0x04,        //   Report Size (4)
+    0x95, 0x01,        //   Report Count (1)
+    0x81, 0x01,        //   Input (Const)
+    0x05, 0x01,        //   Usage Page (Generic Desktop)
+    0x09, 0x30,        //   Usage (X)
+    0x09, 0x31,        //   Usage (Y)
+    0x09, 0x33,        //   Usage (Rx)
+    0x09, 0x34,        //   Usage (Ry)
+    0x16, 0x00, 0x00,  //   Logical Minimum (0)
+    0x27, 0xFF, 0xFF, 0x00, 0x00, // Logical Maximum (65535)
+    0x75, 0x10,        //   Report Size (16)
+    0x95, 0x04,        //   Report Count (4)
+    0x81, 0x02,        //   Input (Data,Var,Abs)
 
-    0xC0,                           // End Collection
+    // --- Vendor-defined output reports ---
+    0x06, 0x01, 0xFF,  //   Usage Page (Vendor Defined 0xFF01)
+
+    // Report ID 0x01: Subcommand (48 bytes)
+    0x85, 0x01,        //   Report ID (0x01)
+    0x09, 0x01,        //   Usage (0x01)
+    0x75, 0x08,        //   Report Size (8)
+    0x95, 0x30,        //   Report Count (48)
+    0x91, 0x02,        //   Output (Data,Var,Abs)
+
+    // Report ID 0x10: Rumble (9 bytes)
+    0x85, 0x10,        //   Report ID (0x10)
+    0x09, 0x10,        //   Usage (0x10)
+    0x75, 0x08,        //   Report Size (8)
+    0x95, 0x09,        //   Report Count (9)
+    0x91, 0x02,        //   Output (Data,Var,Abs)
+
+    // Report ID 0x11 (48 bytes)
+    0x85, 0x11,        //   Report ID (0x11)
+    0x09, 0x11,        //   Usage (0x11)
+    0x75, 0x08,        //   Report Size (8)
+    0x95, 0x30,        //   Report Count (48)
+    0x91, 0x02,        //   Output (Data,Var,Abs)
+
+    // Report ID 0x12 (48 bytes)
+    0x85, 0x12,        //   Report ID (0x12)
+    0x09, 0x12,        //   Usage (0x12)
+    0x75, 0x08,        //   Report Size (8)
+    0x95, 0x30,        //   Report Count (48)
+    0x91, 0x02,        //   Output (Data,Var,Abs)
+
+    0xC0,              // End Collection
 };
 
-// MAC address for USB handshake
+// MAC address for device info response
 static const uint8_t kMacAddr[6] = {0x00, 0x00, 0x5E, 0x00, 0x53, 0x5E};
 
 // ============================================================
-// SPI flash data tables (same as switch_pro_bt.cpp)
+// SPI flash data tables
 // ============================================================
 static const uint8_t kSpiSerial[16] = {
     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
@@ -179,15 +180,15 @@ static const uint8_t kSpiUserMotionCal[24] = {
     0x3B, 0x34, 0x3B, 0x34, 0x3B, 0x34,
 };
 
-// Report size: 63 bytes (report ID is sent separately by TinyUSB)
-static constexpr size_t kReportLen = 63;
+// Report body size: 48 bytes (report ID sent separately by TinyUSB)
+static constexpr size_t kReportLen = 48;
 
 // ============================================================
 // Constructor / begin / end
 // ============================================================
 SwitchProUSB::SwitchProUSB() : _hid() {
     static bool registered = false;
-    // Set Pro Controller USB identity BEFORE begin()
+    // Set Pro Controller USB identity
     USB.VID(0x057E);
     USB.PID(0x2009);
     USB.usbClass(0);
@@ -227,35 +228,36 @@ uint16_t SwitchProUSB::_onGetDescriptor(uint8_t* buffer) {
 // ============================================================
 void SwitchProUSB::_onOutput(uint8_t report_id, const uint8_t* buffer, uint16_t len) {
     switch (report_id) {
-        case 0x80:
-            handleUsbCommand(buffer, len);
-            break;
         case 0x01:
             handleSubcommand(buffer, len);
             break;
         case 0x10:
-            // Rumble-only output — just ACK by continuing to send 0x30 reports
+            // Rumble-only — acknowledged implicitly by continuing 0x30 reports
+            break;
+        case 0x80:
+            handleUsbCommand(buffer, len);
             break;
         default:
-            Serial.printf("[SwitchProUSB] unknown output report 0x%02X len=%d\n", report_id, len);
+            Serial.printf("[SwitchProUSB] output report 0x%02X len=%d\n", report_id, len);
             break;
     }
 }
 
 // ============================================================
-// USB-specific 0x80 handshake (not used in BT)
+// USB-specific 0x80 command handler
+// Not in the HID descriptor (handled at USB level), but some
+// Switch firmware versions send it. Handle gracefully.
 // ============================================================
 void SwitchProUSB::handleUsbCommand(const uint8_t* data, uint16_t len) {
     if (len < 1) return;
     uint8_t cmd = data[0];
+    Serial.printf("[SwitchProUSB] USB cmd 0x%02X\n", cmd);
 
     uint8_t reply[kReportLen];
     memset(reply, 0, sizeof(reply));
 
     switch (cmd) {
         case 0x01:
-            // MAC address request
-            Serial.println("[SwitchProUSB] 0x80 handshake: MAC request");
             reply[0] = 0x01;
             reply[1] = 0x00;
             reply[2] = 0x03;
@@ -263,29 +265,19 @@ void SwitchProUSB::handleUsbCommand(const uint8_t* data, uint16_t len) {
             sendInputReport(0x81, reply, sizeof(reply));
             break;
         case 0x02:
-            // Handshake
-            Serial.println("[SwitchProUSB] 0x80 handshake: handshake");
-            reply[0] = 0x02;
-            sendInputReport(0x81, reply, sizeof(reply));
-            break;
         case 0x03:
-            // Baudrate? / 3rd handshake step
-            Serial.println("[SwitchProUSB] 0x80 handshake: step 3");
-            reply[0] = 0x03;
+            reply[0] = cmd;
             sendInputReport(0x81, reply, sizeof(reply));
             break;
         case 0x04:
-            // USB connected — start sending standard reports
-            Serial.println("[SwitchProUSB] 0x80: connected!");
             _connected = true;
+            Serial.println("[SwitchProUSB] USB 0x80: connected");
             break;
         case 0x05:
-            // USB disconnected
-            Serial.println("[SwitchProUSB] 0x80: disconnected");
             _connected = false;
+            Serial.println("[SwitchProUSB] USB 0x80: disconnected");
             break;
         default:
-            Serial.printf("[SwitchProUSB] 0x80 unknown cmd 0x%02X\n", cmd);
             reply[0] = cmd;
             sendInputReport(0x81, reply, sizeof(reply));
             break;
@@ -294,12 +286,12 @@ void SwitchProUSB::handleUsbCommand(const uint8_t* data, uint16_t len) {
 
 // ============================================================
 // Subcommand handler (report ID 0x01)
-// Same protocol as Bluetooth — data[0] = counter, [1..8] = rumble,
-// data[9] = subcommand ID, data[10+] = subcommand params
+// data[0] = counter, [1..8] = rumble, [9] = subcmd, [10+] = params
 // ============================================================
 void SwitchProUSB::handleSubcommand(const uint8_t* data, uint16_t len) {
     if (len < 10) return;
     uint8_t subcmd = data[9];
+    Serial.printf("[SwitchProUSB] subcmd 0x%02X\n", subcmd);
 
     switch (subcmd) {
         case 0x01:  // Manual pairing
@@ -336,20 +328,17 @@ void SwitchProUSB::handleSubcommand(const uint8_t* data, uint16_t len) {
             break;
         }
         case 0x10:
-            // SPI flash read
             handleSpiFlashRead(data, len);
             break;
-        case 0x21:  // Set NFC/IR MCU configuration
-        {
+        case 0x21: {
             uint8_t nfcReply[8] = {0x01, 0x00, 0xFF, 0x00, 0x08, 0x00, 0x1B, 0x01};
             sendSubcommandReply(0x21, 0xA0, nfcReply, sizeof(nfcReply));
             break;
         }
-        case 0x22:  // Set NFC/IR MCU state
+        case 0x22:
             sendSubcommandReply(subcmd, 0x80, nullptr, 0);
             break;
         default:
-            Serial.printf("[SwitchProUSB] unknown subcmd 0x%02X\n", subcmd);
             sendSubcommandReply(subcmd, 0x80, nullptr, 0);
             break;
     }
@@ -365,6 +354,8 @@ void SwitchProUSB::handleSpiFlashRead(const uint8_t* data, uint16_t len) {
                     (static_cast<uint32_t>(data[12]) << 16) | (static_cast<uint32_t>(data[13]) << 24);
     uint8_t reqLen = data[14];
     if (reqLen > 29) reqLen = 29;
+
+    Serial.printf("[SwitchProUSB] SPI read 0x%04X len=%d\n", addr, reqLen);
 
     uint8_t resp[34] = {0};
     resp[0] = addr & 0xFF;
@@ -384,9 +375,7 @@ void SwitchProUSB::handleSpiFlashRead(const uint8_t* data, uint16_t len) {
         case 0x6086: src = kSpiFactorySensorStick; srcLen = sizeof(kSpiFactorySensorStick); break;
         case 0x6098: src = kSpiFactoryStickCal2;  srcLen = sizeof(kSpiFactoryStickCal2); break;
         case 0x8010: src = kSpiFactorySensorCal;  srcLen = sizeof(kSpiFactorySensorCal); break;
-        case 0x8026: // User 6-axis motion sensor cal — some hosts read from here
-        case 0x6020 + 6: // Alternate offset
-            src = kSpiUserMotionCal; srcLen = sizeof(kSpiUserMotionCal); break;
+        case 0x8026: src = kSpiUserMotionCal;     srcLen = sizeof(kSpiUserMotionCal); break;
         default: break;
     }
 
@@ -410,39 +399,36 @@ void SwitchProUSB::sendInputReport(uint8_t reportId, const uint8_t* data, size_t
 
 void SwitchProUSB::fillInputHeader(uint8_t* buf) {
     // Convert 8-bit axes to 12-bit for Pro Controller encoding
-    uint16_t lx12 = static_cast<uint16_t>(_lx) << 4;  // 0x00→0, 0x80→2048, 0xFF→4080
-    uint16_t ly12 = static_cast<uint16_t>(255 - _ly) << 4;  // Y inverted for Pro Controller
+    uint16_t lx12 = static_cast<uint16_t>(_lx) << 4;
+    uint16_t ly12 = static_cast<uint16_t>(255 - _ly) << 4;  // Y inverted
     uint16_t rx12 = static_cast<uint16_t>(_rx) << 4;
-    uint16_t ry12 = static_cast<uint16_t>(255 - _ry) << 4;
+    uint16_t ry12 = static_cast<uint16_t>(255 - _ry) << 4;  // Y inverted
 
-    // Convert NSGamepad-style 16-bit buttons + dpad to Pro Controller 3-byte format
+    // Convert NSGamepad-style buttons + dpad to Pro Controller 3-byte format
+    // NSButton enum: Y=0, B=1, A=2, X=3, L=4, R=5, ZL=6, ZR=7, Minus=8, Plus=9, LStick=10, RStick=11, Home=12, Capture=13
     uint8_t btnRight = 0, btnShared = 0, btnLeft = 0;
 
-    // NSGamepad button bits → Pro Controller right byte
+    // Right byte: Y, X, B, A, SR, SL, R, ZR
     if (_buttons & (1 << 0))  btnRight |= 0x01;  // Y
+    if (_buttons & (1 << 3))  btnRight |= 0x02;  // X
     if (_buttons & (1 << 1))  btnRight |= 0x04;  // B
     if (_buttons & (1 << 2))  btnRight |= 0x08;  // A
-    if (_buttons & (1 << 3))  btnRight |= 0x02;  // X
-    if (_buttons & (1 << 4))  btnRight |= 0x40;  // L → R shoulder? No: L trigger
     if (_buttons & (1 << 5))  btnRight |= 0x40;  // R
-    if (_buttons & (1 << 6))  btnRight |= 0x80;  // ZL → mapped to ZR byte? No
     if (_buttons & (1 << 7))  btnRight |= 0x80;  // ZR
 
-    // Shared byte
+    // Shared byte: Minus, Plus, RStick, LStick, Home, Capture
     if (_buttons & (1 << 8))  btnShared |= 0x01;  // Minus
     if (_buttons & (1 << 9))  btnShared |= 0x02;  // Plus
-    if (_buttons & (1 << 10)) btnShared |= 0x08;  // LStick
     if (_buttons & (1 << 11)) btnShared |= 0x04;  // RStick
+    if (_buttons & (1 << 10)) btnShared |= 0x08;  // LStick
     if (_buttons & (1 << 12)) btnShared |= 0x10;  // Home
     if (_buttons & (1 << 13)) btnShared |= 0x20;  // Capture
 
-    // Left byte — dpad as bitmask
+    // Left byte: Down, Up, Right, Left, SR, SL, L, ZL
     if (_dpad == 0 || _dpad == 1 || _dpad == 7) btnLeft |= 0x02;  // Up
     if (_dpad == 2 || _dpad == 1 || _dpad == 3) btnLeft |= 0x04;  // Right
     if (_dpad == 4 || _dpad == 3 || _dpad == 5) btnLeft |= 0x01;  // Down
     if (_dpad == 6 || _dpad == 5 || _dpad == 7) btnLeft |= 0x08;  // Left
-
-    // L/ZL on left byte
     if (_buttons & (1 << 4))  btnLeft |= 0x40;   // L
     if (_buttons & (1 << 6))  btnLeft |= 0x80;   // ZL
 
@@ -454,7 +440,7 @@ void SwitchProUSB::fillInputHeader(uint8_t* buf) {
     packStick12bit(lx12, ly12, &buf[5]);
     packStick12bit(rx12, ry12, &buf[8]);
     buf[11] = 0x08;      // vibration ACK
-    // Bytes 12+ = IMU data (zeros = stationary)
+    // Bytes 12-47 = IMU data (zeros = stationary)
 }
 
 void SwitchProUSB::sendStandardInputReport() {
@@ -508,9 +494,8 @@ bool SwitchProUSB::write() {
 }
 
 void SwitchProUSB::loop() {
-    // Send 0x30 reports at ~8ms cadence when connected
-    if (!_connected) return;
-    if (millis() - _lastReportMs < 8) return;
+    // Send 0x30 reports at ~15ms cadence when mounted
+    if (millis() - _lastReportMs < 15) return;
     _lastReportMs = millis();
     sendStandardInputReport();
 }
