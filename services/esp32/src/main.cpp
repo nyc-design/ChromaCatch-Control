@@ -45,15 +45,18 @@
 // USER CONFIGURATION -- Edit before flashing
 // ============================================================
 #ifndef CC_WIFI_SSID
-#define CC_WIFI_SSID "YOUR_WIFI_SSID"
+#define CC_WIFI_SSID YOUR_WIFI_SSID
 #endif
 
 #ifndef CC_WIFI_PASSWORD
-#define CC_WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
+#define CC_WIFI_PASSWORD YOUR_WIFI_PASSWORD
 #endif
 
-const char* WIFI_SSID       = CC_WIFI_SSID;
-const char* WIFI_PASSWORD   = CC_WIFI_PASSWORD;
+#define CC_STRINGIFY_INNER(x) #x
+#define CC_STRINGIFY(x) CC_STRINGIFY_INNER(x)
+
+const char* WIFI_SSID_RAW       = CC_STRINGIFY(CC_WIFI_SSID);
+const char* WIFI_PASSWORD_RAW   = CC_STRINGIFY(CC_WIFI_PASSWORD);
 const int   HTTP_PORT       = 80;
 const int   WS_PORT         = 81;
 const char* DEVICE_NAME     = "ChromaCatch";
@@ -294,6 +297,20 @@ void servicePabbCommandQueue();
 bool strEqIgnoreCase(const String& a, const char* b) {
     String rhs = String(b);
     return a.equalsIgnoreCase(rhs);
+}
+
+String decodeBuildMacroString(const char* raw) {
+    String value = raw == nullptr ? "" : String(raw);
+    // If define came in already quoted, CC_STRINGIFY produces "\"value\"".
+    // Strip one layer of escaped outer quotes.
+    if (value.length() >= 4 &&
+        value[0] == '\\' &&
+        value[1] == '"' &&
+        value[value.length() - 2] == '\\' &&
+        value[value.length() - 1] == '"') {
+        value = value.substring(2, value.length() - 2);
+    }
+    return value;
 }
 
 int8_t clampInt8(int value) {
@@ -2870,11 +2887,14 @@ void handleButtons() {
 // WiFi setup
 // ============================================================
 void setupWiFi() {
+    const String wifiSsid = decodeBuildMacroString(WIFI_SSID_RAW);
+    const String wifiPassword = decodeBuildMacroString(WIFI_PASSWORD_RAW);
+
     Serial.print("Connecting to WiFi: ");
-    Serial.println(WIFI_SSID);
+    Serial.println(wifiSsid);
 
     WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    WiFi.begin(wifiSsid.c_str(), wifiPassword.c_str());
 
     int attempts = 0;
     while (WiFi.status() != WL_CONNECTED && attempts < 30) {

@@ -22,7 +22,7 @@ if cpp_defines:
     env.Append(CPPDEFINES=cpp_defines)
 
 
-def _patch_file(path: Path, replacements: list[tuple[str, str]]) -> bool:
+def _patch_file(path: Path, replacements) -> bool:
     if not path.exists():
         return False
     text = path.read_text(encoding="utf-8")
