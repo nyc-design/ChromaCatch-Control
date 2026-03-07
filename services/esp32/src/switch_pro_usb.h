@@ -65,5 +65,9 @@ private:
     uint8_t _ry = 0x80;
 };
 
+// Global pointer for the linker --wrap callback to route 0x80 reports.
+// Set by usb_hid_bridge.cpp when Switch Pro USB mode is active.
+extern SwitchProUSB* g_switchProUsbDevice;
+
 #endif  // CONFIG_TINYUSB_HID_ENABLED
 #endif  // CONFIG_IDF_TARGET_ESP32S3

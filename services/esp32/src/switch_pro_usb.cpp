@@ -4,6 +4,50 @@
 #if CONFIG_TINYUSB_HID_ENABLED
 
 #include <cstring>
+#include "class/hid/hid_device.h"
+
+// Global instance pointer for the --wrap callback.
+SwitchProUSB* g_switchProUsbDevice = nullptr;
+
+// ============================================================
+// Linker --wrap override for tud_hid_set_report_cb
+//
+// The Arduino USBHID layer only routes output reports whose
+// report ID appears in the HID descriptor.  The Pro Controller's
+// USB handshake uses report ID 0x80 / 0x81, which are NOT in the
+// HID descriptor (same as the real controller).  Without this
+// wrapper the 0x80 handshake from the Switch is silently dropped
+// and the controller is never recognised.
+//
+// Build flag: -Wl,--wrap=tud_hid_set_report_cb
+// ============================================================
+extern "C" {
+    void __real_tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
+                                       hid_report_type_t report_type,
+                                       uint8_t const* buffer, uint16_t bufsize);
+
+    void __wrap_tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
+                                       hid_report_type_t report_type,
+                                       uint8_t const* buffer, uint16_t bufsize) {
+        // OUT endpoint data arrives with report_id=0, report_type=0.
+        // The raw report ID is in buffer[0].
+        if (!report_id && !report_type && bufsize > 0 && g_switchProUsbDevice) {
+            uint8_t rid = buffer[0];
+            if (rid == 0x80) {
+                // Route USB handshake to our handler (not in HID descriptor)
+                g_switchProUsbDevice->_onOutput(rid, buffer + 1, bufsize - 1);
+                return;
+            }
+        }
+        // SET_REPORT control request with report_id=0x80
+        if (report_id == 0x80 && g_switchProUsbDevice) {
+            g_switchProUsbDevice->_onOutput(report_id, buffer, bufsize);
+            return;
+        }
+        // Everything else: delegate to the original Arduino USBHID handler
+        __real_tud_hid_set_report_cb(instance, report_id, report_type, buffer, bufsize);
+    }
+}
 
 // ============================================================
 // Pro Controller HID descriptor — identical to the BT descriptor
@@ -251,35 +295,43 @@ void SwitchProUSB::_onOutput(uint8_t report_id, const uint8_t* buffer, uint16_t 
 void SwitchProUSB::handleUsbCommand(const uint8_t* data, uint16_t len) {
     if (len < 1) return;
     uint8_t cmd = data[0];
-    Serial.printf("[SwitchProUSB] USB cmd 0x%02X\n", cmd);
+    Serial.printf("[SwitchProUSB] USB 0x80 cmd=0x%02X len=%d\n", cmd, len);
 
     uint8_t reply[kReportLen];
     memset(reply, 0, sizeof(reply));
 
     switch (cmd) {
         case 0x01:
+            // MAC address request
             reply[0] = 0x01;
             reply[1] = 0x00;
             reply[2] = 0x03;
             memcpy(&reply[3], kMacAddr, 6);
             sendInputReport(0x81, reply, sizeof(reply));
+            Serial.println("[SwitchProUSB] -> 0x81 MAC reply sent");
             break;
         case 0x02:
+            reply[0] = cmd;
+            sendInputReport(0x81, reply, sizeof(reply));
+            Serial.println("[SwitchProUSB] -> 0x81 handshake ACK sent");
+            break;
         case 0x03:
             reply[0] = cmd;
             sendInputReport(0x81, reply, sizeof(reply));
+            Serial.println("[SwitchProUSB] -> 0x81 baudrate ACK sent");
             break;
         case 0x04:
             _connected = true;
-            Serial.println("[SwitchProUSB] USB 0x80: connected");
+            Serial.println("[SwitchProUSB] USB handshake COMPLETE - connected!");
             break;
         case 0x05:
             _connected = false;
-            Serial.println("[SwitchProUSB] USB 0x80: disconnected");
+            Serial.println("[SwitchProUSB] USB disconnected");
             break;
         default:
             reply[0] = cmd;
             sendInputReport(0x81, reply, sizeof(reply));
+            Serial.printf("[SwitchProUSB] -> 0x81 unknown cmd 0x%02X ACK sent\n", cmd);
             break;
     }
 }
@@ -494,8 +546,8 @@ bool SwitchProUSB::write() {
 }
 
 void SwitchProUSB::loop() {
-    // Send 0x30 reports at ~15ms cadence when mounted
-    if (millis() - _lastReportMs < 15) return;
+    // Send 0x30 reports at ~8ms cadence (PA wired cooldown) when mounted
+    if (millis() - _lastReportMs < 8) return;
     _lastReportMs = millis();
     sendStandardInputReport();
 }

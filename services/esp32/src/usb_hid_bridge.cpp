@@ -67,6 +67,7 @@ void init() {
         // SwitchProUSB sets its own VID/PID/manufacturer/product in constructor.
         // Only this device gets registered — no keyboard/mouse/generic gamepad.
         switchProUsb = new SwitchProUSB();
+        g_switchProUsbDevice = switchProUsb;  // expose for --wrap callback
         switchProUsb->begin();
         Serial.println("[USB] Switch Pro Controller USB mode initialized");
     } else {
