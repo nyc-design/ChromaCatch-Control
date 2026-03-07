@@ -169,8 +169,10 @@ static const uint8_t kProControllerDescriptor[] = {
 
 constexpr uint16_t kNintendoVid = 0x057E;
 constexpr uint16_t kNintendoProPid = 0x2009;
+constexpr uint16_t kNintendoSwitch2ProPid = 0x2069;
 constexpr uint16_t kNintendoUsbVersion = 0x0200;
-constexpr uint16_t kNintendoFirmwareVersion = 0x0200;
+constexpr uint8_t kCompatFirmwareMajor = 0x04;
+constexpr uint8_t kCompatFirmwareMinor = 0x21;
 
 // ============================================================
 // SPI flash data tables
@@ -234,21 +236,29 @@ static constexpr size_t kReportLen = 48;
 // ============================================================
 // Constructor / begin / end
 // ============================================================
-SwitchProUSB::SwitchProUSB() : _hid() {
+SwitchProUSB::SwitchProUSB(SwitchProUsbIdentityProfile identityProfile) : _hid() {
     static bool registered = false;
+    _identityProfile = identityProfile;
     refreshIdentityFromEfuse();
 
-    // Keep legacy Pro Controller USB identity for Switch compatibility.
-    // (Switch/Switch 2 currently rejects our 0x2069 identity on this stack.)
+    // Default stays legacy Pro identity for broad compatibility.
+    // Experimental profile can opt into Switch 2-style PID.
+    uint16_t pid = (_identityProfile == SWITCH_PRO_USB_IDENTITY_PRO2)
+        ? kNintendoSwitch2ProPid
+        : kNintendoProPid;
+    const char* productName = (_identityProfile == SWITCH_PRO_USB_IDENTITY_PRO2)
+        ? "Pro Controller 2"
+        : "Pro Controller";
+
     USB.VID(kNintendoVid);
-    USB.PID(kNintendoProPid);
+    USB.PID(pid);
     USB.usbVersion(kNintendoUsbVersion);
-    USB.firmwareVersion(kNintendoFirmwareVersion);
+    USB.firmwareVersion(0x0100);
     USB.usbClass(0);
     USB.usbSubClass(0);
     USB.usbProtocol(0);
     USB.manufacturerName("Nintendo Co., Ltd.");
-    USB.productName("Pro Controller");
+    USB.productName(productName);
     USB.serialNumber(_serialNumber);
     if (!registered) {
         registered = true;
@@ -383,8 +393,8 @@ void SwitchProUSB::handleSubcommand(const uint8_t* data, uint16_t len) {
         case 0x02: {
             // Device info
             uint8_t info[12] = {0};
-            info[0] = static_cast<uint8_t>((kNintendoFirmwareVersion >> 8) & 0xFF);
-            info[1] = static_cast<uint8_t>(kNintendoFirmwareVersion & 0xFF);
+            info[0] = kCompatFirmwareMajor;
+            info[1] = kCompatFirmwareMinor;
             info[2] = 0x03;                   // Pro Controller
             info[3] = 0x02;
             memcpy(&info[4], _macAddr, 6);
