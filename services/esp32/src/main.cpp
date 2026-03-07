@@ -184,8 +184,8 @@ DeviceMode currentMode = MODE_COMBO;
 DeliveryPolicy deliveryPolicy = DELIVERY_AUTO;
 EmulationMode currentEmulationMode = EMU_BLUETOOTH_COMBO;
 InputPolicy inputPolicy = INPUT_POLICY_AUTO;
-UsbHidBridge::UsbSwitchIdentityProfile wiredSwitchUsbIdentity = UsbHidBridge::USB_SWITCH_IDENTITY_PRO2;
-UsbHidBridge::UsbSwitchIdentityProfile usbSwitchIdentityAppliedAtBoot = UsbHidBridge::USB_SWITCH_IDENTITY_PRO2;
+UsbHidBridge::UsbSwitchIdentityProfile wiredSwitchUsbIdentity = UsbHidBridge::USB_SWITCH_IDENTITY_PRO_COMPAT;
+UsbHidBridge::UsbSwitchIdentityProfile usbSwitchIdentityAppliedAtBoot = UsbHidBridge::USB_SWITCH_IDENTITY_PRO_COMPAT;
 
 String serialBuffer = "";
 std::vector<uint8_t> serialBinaryBuffer;
@@ -546,7 +546,7 @@ void loadPersistedRuntimeConfig() {
 
     int savedModeRaw = prefs.getInt(PREF_KEY_MODE, static_cast<int>(EMU_BLUETOOTH_COMBO));
     int savedInputPolicyRaw = prefs.getInt(PREF_KEY_INPUT_POLICY, static_cast<int>(INPUT_POLICY_AUTO));
-    int savedUsbSwitchIdentityRaw = prefs.getInt(PREF_KEY_USB_SWITCH_ID, static_cast<int>(UsbHidBridge::USB_SWITCH_IDENTITY_PRO2));
+    int savedUsbSwitchIdentityRaw = prefs.getInt(PREF_KEY_USB_SWITCH_ID, static_cast<int>(UsbHidBridge::USB_SWITCH_IDENTITY_PRO_COMPAT));
 
     EmulationMode savedMode = static_cast<EmulationMode>(savedModeRaw);
     if (savedModeRaw >= 0 &&
