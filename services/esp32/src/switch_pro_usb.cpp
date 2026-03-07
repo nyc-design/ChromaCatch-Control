@@ -382,12 +382,8 @@ void SwitchProUSB::handleSubcommand(const uint8_t* data, uint16_t len) {
         case 0x10:
             handleSpiFlashRead(data, len);
             break;
-        case 0x21: {
-            uint8_t nfcReply[8] = {0x01, 0x00, 0xFF, 0x00, 0x08, 0x00, 0x1B, 0x01};
-            sendSubcommandReply(0x21, 0xA0, nfcReply, sizeof(nfcReply));
-            break;
-        }
-        case 0x22:
+        case 0x21:  // Set NFC/IR MCU configuration — simple ACK (we don't emulate NFC)
+        case 0x22:  // Set NFC/IR MCU state
             sendSubcommandReply(subcmd, 0x80, nullptr, 0);
             break;
         default:
@@ -445,12 +441,38 @@ void SwitchProUSB::handleSpiFlashRead(const uint8_t* data, uint16_t len) {
 // ============================================================
 // Report senders
 // ============================================================
+
+// Try to send a report immediately via TinyUSB (non-blocking).
+bool SwitchProUSB::trySendReport(uint8_t reportId, const uint8_t* data, size_t len) {
+    return tud_hid_n_report(0, reportId, data, len);
+}
+
+// Called from _onOutput (TinyUSB callback context) — MUST NOT block.
+// Try to send immediately; if the IN endpoint is busy, queue for loop().
 void SwitchProUSB::sendInputReport(uint8_t reportId, const uint8_t* data, size_t len) {
-    // Use tud_hid_n_report() directly instead of _hid.SendReport().
-    // SendReport() blocks on a semaphore waiting for transfer completion,
-    // which deadlocks when called from _onOutput (TinyUSB callback context).
-    // tud_hid_n_report() is non-blocking and queues the transfer.
-    tud_hid_n_report(0, reportId, data, len);
+    if (trySendReport(reportId, data, len)) return;
+    // Endpoint busy — buffer the reply for loop() to flush
+    if (_pendingCount < kMaxPending) {
+        auto& p = _pendingQueue[_pendingCount];
+        p.reportId = reportId;
+        size_t copyLen = (len < kReportBufLen) ? len : kReportBufLen;
+        memcpy(p.data, data, copyLen);
+        p.len = copyLen;
+        _pendingCount++;
+    }
+}
+
+// Drain queued replies (called from loop() in main-thread context).
+void SwitchProUSB::flushPendingReplies() {
+    while (_pendingCount > 0) {
+        auto& p = _pendingQueue[0];
+        if (!trySendReport(p.reportId, p.data, p.len)) break;  // still busy, try next tick
+        // Shift queue down
+        _pendingCount--;
+        for (uint8_t i = 0; i < _pendingCount; i++) {
+            _pendingQueue[i] = _pendingQueue[i + 1];
+        }
+    }
 }
 
 void SwitchProUSB::fillInputHeader(uint8_t* buf) {
@@ -582,6 +604,9 @@ bool SwitchProUSB::write() {
 }
 
 void SwitchProUSB::loop() {
+    // Flush any queued replies first (from _onOutput callback context)
+    flushPendingReplies();
+
     // Two-phase reporting:
     // Phase 1 (pre-handshake): Send 0x3F simple reports so the Switch
     //   recognises us as a Pro Controller and initiates the 0x80 handshake.

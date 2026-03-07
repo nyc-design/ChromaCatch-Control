@@ -52,10 +52,24 @@ private:
     void convertButtonsTo3Byte();
     static void packStick12bit(uint16_t x, uint16_t y, uint8_t out[3]);
 
+    bool trySendReport(uint8_t reportId, const uint8_t* data, size_t len);
+    void flushPendingReplies();
+
     USBHID _hid;
     uint32_t _lastReportMs = 0;
     uint8_t _timer = 0;
     bool _connected = false;
+
+    // Reply queue: callbacks can't block, so buffer replies for loop() to flush.
+    static constexpr size_t kMaxPending = 8;
+    static constexpr size_t kReportBufLen = 48;
+    struct PendingReport {
+        uint8_t reportId;
+        uint8_t data[kReportBufLen];
+        size_t len;
+    };
+    PendingReport _pendingQueue[kMaxPending];
+    volatile uint8_t _pendingCount = 0;
 
     // 8-bit axis state (0x80 = center, NSGamepad-compatible API)
     uint16_t _buttons = 0;
