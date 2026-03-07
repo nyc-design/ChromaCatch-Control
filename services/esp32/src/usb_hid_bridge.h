@@ -47,8 +47,15 @@ enum UsbGamepadProfile : uint8_t {
     USB_GAMEPAD_PROFILE_SWITCH_PRO = 1,
 };
 
+enum UsbSwitchIdentityProfile : uint8_t {
+    USB_SWITCH_IDENTITY_PRO_COMPAT = 0,
+    USB_SWITCH_IDENTITY_PRO2 = 1,
+};
+
 void setGamepadProfile(UsbGamepadProfile profile);
 UsbGamepadProfile getGamepadProfile();
+void setSwitchIdentityProfile(UsbSwitchIdentityProfile profile);
+UsbSwitchIdentityProfile getSwitchIdentityProfile();
 
 void init();
 bool isMounted();

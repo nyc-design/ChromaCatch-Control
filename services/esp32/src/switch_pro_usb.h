@@ -8,6 +8,11 @@
 
 #if CONFIG_TINYUSB_HID_ENABLED
 
+enum SwitchProUsbIdentityProfile : uint8_t {
+    SWITCH_PRO_USB_IDENTITY_PRO_COMPAT = 0,
+    SWITCH_PRO_USB_IDENTITY_PRO2 = 1,
+};
+
 /// Nintendo Switch Pro Controller over USB HID.
 /// Uses the real Pro Controller HID descriptor with vendor-defined report IDs
 /// (0x30/0x21/0x81 input, 0x01/0x10/0x80 output) and handles:
@@ -16,7 +21,7 @@
 ///  - 0x30 standard full input reports (~8ms cadence)
 class SwitchProUSB : public USBHIDDevice {
 public:
-    SwitchProUSB();
+    explicit SwitchProUSB(SwitchProUsbIdentityProfile identityProfile = SWITCH_PRO_USB_IDENTITY_PRO_COMPAT);
 
     void begin();
     void end();
@@ -41,6 +46,8 @@ public:
     void _onOutput(uint8_t report_id, const uint8_t* buffer, uint16_t len) override;
 
 private:
+    void refreshIdentityFromEfuse();
+
     void sendInputReport(uint8_t reportId, const uint8_t* data, size_t len);
     void sendStandardInputReport();
     void sendSimpleInputReport();
@@ -59,6 +66,9 @@ private:
     uint32_t _lastReportMs = 0;
     uint8_t _timer = 0;
     bool _connected = false;
+    SwitchProUsbIdentityProfile _identityProfile = SWITCH_PRO_USB_IDENTITY_PRO_COMPAT;
+    uint8_t _macAddr[6] = {0};
+    char _serialNumber[13] = {0};
 
     // Reply queue: callbacks can't block, so buffer replies for loop() to flush.
     static constexpr size_t kMaxPending = 8;

@@ -4,24 +4,121 @@
 #if CONFIG_TINYUSB_HID_ENABLED
 
 #include <cstring>
+#include <cstdio>
 #include "class/hid/hid_device.h"
+#include "esp_mac.h"
 
-// Global instance pointer for the --wrap callback.
+// Global instance pointer for the --wrap callbacks.
 SwitchProUSB* g_switchProUsbDevice = nullptr;
 
 // ============================================================
-// Linker --wrap override for tud_hid_set_report_cb
+// Static USB descriptors — byte-for-byte match with real Pro Controller.
+// The Arduino USBHID framework builds its own descriptors with wrong
+// BOS (WebUSB/MS-OS-2.0), 1ms polling interval, etc. We bypass it
+// entirely via --wrap linker overrides when in Switch Pro mode.
+// ============================================================
+
+// Modifiable device descriptor (PID set in constructor for Pro/Pro2)
+static uint8_t s_deviceDesc[18] = {
+    18,             // bLength
+    0x01,           // bDescriptorType = DEVICE
+    0x00, 0x02,     // bcdUSB = 0x0200 (LE)
+    0x00, 0x00, 0x00, // bDeviceClass/SubClass/Protocol = 0
+    64,             // bMaxPacketSize0
+    0x5E, 0x07,     // idVendor = 0x057E (LE)
+    0x09, 0x20,     // idProduct = 0x2009 (LE) — updated in constructor
+    0x00, 0x02,     // bcdDevice = 0x0200 (LE)
+    0x01,           // iManufacturer = string index 1
+    0x02,           // iProduct = string index 2
+    0x00,           // iSerialNumber = 0 (real Pro Controller has none)
+    0x01,           // bNumConfigurations = 1
+};
+
+// Static configuration descriptor (41 bytes) — matches real Pro Controller
+static const uint8_t s_configDesc[] = {
+    // Configuration descriptor (9 bytes)
+    9, 0x02,        // bLength, bDescriptorType = CONFIGURATION
+    41, 0,          // wTotalLength = 41 (LE)
+    1,              // bNumInterfaces = 1
+    1,              // bConfigurationValue = 1
+    0,              // iConfiguration = 0
+    0xA0,           // bmAttributes = Bus Powered + Remote Wakeup
+    0xFA,           // bMaxPower = 500mA (250 × 2mA)
+    // Interface descriptor (9 bytes)
+    9, 0x04,        // bLength, bDescriptorType = INTERFACE
+    0,              // bInterfaceNumber = 0
+    0,              // bAlternateSetting = 0
+    2,              // bNumEndpoints = 2
+    0x03,           // bInterfaceClass = HID
+    0x00,           // bInterfaceSubClass = 0
+    0x00,           // bInterfaceProtocol = 0
+    0,              // iInterface = 0
+    // HID class descriptor (9 bytes)
+    9, 0x21,        // bLength, bDescriptorType = HID
+    0x11, 0x01,     // bcdHID = 1.11 (LE)
+    0x00,           // bCountryCode = 0
+    1,              // bNumDescriptors = 1
+    0x22,           // bDescriptorType = REPORT
+    170, 0,         // wDescriptorLength = 170 (LE) — sizeof(kProControllerDescriptor)
+    // Endpoint IN descriptor (7 bytes)
+    7, 0x05,        // bLength, bDescriptorType = ENDPOINT
+    0x81,           // bEndpointAddress = IN 1
+    0x03,           // bmAttributes = Interrupt
+    64, 0,          // wMaxPacketSize = 64 (LE)
+    8,              // bInterval = 8ms
+    // Endpoint OUT descriptor (7 bytes)
+    7, 0x05,        // bLength, bDescriptorType = ENDPOINT
+    0x02,           // bEndpointAddress = OUT 2
+    0x03,           // bmAttributes = Interrupt
+    64, 0,          // wMaxPacketSize = 64 (LE)
+    8,              // bInterval = 8ms
+};
+
+// ============================================================
+// Linker --wrap overrides
 //
-// The Arduino USBHID layer only routes output reports whose
-// report ID appears in the HID descriptor.  The Pro Controller's
-// USB handshake uses report ID 0x80 / 0x81, which are NOT in the
-// HID descriptor (same as the real controller).  Without this
-// wrapper the 0x80 handshake from the Switch is silently dropped
-// and the controller is never recognised.
+// We intercept ALL USB descriptor and HID callbacks to present
+// an exact Pro Controller identity. Without this, the Arduino
+// USBHID framework adds BOS/WebUSB/MS-OS-2.0 descriptors, uses
+// 1ms polling interval, and may use different endpoint addresses.
 //
-// Build flag: -Wl,--wrap=tud_hid_set_report_cb
+// Build flags:
+//   -Wl,--wrap=tud_hid_set_report_cb
+//   -Wl,--wrap=tud_descriptor_device_cb
+//   -Wl,--wrap=tud_descriptor_configuration_cb
+//   -Wl,--wrap=tud_descriptor_bos_cb
+//   -Wl,--wrap=tud_hid_descriptor_report_cb
 // ============================================================
 extern "C" {
+    // --- Device descriptor ---
+    uint8_t const* __real_tud_descriptor_device_cb(void);
+    uint8_t const* __wrap_tud_descriptor_device_cb(void) {
+        if (g_switchProUsbDevice) return s_deviceDesc;
+        return __real_tud_descriptor_device_cb();
+    }
+
+    // --- Configuration descriptor ---
+    uint8_t const* __real_tud_descriptor_configuration_cb(uint8_t index);
+    uint8_t const* __wrap_tud_descriptor_configuration_cb(uint8_t index) {
+        if (g_switchProUsbDevice) return s_configDesc;
+        return __real_tud_descriptor_configuration_cb(index);
+    }
+
+    // --- BOS descriptor — real Pro Controller has none (USB 2.0) ---
+    uint8_t const* __real_tud_descriptor_bos_cb(void);
+    uint8_t const* __wrap_tud_descriptor_bos_cb(void) {
+        if (g_switchProUsbDevice) return nullptr;
+        return __real_tud_descriptor_bos_cb();
+    }
+
+    // --- HID report descriptor ---
+    uint8_t const* __real_tud_hid_descriptor_report_cb(uint8_t instance);
+    uint8_t const* __wrap_tud_hid_descriptor_report_cb(uint8_t instance) {
+        if (g_switchProUsbDevice) return kProControllerDescriptor;
+        return __real_tud_hid_descriptor_report_cb(instance);
+    }
+
+    // --- Output report callback (0x80 handshake routing) ---
     void __real_tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
                                        hid_report_type_t report_type,
                                        uint8_t const* buffer, uint16_t bufsize);
@@ -34,7 +131,6 @@ extern "C" {
         if (!report_id && !report_type && bufsize > 0 && g_switchProUsbDevice) {
             uint8_t rid = buffer[0];
             if (rid == 0x80) {
-                // Route USB handshake to our handler (not in HID descriptor)
                 g_switchProUsbDevice->_onOutput(rid, buffer + 1, bufsize - 1);
                 return;
             }
@@ -165,8 +261,12 @@ static const uint8_t kProControllerDescriptor[] = {
     0xC0,              // End Collection
 };
 
-// MAC address for device info response
-static const uint8_t kMacAddr[6] = {0x00, 0x00, 0x5E, 0x00, 0x53, 0x5E};
+constexpr uint16_t kNintendoVid = 0x057E;
+constexpr uint16_t kNintendoProPid = 0x2009;
+constexpr uint16_t kNintendoSwitch2ProPid = 0x2069;
+constexpr uint16_t kNintendoUsbVersion = 0x0200;
+constexpr uint8_t kCompatFirmwareMajor = 0x04;
+constexpr uint8_t kCompatFirmwareMinor = 0x21;
 
 // ============================================================
 // SPI flash data tables
@@ -230,21 +330,58 @@ static constexpr size_t kReportLen = 48;
 // ============================================================
 // Constructor / begin / end
 // ============================================================
-SwitchProUSB::SwitchProUSB() : _hid() {
+SwitchProUSB::SwitchProUSB(SwitchProUsbIdentityProfile identityProfile) : _hid() {
     static bool registered = false;
-    // Set Pro Controller USB identity
-    USB.VID(0x057E);
-    USB.PID(0x2009);
+    _identityProfile = identityProfile;
+    refreshIdentityFromEfuse();
+
+    uint16_t pid = (_identityProfile == SWITCH_PRO_USB_IDENTITY_PRO2)
+        ? kNintendoSwitch2ProPid
+        : kNintendoProPid;
+    const char* productName = (_identityProfile == SWITCH_PRO_USB_IDENTITY_PRO2)
+        ? "Pro Controller 2"
+        : "Pro Controller";
+
+    // Update PID in the static device descriptor for the --wrap callback
+    s_deviceDesc[10] = pid & 0xFF;
+    s_deviceDesc[11] = (pid >> 8) & 0xFF;
+
+    // Also set via Arduino API (used as fallback if --wrap not active)
+    USB.VID(kNintendoVid);
+    USB.PID(pid);
+    USB.usbVersion(kNintendoUsbVersion);
+    USB.firmwareVersion(0x0100);
     USB.usbClass(0);
     USB.usbSubClass(0);
     USB.usbProtocol(0);
     USB.manufacturerName("Nintendo Co., Ltd.");
-    USB.productName("Pro Controller");
+    USB.productName(productName);
     if (!registered) {
         registered = true;
         _hid.addDevice(this, sizeof(kProControllerDescriptor));
     }
     end();
+}
+
+void SwitchProUSB::refreshIdentityFromEfuse() {
+    uint8_t baseMac[6] = {0};
+    esp_err_t rc = esp_read_mac(baseMac, ESP_MAC_WIFI_STA);
+    if (rc != ESP_OK) {
+        const uint8_t fallback[6] = {0x00, 0x00, 0x5E, 0x00, 0x53, 0x5E};
+        memcpy(_macAddr, fallback, sizeof(_macAddr));
+    } else {
+        memcpy(_macAddr, baseMac, sizeof(_macAddr));
+    }
+
+    // Keep Switch-style globally-unique address semantics for USB replies.
+    _macAddr[0] &= 0xFE; // unicast
+
+    snprintf(
+        _serialNumber, sizeof(_serialNumber),
+        "%02X%02X%02X%02X%02X%02X",
+        _macAddr[0], _macAddr[1], _macAddr[2],
+        _macAddr[3], _macAddr[4], _macAddr[5]
+    );
 }
 
 void SwitchProUSB::begin() {
@@ -306,7 +443,7 @@ void SwitchProUSB::handleUsbCommand(const uint8_t* data, uint16_t len) {
             reply[0] = 0x01;
             reply[1] = 0x00;
             reply[2] = 0x03;
-            memcpy(&reply[3], kMacAddr, 6);
+            memcpy(&reply[3], _macAddr, 6);
             sendInputReport(0x81, reply, sizeof(reply));
             Serial.println("[SwitchProUSB] -> 0x81 MAC reply sent");
             break;
@@ -352,10 +489,11 @@ void SwitchProUSB::handleSubcommand(const uint8_t* data, uint16_t len) {
         case 0x02: {
             // Device info
             uint8_t info[12] = {0};
-            info[0] = 0x04; info[1] = 0x21;  // FW version
+            info[0] = kCompatFirmwareMajor;
+            info[1] = kCompatFirmwareMinor;
             info[2] = 0x03;                   // Pro Controller
             info[3] = 0x02;
-            memcpy(&info[4], kMacAddr, 6);
+            memcpy(&info[4], _macAddr, 6);
             info[10] = 0x01;
             info[11] = 0x01;                  // SPI color available
             sendSubcommandReply(0x02, 0x82, info, sizeof(info));
