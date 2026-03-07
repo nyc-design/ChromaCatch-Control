@@ -328,7 +328,7 @@ void tick() {
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
 #if CONFIG_TINYUSB_HID_ENABLED
     if (!initialized) return;
-    if (gamepadProfile == USB_GAMEPAD_PROFILE_SWITCH_PRO) {
+    if (gamepadProfile == USB_GAMEPAD_PROFILE_SWITCH_PRO && isMounted()) {
         switchGamepad.loop();
     }
 #endif
