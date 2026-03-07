@@ -965,6 +965,10 @@ bool isUSBMounted() {
     return UsbHidBridge::isMounted();
 }
 
+bool isUSBConnected() {
+    return UsbHidBridge::isUsbConnected();
+}
+
 // ============================================================
 // BLE init and state
 // ============================================================
@@ -1068,6 +1072,13 @@ bool isBLEConnected() {
 RuntimeDelivery chooseRuntimeDelivery() {
     bool usbAvailable = isUSBMounted();
     bool bleAvailable = isBLEConnected();
+
+    // In wired Switch Pro mode, allow best-effort USB sends even when
+    // the host is suspended (cable still connected). This lets commands
+    // through for potential wake or immediate-post-resume delivery.
+    if (!usbAvailable && currentEmulationMode == EMU_WIRED_SWITCH_PRO_CONTROLLER) {
+        usbAvailable = isUSBConnected();
+    }
 
     switch (deliveryPolicy) {
         case DELIVERY_FORCE_USB:

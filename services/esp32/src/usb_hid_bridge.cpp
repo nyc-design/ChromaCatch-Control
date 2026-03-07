@@ -117,6 +117,20 @@ bool isMounted() {
 #endif
 }
 
+bool isUsbConnected() {
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+#if CONFIG_TINYUSB_ENABLED
+    // Returns true even when suspended (cable still plugged in).
+    // Use for allowing best-effort sends (e.g. Home button wake attempt).
+    return tud_mounted();
+#else
+    return false;
+#endif
+#else
+    return false;
+#endif
+}
+
 void mouseMove(int dx, int dy) {
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
     if (mouse) mouse->move(clampInt8(dx), clampInt8(dy));
@@ -290,7 +304,7 @@ void tick() {
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
 #if CONFIG_TINYUSB_HID_ENABLED
     if (!initialized) return;
-    if (gamepadProfile == USB_GAMEPAD_PROFILE_SWITCH_PRO && switchProUsb && isMounted()) {
+    if (gamepadProfile == USB_GAMEPAD_PROFILE_SWITCH_PRO && switchProUsb && isUsbConnected()) {
         switchProUsb->loop();
     }
 #endif

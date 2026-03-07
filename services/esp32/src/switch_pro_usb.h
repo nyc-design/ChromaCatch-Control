@@ -43,6 +43,7 @@ public:
 private:
     void sendInputReport(uint8_t reportId, const uint8_t* data, size_t len);
     void sendStandardInputReport();
+    void sendSimpleInputReport();
     void sendSubcommandReply(uint8_t subcmd, uint8_t ackByte, const uint8_t* data, size_t dataLen);
     void handleSpiFlashRead(const uint8_t* cmdData, uint16_t cmdLen);
     void handleUsbCommand(const uint8_t* data, uint16_t len);

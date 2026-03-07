@@ -502,6 +502,38 @@ void SwitchProUSB::sendStandardInputReport() {
     sendInputReport(0x30, payload, sizeof(payload));
 }
 
+// ============================================================
+// 0x3F simple button report — sent during initial pairing
+// before the 0x80 USB handshake completes.
+// Format from the HID descriptor:
+//   16 buttons (2 bytes) + hat (4 bits + 4 pad) + 4 axes (16-bit each)
+//   Total: 11 bytes
+// ============================================================
+void SwitchProUSB::sendSimpleInputReport() {
+    uint8_t payload[11];
+    memset(payload, 0, sizeof(payload));
+
+    // 16 buttons packed into 2 bytes (same NSGamepad bit order)
+    payload[0] = _buttons & 0xFF;
+    payload[1] = (_buttons >> 8) & 0xFF;
+
+    // Hat switch (4 bits) + 4 bits padding
+    // Our _dpad is already in 0-7 / 0x0F (centered) format
+    payload[2] = (_dpad == 0x0F) ? 0x08 : _dpad;  // 0x08 = centered in 0x3F hat
+
+    // 4 analog axes as 16-bit LE (center = 0x8000)
+    uint16_t lx16 = static_cast<uint16_t>(_lx) << 8;
+    uint16_t ly16 = static_cast<uint16_t>(_ly) << 8;
+    uint16_t rx16 = static_cast<uint16_t>(_rx) << 8;
+    uint16_t ry16 = static_cast<uint16_t>(_ry) << 8;
+    payload[3] = lx16 & 0xFF; payload[4] = (lx16 >> 8) & 0xFF;
+    payload[5] = ly16 & 0xFF; payload[6] = (ly16 >> 8) & 0xFF;
+    payload[7] = rx16 & 0xFF; payload[8] = (rx16 >> 8) & 0xFF;
+    payload[9] = ry16 & 0xFF; payload[10] = (ry16 >> 8) & 0xFF;
+
+    sendInputReport(0x3F, payload, sizeof(payload));
+}
+
 void SwitchProUSB::sendSubcommandReply(uint8_t subcmd, uint8_t ackByte, const uint8_t* data, size_t dataLen) {
     uint8_t buf[kReportLen];
     memset(buf, 0, sizeof(buf));
@@ -546,10 +578,19 @@ bool SwitchProUSB::write() {
 }
 
 void SwitchProUSB::loop() {
-    // Send 0x30 reports at ~8ms cadence (PA wired cooldown) when mounted
-    if (millis() - _lastReportMs < 8) return;
+    // Two-phase reporting:
+    // Phase 1 (pre-handshake): Send 0x3F simple reports so the Switch
+    //   recognises us as a Pro Controller and initiates the 0x80 handshake.
+    // Phase 2 (post-handshake): Send 0x30 full reports at ~8ms cadence.
+    uint32_t cadence = _connected ? 8 : 16;
+    if (millis() - _lastReportMs < cadence) return;
     _lastReportMs = millis();
-    sendStandardInputReport();
+
+    if (_connected) {
+        sendStandardInputReport();
+    } else {
+        sendSimpleInputReport();
+    }
 }
 
 #endif  // CONFIG_TINYUSB_HID_ENABLED

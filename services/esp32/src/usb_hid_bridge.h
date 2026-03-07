@@ -52,6 +52,7 @@ UsbGamepadProfile getGamepadProfile();
 
 void init();
 bool isMounted();
+bool isUsbConnected();  // true even when suspended (cable connected)
 
 void mouseMove(int dx, int dy);
 void mouseClick(uint8_t button);
