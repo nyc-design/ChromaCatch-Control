@@ -296,13 +296,39 @@ void gamepadRightStick(int x, int y) {
 #endif
 }
 
+void gamepadSetFullState(uint16_t buttons, uint8_t hat, uint8_t lx, uint8_t ly, uint8_t rx, uint8_t ry) {
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+#if CONFIG_TINYUSB_HID_ENABLED
+    if (gamepadProfile == USB_GAMEPAD_PROFILE_SWITCH_PRO) {
+        switchGamepad.buttons(buttons);
+        switchGamepad.dPad(hat);
+        switchGamepad.leftXAxis(lx);
+        switchGamepad.leftYAxis(ly);
+        switchGamepad.rightXAxis(rx);
+        switchGamepad.rightYAxis(ry);
+        switchGamepad.write();
+        return;
+    }
+#endif
+    // Generic gamepad fallback: set buttons individually, then axes
+    // (USBHIDGamepad doesn't have a single atomic call)
+    for (uint8_t i = 0; i < 15; i++) {
+        if (buttons & (1 << i)) gamepad.pressButton(i);
+        else gamepad.releaseButton(i);
+    }
+    gamepad.hat(hat);
+    gamepad.leftStick(static_cast<int8_t>(lx - 128), static_cast<int8_t>(ly - 128));
+    gamepad.rightStick(static_cast<int8_t>(rx - 128), static_cast<int8_t>(ry - 128));
+#else
+    (void)buttons; (void)hat; (void)lx; (void)ly; (void)rx; (void)ry;
+#endif
+}
+
 void tick() {
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
 #if CONFIG_TINYUSB_HID_ENABLED
     if (!initialized) return;
     if (gamepadProfile == USB_GAMEPAD_PROFILE_SWITCH_PRO) {
-        // switch_ESP32 expects loop() to periodically flush neutral/updated
-        // reports for robust host-side controller presence.
         switchGamepad.loop();
     }
 #endif

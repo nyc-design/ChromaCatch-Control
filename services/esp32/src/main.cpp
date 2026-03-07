@@ -2354,72 +2354,31 @@ std::vector<uint32_t> pabbSupportedControllers() {
     return ids;
 }
 
-uint8_t pabbWiredButtons0 = 0;
-uint8_t pabbWiredButtons1 = 0;
-
 void applyPAWiredState(const uint8_t* report, size_t reportLen) {
     if (!BOARD_SUPPORTS_WIRED_OUTPUT || report == nullptr || reportLen < 7) return;
     if (currentEmulationMode != EMU_WIRED_SWITCH_PRO_CONTROLLER) return;
 
-    const uint8_t buttons0 = report[0];
-    const uint8_t buttons1 = report[1];
-    const uint8_t dpadByte = report[2];
-    const int lx = static_cast<int>(report[3]) - 128;
-    const int ly = static_cast<int>(report[4]) - 128;
-    const int rx = static_cast<int>(report[5]) - 128;
-    const int ry = static_cast<int>(report[6]) - 128;
+    // PA wired report: buttons0(Y/B/A/X/L/R/ZL/ZR) buttons1(−/+/L3/R3/Home/Cap)
+    // The bit layout matches NSGamepad exactly: Y=b0,B=b1,A=b2,X=b3,...Cap=b13
+    const uint16_t buttons = static_cast<uint16_t>(report[0]) |
+                             (static_cast<uint16_t>(report[1] & 0x3F) << 8);
 
-    auto updateButton = [&](uint8_t prevMaskByte, uint8_t nextMaskByte, uint8_t bit, uint8_t mapped) {
-        bool prevPressed = (prevMaskByte & (1 << bit)) != 0;
-        bool nextPressed = (nextMaskByte & (1 << bit)) != 0;
-        if (prevPressed == nextPressed) return;
-        if (nextPressed) UsbHidBridge::gamepadPress(mapped);
-        else UsbHidBridge::gamepadRelease(mapped);
-    };
+    // Dpad byte: 0-7=directions, 8=centered → map to NSGAMEPAD_DPAD_* (0-7, 0x0F=centered)
+    const uint8_t dpadRaw = report[2] & 0x0F;
+    const uint8_t hat = (dpadRaw <= 7) ? dpadRaw : static_cast<uint8_t>(0x0F);
 
-    // buttons0: Y/B/A/X/L/R/ZL/ZR
-    updateButton(pabbWiredButtons0, buttons0, 0, UsbHidBridge::USB_BUTTON_WEST);   // Y
-    updateButton(pabbWiredButtons0, buttons0, 1, UsbHidBridge::USB_BUTTON_SOUTH);  // B
-    updateButton(pabbWiredButtons0, buttons0, 2, UsbHidBridge::USB_BUTTON_EAST);   // A
-    updateButton(pabbWiredButtons0, buttons0, 3, UsbHidBridge::USB_BUTTON_NORTH);  // X
-    updateButton(pabbWiredButtons0, buttons0, 4, UsbHidBridge::USB_BUTTON_TL);     // L
-    updateButton(pabbWiredButtons0, buttons0, 5, UsbHidBridge::USB_BUTTON_TR);     // R
-    updateButton(pabbWiredButtons0, buttons0, 6, UsbHidBridge::USB_BUTTON_TL2);    // ZL
-    updateButton(pabbWiredButtons0, buttons0, 7, UsbHidBridge::USB_BUTTON_TR2);    // ZR
+    // Axes are already 0x00-0xFF with 0x80=center in PA wired format
+    const uint8_t lx = report[3];
+    const uint8_t ly = report[4];
+    const uint8_t rx = report[5];
+    const uint8_t ry = report[6];
 
-    // buttons1: minus/plus/l3/r3/home/capture/gr/gl
-    updateButton(pabbWiredButtons1, buttons1, 0, UsbHidBridge::USB_BUTTON_SELECT); // minus
-    updateButton(pabbWiredButtons1, buttons1, 1, UsbHidBridge::USB_BUTTON_START);  // plus
-    updateButton(pabbWiredButtons1, buttons1, 2, UsbHidBridge::USB_BUTTON_THUMBL); // l3
-    updateButton(pabbWiredButtons1, buttons1, 3, UsbHidBridge::USB_BUTTON_THUMBR); // r3
-    updateButton(pabbWiredButtons1, buttons1, 4, UsbHidBridge::USB_BUTTON_MODE);   // home
-    updateButton(pabbWiredButtons1, buttons1, 5, UsbHidBridge::USB_BUTTON_MODE);   // capture (best effort)
-    updateButton(pabbWiredButtons1, buttons1, 6, UsbHidBridge::USB_BUTTON_MODE);   // GR
-    updateButton(pabbWiredButtons1, buttons1, 7, UsbHidBridge::USB_BUTTON_MODE);   // GL
-
-    uint8_t hat = UsbHidBridge::USB_HAT_CENTER;
-    switch (dpadByte & 0x0f) {
-        case 0: hat = UsbHidBridge::USB_HAT_UP; break;
-        case 1: hat = UsbHidBridge::USB_HAT_UP_RIGHT; break;
-        case 2: hat = UsbHidBridge::USB_HAT_RIGHT; break;
-        case 3: hat = UsbHidBridge::USB_HAT_DOWN_RIGHT; break;
-        case 4: hat = UsbHidBridge::USB_HAT_DOWN; break;
-        case 5: hat = UsbHidBridge::USB_HAT_DOWN_LEFT; break;
-        case 6: hat = UsbHidBridge::USB_HAT_LEFT; break;
-        case 7: hat = UsbHidBridge::USB_HAT_UP_LEFT; break;
-        default: hat = UsbHidBridge::USB_HAT_CENTER; break;
-    }
-    UsbHidBridge::gamepadHat(hat);
-    UsbHidBridge::gamepadLeftStick(lx, ly);
-    UsbHidBridge::gamepadRightStick(rx, ry);
-
-    pabbWiredButtons0 = buttons0;
-    pabbWiredButtons1 = buttons1;
+    UsbHidBridge::gamepadSetFullState(buttons, hat, lx, ly, rx, ry);
 }
 
 void neutralizePAWiredState() {
-    uint8_t neutral[7] = {0, 0, 8, 128, 128, 128, 128};
-    applyPAWiredState(neutral, sizeof(neutral));
+    if (!BOARD_SUPPORTS_WIRED_OUTPUT) return;
+    UsbHidBridge::gamepadSetFullState(0, 0x0F, 0x80, 0x80, 0x80, 0x80);
 }
 
 uint8_t pabbKeyboardModifiers = 0;

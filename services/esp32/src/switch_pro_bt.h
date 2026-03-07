@@ -35,7 +35,9 @@ private:
     void onHiddEvent(esp_hidd_event_t event, esp_hidd_event_data_t* param);
     void onLegacyHiddEvent(esp_hidd_cb_event_t event, esp_hidd_cb_param_t* param);
     void handleOutputReport(uint8_t reportId, const uint8_t* data, uint16_t len);
-    void sendSubcommandReply(uint8_t* payload, size_t len);
+    void fillReplyHeader(uint8_t* buf);
+    void sendSubcommandReply(uint8_t subcmd, uint8_t ackByte, const uint8_t* data, size_t dataLen);
+    void handleSpiFlashRead(uint32_t addr, uint8_t readLen);
     void sendStandardInputReport();
     bool beginLegacyHid();
     void endLegacyHid();
