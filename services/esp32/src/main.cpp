@@ -97,6 +97,12 @@ constexpr bool BOARD_SUPPORTS_WIRED_OUTPUT = BOARD_IS_ESP32S3;
 constexpr bool BOARD_SUPPORTS_WIRED_INPUT = BOARD_IS_ESP32S3;
 constexpr bool BOARD_SUPPORTS_BT_SWITCH_PRO_MODE = BOARD_IS_ESP32;
 
+#if defined(ARDUINO_USB_CDC_ON_BOOT)
+constexpr bool BUILD_USB_CDC_ON_BOOT = (ARDUINO_USB_CDC_ON_BOOT != 0);
+#else
+constexpr bool BUILD_USB_CDC_ON_BOOT = false;
+#endif
+
 // Onboard status LED configuration:
 // Override these if your board uses different RGB data pins.
 const int STATUS_RGB_PIN_ESP32 = 2;
@@ -250,6 +256,8 @@ std::deque<PabbTimedCommand> pabbCommandQueue;
 bool pabbCommandActive = false;
 PabbTimedCommand pabbActiveCommand{};
 unsigned long pabbActiveCommandEndMs = 0;
+bool rebootPending = false;
+unsigned long rebootAtMs = 0;
 
 // Menu
 int menuIndex = 0;
@@ -371,6 +379,14 @@ bool emulationModeSupported(EmulationMode mode) {
         default:
             return false;
     }
+}
+
+bool emulationModeBlockedByBuild(EmulationMode mode) {
+    // Switch USB compatibility requires a USB build without CDC-on-boot.
+    if (mode == EMU_WIRED_SWITCH_PRO_CONTROLLER && BOARD_IS_ESP32S3 && BUILD_USB_CDC_ON_BOOT) {
+        return true;
+    }
+    return false;
 }
 
 UsbHidBridge::UsbGamepadProfile emulationModeToUsbProfile(EmulationMode mode) {
@@ -527,7 +543,8 @@ void loadPersistedRuntimeConfig() {
     EmulationMode savedMode = static_cast<EmulationMode>(savedModeRaw);
     if (savedModeRaw >= 0 &&
         savedModeRaw < static_cast<int>(EMU_MODE_COUNT) &&
-        emulationModeSupported(savedMode)) {
+        emulationModeSupported(savedMode) &&
+        !emulationModeBlockedByBuild(savedMode)) {
         currentEmulationMode = savedMode;
     }
 
@@ -663,7 +680,7 @@ void configureNimBLEForCurrentMode() {
 }
 
 void applyEmulationMode(EmulationMode mode) {
-    if (!emulationModeSupported(mode)) return;
+    if (!emulationModeSupported(mode) || emulationModeBlockedByBuild(mode)) return;
 
     currentEmulationMode = mode;
     switch (mode) {
@@ -770,6 +787,18 @@ EmulationMode inferEmulationMode(DeviceMode mode, DeliveryPolicy policy) {
     if (mode == MODE_MOUSE_ONLY) return BOARD_SUPPORTS_WIRED_OUTPUT ? EMU_WIRED_MOUSE_ONLY : EMU_BLUETOOTH_MOUSE_ONLY;
     if (mode == MODE_KEYBOARD_ONLY) return BOARD_SUPPORTS_WIRED_OUTPUT ? EMU_WIRED_KEYBOARD_ONLY : EMU_BLUETOOTH_KEYBOARD_ONLY;
     return EMU_BLUETOOTH_COMBO;
+}
+
+bool modeTransitionRequiresUsbReboot(EmulationMode fromMode, EmulationMode toMode) {
+    if (!BOARD_SUPPORTS_WIRED_OUTPUT) return false;
+    bool fromSwitchUsb = emulationModeToUsbProfile(fromMode) == UsbHidBridge::USB_GAMEPAD_PROFILE_SWITCH_PRO;
+    bool toSwitchUsb = emulationModeToUsbProfile(toMode) == UsbHidBridge::USB_GAMEPAD_PROFILE_SWITCH_PRO;
+    return fromSwitchUsb != toSwitchUsb;
+}
+
+void scheduleDeviceReboot(unsigned long delayMs = 250) {
+    rebootPending = true;
+    rebootAtMs = millis() + delayMs;
 }
 
 // ============================================================
@@ -1722,6 +1751,8 @@ void executeCommand(JsonDocument& doc, JsonDocument& response, CommandSource sou
 
     // Control-plane actions (do not require active HID output transport)
     if (action == "set_mode") {
+        EmulationMode previous = currentEmulationMode;
+        bool rebootRequired = false;
         if (doc["mode"].is<const char*>()) {
             EmulationMode next = parseEmulationModeString(doc["mode"].as<String>());
             if (!emulationModeSupported(next)) {
@@ -1729,13 +1760,28 @@ void executeCommand(JsonDocument& doc, JsonDocument& response, CommandSource sou
                 response["error"] = "mode_not_supported_on_this_board";
                 return;
             }
+            if (emulationModeBlockedByBuild(next)) {
+                response["status"] = "error";
+                response["error"] = "mode_not_supported_by_this_firmware_build";
+                response["hint"] = "build env esp32s3_switch (ARDUINO_USB_CDC_ON_BOOT=0) for wired switch mode";
+                return;
+            }
             applyEmulationMode(next);
-            initBLE();
-            displayMenu();
+            rebootRequired = modeTransitionRequiresUsbReboot(previous, currentEmulationMode);
+            if (!rebootRequired) {
+                initBLE();
+                displayMenu();
+            } else {
+                scheduleDeviceReboot(300);
+            }
         }
         response["status"] = "ok";
         response["mode"] = emulationModeToString(currentEmulationMode);
         response["delivery_policy"] = deliveryPolicyToString(deliveryPolicy);
+        response["rebooting"] = rebootRequired;
+        if (rebootRequired) {
+            response["reason"] = "usb_descriptor_change_requires_reboot";
+        }
         return;
     }
     if (action == "restart_ble") {
@@ -1878,6 +1924,8 @@ void handleStatus() {
     doc["ble_advertisement_name"] = getBleAdvertisementName();
     doc["ble_profile"] = getBleProfileLabel();
     doc["ble_mode_scoped_mac"] = getModeSpecificBleMacString();
+    doc["build_usb_cdc_on_boot"] = BUILD_USB_CDC_ON_BOOT;
+    doc["wired_switch_build_compatible"] = !(BOARD_IS_ESP32S3 && BUILD_USB_CDC_ON_BOOT);
     doc["ip"] = WiFi.localIP().toString();
     doc["mode"] = emulationModeToString(currentEmulationMode);
     doc["legacy_mode"] = modeToString(currentMode);
@@ -1890,6 +1938,8 @@ void handleStatus() {
     doc["supports_wired_output"] = BOARD_SUPPORTS_WIRED_OUTPUT;
     doc["supports_wired_input"] = BOARD_SUPPORTS_WIRED_INPUT;
     doc["supports_bt_switch_pro_mode"] = BOARD_SUPPORTS_BT_SWITCH_PRO_MODE;
+    doc["build_usb_cdc_on_boot"] = BUILD_USB_CDC_ON_BOOT;
+    doc["wired_switch_build_compatible"] = !(BOARD_IS_ESP32S3 && BUILD_USB_CDC_ON_BOOT);
     doc["input_priority"] = BOARD_SUPPORTS_WIRED_INPUT ? "wired>websocket>http" : "websocket>http";
     doc["wired_priority_active"] = wiredPriorityActive();
     doc["ws_priority_active"] = wsPriorityActive();
@@ -1927,7 +1977,7 @@ void handleGetMode() {
     JsonArray supported = doc["supported_modes"].to<JsonArray>();
     for (int i = 0; i < static_cast<int>(EMU_MODE_COUNT); i++) {
         EmulationMode candidate = static_cast<EmulationMode>(i);
-        if (emulationModeSupported(candidate)) {
+        if (emulationModeSupported(candidate) && !emulationModeBlockedByBuild(candidate)) {
             supported.add(emulationModeToString(candidate));
         }
     }
@@ -1996,12 +2046,47 @@ void handleSetMode() {
         sendJson(400, error);
         return;
     }
+    if (emulationModeBlockedByBuild(nextEmu)) {
+        JsonDocument error;
+        error["status"] = "error";
+        error["error"] = "mode_not_supported_by_this_firmware_build";
+        error["requested_mode"] = emulationModeToString(nextEmu);
+        error["hint"] = "build env esp32s3_switch (ARDUINO_USB_CDC_ON_BOOT=0) for wired switch mode";
+        sendJson(400, error);
+        return;
+    }
 
+    EmulationMode previousMode = currentEmulationMode;
     bool forceReinit = doc["force_reinit"].is<bool>() ? doc["force_reinit"].as<bool>() : false;
     bool changed = (nextEmu != currentEmulationMode) || explicitModeRequest || forceReinit;
     applyEmulationMode(nextEmu);
-    applyModeChange(changed);
-    handleGetMode();
+    bool rebootRequired = modeTransitionRequiresUsbReboot(previousMode, currentEmulationMode);
+    if (changed && !rebootRequired) {
+        applyModeChange(true);
+    } else if (rebootRequired) {
+        scheduleDeviceReboot(300);
+    }
+
+    JsonDocument out;
+    out["mode"] = emulationModeToString(currentEmulationMode);
+    out["legacy_mode"] = modeToString(currentMode);
+    out["delivery_policy"] = deliveryPolicyToString(deliveryPolicy);
+    out["input_policy"] = inputPolicyToString(inputPolicy);
+    out["ble_advertisement_name"] = getBleAdvertisementName();
+    out["ble_profile"] = getBleProfileLabel();
+    out["ble_mode_scoped_mac"] = getModeSpecificBleMacString();
+    out["rebooting"] = rebootRequired;
+    if (rebootRequired) {
+        out["reason"] = "usb_descriptor_change_requires_reboot";
+    }
+    JsonArray supported = out["supported_modes"].to<JsonArray>();
+    for (int i = 0; i < static_cast<int>(EMU_MODE_COUNT); i++) {
+        EmulationMode candidate = static_cast<EmulationMode>(i);
+        if (emulationModeSupported(candidate) && !emulationModeBlockedByBuild(candidate)) {
+            supported.add(emulationModeToString(candidate));
+        }
+    }
+    sendJson(200, out);
 }
 
 void handleDisplayGet() {
@@ -2344,7 +2429,7 @@ std::vector<uint32_t> pabbSupportedControllers() {
     std::vector<uint32_t> ids;
     ids.push_back(PABB_CID_NONE);
     ids.push_back(PABB_CID_StandardHid_Keyboard);
-    if (BOARD_SUPPORTS_WIRED_OUTPUT) {
+    if (BOARD_SUPPORTS_WIRED_OUTPUT && !emulationModeBlockedByBuild(EMU_WIRED_SWITCH_PRO_CONTROLLER)) {
         ids.push_back(PABB_CID_NintendoSwitch_WiredController);
         ids.push_back(PABB_CID_NintendoSwitch_WiredProController);
     }
@@ -2597,7 +2682,7 @@ void processPabbRequest(uint8_t type, const uint8_t* body, size_t bodyLen) {
                 return;
             }
             EmulationMode requestedMode = pabbControllerIdToEmulationMode(requestedController);
-            if (!emulationModeSupported(requestedMode)) {
+            if (!emulationModeSupported(requestedMode) || emulationModeBlockedByBuild(requestedMode)) {
                 sendPabbErrorSeq(PABB_MSG_ERROR_INVALID_REQUEST, seq);
                 return;
             }
@@ -2855,7 +2940,7 @@ void cycleModeForward() {
     int start = static_cast<int>(currentEmulationMode);
     for (int i = 1; i <= static_cast<int>(EMU_MODE_COUNT); i++) {
         EmulationMode next = static_cast<EmulationMode>((start + i) % static_cast<int>(EMU_MODE_COUNT));
-        if (emulationModeSupported(next)) {
+        if (emulationModeSupported(next) && !emulationModeBlockedByBuild(next)) {
             applyEmulationMode(next);
             initBLE();
             displayMenu();
@@ -2985,6 +3070,12 @@ void loop() {
         Serial.println(usbNow ? "USB host mounted" : "USB host unmounted");
         displayStatus(usbNow ? "USB mounted" : "USB unmounted");
         lastUsb = usbNow;
+    }
+
+    if (rebootPending && static_cast<int32_t>(millis() - rebootAtMs) >= 0) {
+        Serial.println("Rebooting to apply USB HID descriptor change...");
+        delay(50);
+        ESP.restart();
     }
 
     delay(1);
