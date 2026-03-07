@@ -400,9 +400,9 @@ void SwitchProUSB::sendInputReport(uint8_t reportId, const uint8_t* data, size_t
 void SwitchProUSB::fillInputHeader(uint8_t* buf) {
     // Convert 8-bit axes to 12-bit for Pro Controller encoding
     uint16_t lx12 = static_cast<uint16_t>(_lx) << 4;
-    uint16_t ly12 = static_cast<uint16_t>(255 - _ly) << 4;  // Y inverted
+    uint16_t ly12 = static_cast<uint16_t>(256 - _ly) << 4;  // Y inverted (256 so 0x80→2048 center)
     uint16_t rx12 = static_cast<uint16_t>(_rx) << 4;
-    uint16_t ry12 = static_cast<uint16_t>(255 - _ry) << 4;  // Y inverted
+    uint16_t ry12 = static_cast<uint16_t>(256 - _ry) << 4;  // Y inverted (256 so 0x80→2048 center)
 
     // Convert NSGamepad-style buttons + dpad to Pro Controller 3-byte format
     // NSButton enum: Y=0, B=1, A=2, X=3, L=4, R=5, ZL=6, ZR=7, Minus=8, Plus=9, LStick=10, RStick=11, Home=12, Capture=13
