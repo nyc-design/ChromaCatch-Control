@@ -76,10 +76,15 @@ void init() {
 #if CONFIG_TINYUSB_HID_ENABLED
     if (gamepadProfile == USB_GAMEPAD_PROFILE_SWITCH_PRO) {
         // Only construct the NSGamepad — no keyboard/mouse/generic gamepad.
-        // The Switch rejects composite HID devices; it must see only the
-        // HORIPAD descriptor (VID 0x0F0D / PID 0x00C1).
+        // The Switch rejects composite HID devices; it must see only a
+        // single gamepad descriptor.
         switchGamepad = new NSGamepad();
+        // Override HORIPAD VID/PID with Nintendo Pro Controller identity
+        // so the Switch recognizes Home button for wake from sleep.
+        USB.VID(0x057E);
+        USB.PID(0x2009);
         switchGamepad->begin();
+        Serial.println("[USB] Switch Pro Controller mode: VID=057E PID=2009");
     } else {
         // Normal multi-HID mode: keyboard + mouse + gamepad
         keyboard = new USBHIDKeyboard();
@@ -100,6 +105,7 @@ void init() {
 
 #if CONFIG_TINYUSB_ENABLED
     USB.begin();
+    Serial.printf("[USB] USB.begin() done, profile=%d\n", gamepadProfile);
 #endif
 #endif
 
