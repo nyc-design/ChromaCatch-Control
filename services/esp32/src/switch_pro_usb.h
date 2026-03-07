@@ -41,6 +41,8 @@ public:
     void _onOutput(uint8_t report_id, const uint8_t* buffer, uint16_t len) override;
 
 private:
+    void refreshIdentityFromEfuse();
+
     void sendInputReport(uint8_t reportId, const uint8_t* data, size_t len);
     void sendStandardInputReport();
     void sendSimpleInputReport();
@@ -59,6 +61,8 @@ private:
     uint32_t _lastReportMs = 0;
     uint8_t _timer = 0;
     bool _connected = false;
+    uint8_t _macAddr[6] = {0};
+    char _serialNumber[13] = {0};
 
     // Reply queue: callbacks can't block, so buffer replies for loop() to flush.
     static constexpr size_t kMaxPending = 8;

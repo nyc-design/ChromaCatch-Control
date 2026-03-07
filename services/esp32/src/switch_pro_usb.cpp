@@ -4,7 +4,9 @@
 #if CONFIG_TINYUSB_HID_ENABLED
 
 #include <cstring>
+#include <cstdio>
 #include "class/hid/hid_device.h"
+#include "esp_mac.h"
 
 // Global instance pointer for the --wrap callback.
 SwitchProUSB* g_switchProUsbDevice = nullptr;
@@ -165,8 +167,10 @@ static const uint8_t kProControllerDescriptor[] = {
     0xC0,              // End Collection
 };
 
-// MAC address for device info response
-static const uint8_t kMacAddr[6] = {0x00, 0x00, 0x5E, 0x00, 0x53, 0x5E};
+constexpr uint16_t kNintendoVid = 0x057E;
+constexpr uint16_t kNintendoSwitch2ProPid = 0x2069;
+constexpr uint16_t kNintendoUsbVersion = 0x0200;
+constexpr uint16_t kNintendoFirmwareVersion = 0x0200;
 
 // ============================================================
 // SPI flash data tables
@@ -232,19 +236,45 @@ static constexpr size_t kReportLen = 48;
 // ============================================================
 SwitchProUSB::SwitchProUSB() : _hid() {
     static bool registered = false;
-    // Set Pro Controller USB identity
-    USB.VID(0x057E);
-    USB.PID(0x2009);
+    refreshIdentityFromEfuse();
+
+    // Set Switch 2 Pro-like USB identity
+    USB.VID(kNintendoVid);
+    USB.PID(kNintendoSwitch2ProPid);
+    USB.usbVersion(kNintendoUsbVersion);
+    USB.firmwareVersion(kNintendoFirmwareVersion);
     USB.usbClass(0);
     USB.usbSubClass(0);
     USB.usbProtocol(0);
     USB.manufacturerName("Nintendo Co., Ltd.");
-    USB.productName("Pro Controller");
+    USB.productName("Pro Controller 2");
+    USB.serialNumber(_serialNumber);
     if (!registered) {
         registered = true;
         _hid.addDevice(this, sizeof(kProControllerDescriptor));
     }
     end();
+}
+
+void SwitchProUSB::refreshIdentityFromEfuse() {
+    uint8_t baseMac[6] = {0};
+    esp_err_t rc = esp_read_mac(baseMac, ESP_MAC_WIFI_STA);
+    if (rc != ESP_OK) {
+        const uint8_t fallback[6] = {0x00, 0x00, 0x5E, 0x00, 0x53, 0x5E};
+        memcpy(_macAddr, fallback, sizeof(_macAddr));
+    } else {
+        memcpy(_macAddr, baseMac, sizeof(_macAddr));
+    }
+
+    // Keep Switch-style globally-unique address semantics for USB replies.
+    _macAddr[0] &= 0xFE; // unicast
+
+    snprintf(
+        _serialNumber, sizeof(_serialNumber),
+        "%02X%02X%02X%02X%02X%02X",
+        _macAddr[0], _macAddr[1], _macAddr[2],
+        _macAddr[3], _macAddr[4], _macAddr[5]
+    );
 }
 
 void SwitchProUSB::begin() {
@@ -306,7 +336,7 @@ void SwitchProUSB::handleUsbCommand(const uint8_t* data, uint16_t len) {
             reply[0] = 0x01;
             reply[1] = 0x00;
             reply[2] = 0x03;
-            memcpy(&reply[3], kMacAddr, 6);
+            memcpy(&reply[3], _macAddr, 6);
             sendInputReport(0x81, reply, sizeof(reply));
             Serial.println("[SwitchProUSB] -> 0x81 MAC reply sent");
             break;
@@ -352,10 +382,11 @@ void SwitchProUSB::handleSubcommand(const uint8_t* data, uint16_t len) {
         case 0x02: {
             // Device info
             uint8_t info[12] = {0};
-            info[0] = 0x04; info[1] = 0x21;  // FW version
+            info[0] = static_cast<uint8_t>((kNintendoFirmwareVersion >> 8) & 0xFF);
+            info[1] = static_cast<uint8_t>(kNintendoFirmwareVersion & 0xFF);
             info[2] = 0x03;                   // Pro Controller
             info[3] = 0x02;
-            memcpy(&info[4], kMacAddr, 6);
+            memcpy(&info[4], _macAddr, 6);
             info[10] = 0x01;
             info[11] = 0x01;                  // SPI color available
             sendSubcommandReply(0x02, 0x82, info, sizeof(info));

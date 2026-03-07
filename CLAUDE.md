@@ -61,6 +61,7 @@ Automated shiny hunting bot for Pokemon Go using AirPlay screen mirroring, compu
   - ESP32 dual-framework (`arduino, espidf`) builds now auto-patch known `ESP32-BLE-CompositeHID` warning-as-error issues (constructor init-order + class-memaccess) so `esp32` environment compiles reliably under ESP-IDF `-Werror`.
   - Onboard status LED now reflects emulation mode with mode-specific colors and connection state: blinking while output transport is disconnected, solid once connected (S3 RGB on built-in NeoPixel; ESP32 mono fallback uses the same blink/solid behavior).
   - Wired Switch Pro mode now runs a periodic `switch_ESP32` loop tick so host detection/presence behaves like the upstream example’s continuous report cadence.
+  - Wired Switch Pro mode (S3) now presents a Switch 2-style USB identity profile (`VID 0x057E`, `PID 0x2069`, product `Pro Controller 2`), includes per-device USB serial number derived from efuse MAC, and returns that same MAC in Switch USB handshake / device-info replies for stable host identity.
   - Emulation presets include bluetooth/wired mouse+keyboard variants, bluetooth Xbox-controller profile, bluetooth Switch-pro profile (ESP32 only), and wired Switch-pro profile (S3 only). Mode discovery via `GET /mode` and remote configuration via `POST /mode`.
 - **Control SDK** (`services/control-sdk/`): Python SDK package for automation repos to consume control-plane REST + WebSocket APIs.
 - **Shared** (`services/shared/`): Protocol contract between services — message models, frame codec, constants.
