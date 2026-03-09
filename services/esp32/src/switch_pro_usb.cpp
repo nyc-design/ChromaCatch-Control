@@ -10,27 +10,24 @@
 SwitchProUSB* g_switchProUsbDevice = nullptr;
 
 // ============================================================
-// Pro Controller USB HID descriptor — 203 bytes, matching the real
-// Nintendo Switch Pro Controller wired USB descriptor.
+// Pro Controller USB HID descriptor — byte-for-byte match of the real
+// Nintendo Switch Pro Controller wired USB descriptor (203 bytes / 0xCB).
 // Source: https://gist.github.com/ToadKing/b883a8ccfa26adcc6ba9905e75aeb4f2
 //
 // NOTE: This is the USB descriptor, NOT the Bluetooth one.
 // The USB descriptor uses Joystick usage, vendor page 0xFF00,
 // 63-byte reports, and includes 0x80/0x81/0x82 report IDs.
 //
-// PARSER COMPAT: The real descriptor has Logical Minimum (0x15,0x00)
-// between Usage Page and Usage at the top level, but ESP-IDF's HID
-// parser rejects that ("expected USAGE, got 0x14"). We move it to
-// just inside the Collection where the parser silently ignores it.
-// Semantically identical — Logical Minimum is a Global item that
-// propagates into sub-scopes either way, and it's overridden by each
-// report section anyway. Keeps the descriptor at exactly 203 bytes.
+// ESP-IDF's HID parser can't handle this descriptor (it rejects
+// Logical Minimum between Usage Page and Usage at the top level).
+// We bypass the parser entirely via --wrap=tud_hid_descriptor_report_cb
+// to serve this descriptor directly to the host.
 // ============================================================
 static const uint8_t kProControllerDescriptor[] = {
     0x05, 0x01,        // Usage Page (Generic Desktop)
+    0x15, 0x00,        // Logical Minimum (0)
     0x09, 0x04,        // Usage (Joystick)
     0xA1, 0x01,        // Collection (Application)
-    0x15, 0x00,        // Logical Minimum (0) — moved here from before Usage for parser compat
 
     // --- Report ID 0x30: Standard full input report (63 bytes) ---
     // HID-standard button/axis/hat layout for device enumeration.
@@ -142,18 +139,18 @@ static const uint8_t kProControllerDescriptor[] = {
 // ============================================================
 // Linker --wrap overrides for Pro Controller USB
 //
-// 1) tud_hid_set_report_cb: Safety net for 0x80 reports. The 0x80
-//    report ID is now in the HID descriptor so TinyUSB should route
-//    it natively, but some hosts send it without a report_id prefix
-//    (raw SET_REPORT with report_id=0). The wrap catches that case.
+// 1) tud_hid_descriptor_report_cb: Bypass ESP-IDF's HID parser entirely.
+//    The parser rejects the real Pro Controller descriptor, which prevents
+//    USB enumeration. We serve the real 203-byte descriptor directly.
 //
-// 2) tud_descriptor_bos_cb: Return a minimal empty BOS descriptor.
-//    Arduino/TinyUSB generates a BOS with WebUSB + MS OS descriptors
-//    which real Pro Controllers don't have. Combined with USB 2.0
-//    (bcdUSB=0x0200), the host shouldn't request BOS at all, but
-//    this provides a safe fallback.
+// 2) tud_hid_set_report_cb: Route ALL output reports (0x01, 0x10, 0x80,
+//    0x82) to our SwitchProUSB device. Because we bypass the parser,
+//    USBHID's report ID routing table is empty — we must handle dispatch.
 //
-// Build flags: -Wl,--wrap=tud_hid_set_report_cb,--wrap=tud_descriptor_bos_cb
+// 3) tud_descriptor_bos_cb: Return a minimal empty BOS descriptor.
+//    Real Pro Controllers are USB 2.0 with no BOS.
+//
+// Build flags: -Wl,--wrap=tud_hid_descriptor_report_cb,--wrap=tud_hid_set_report_cb,--wrap=tud_descriptor_bos_cb
 // ============================================================
 
 // Minimal BOS descriptor: just the header with 0 capabilities
@@ -165,6 +162,22 @@ static const uint8_t kEmptyBosDescriptor[] = {
 };
 
 extern "C" {
+    // --- 1) Bypass HID descriptor parser ---
+    // USBHID.cpp's tud_hid_descriptor_report_cb() calls esp_hid_parse_report_map()
+    // which fails on the real Pro Controller descriptor. When it fails, it returns
+    // NULL to TinyUSB, which STALLs the control endpoint. The Switch then disconnects.
+    // We bypass all of that and return our exact descriptor directly.
+    uint8_t const* __real_tud_hid_descriptor_report_cb(uint8_t instance);
+    uint8_t const* __wrap_tud_hid_descriptor_report_cb(uint8_t instance) {
+        if (g_switchProUsbDevice) {
+            return kProControllerDescriptor;
+        }
+        return __real_tud_hid_descriptor_report_cb(instance);
+    }
+
+    // --- 2) Route all output reports to our device ---
+    // Since we bypass the parser, USBHID's tinyusb_get_device_by_report_id()
+    // returns NULL for all report IDs. We intercept and route directly.
     void __real_tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
                                        hid_report_type_t report_type,
                                        uint8_t const* buffer, uint16_t bufsize);
@@ -172,23 +185,21 @@ extern "C" {
     void __wrap_tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
                                        hid_report_type_t report_type,
                                        uint8_t const* buffer, uint16_t bufsize) {
-        if (!report_id && !report_type && bufsize > 0 && g_switchProUsbDevice) {
-            uint8_t rid = buffer[0];
-            if (rid == 0x80) {
+        if (g_switchProUsbDevice) {
+            // Handle report_id=0 case: some hosts embed the report ID as the first
+            // byte of the buffer instead of in the report_id field.
+            if (!report_id && bufsize > 0) {
+                uint8_t rid = buffer[0];
                 g_switchProUsbDevice->_onOutput(rid, buffer + 1, bufsize - 1);
-                return;
+            } else {
+                g_switchProUsbDevice->_onOutput(report_id, buffer, bufsize);
             }
-        }
-        if (report_id == 0x80 && g_switchProUsbDevice) {
-            g_switchProUsbDevice->_onOutput(report_id, buffer, bufsize);
             return;
         }
         __real_tud_hid_set_report_cb(instance, report_id, report_type, buffer, bufsize);
     }
 
-    // Override BOS descriptor: return empty BOS (no WebUSB/MS OS capabilities)
-    // Real Pro Controllers are USB 2.0 with no BOS. Returning NULL crashes TinyUSB,
-    // so we return a valid but empty BOS header instead.
+    // --- 3) Empty BOS descriptor ---
     uint8_t const* __real_tud_descriptor_bos_cb(void);
     uint8_t const* __wrap_tud_descriptor_bos_cb(void) {
         if (g_switchProUsbDevice) {
