@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ESP32 Control Panel</title>
+<style>
+  :root { --bg: #1a1a2e; --surface: #16213e; --accent: #0f3460; --highlight: #e94560; --text: #eee; --dim: #888; --ok: #4caf50; --warn: #ff9800; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+  .top-bar { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: var(--surface); border-bottom: 1px solid #333; flex-wrap: wrap; }
+  .top-bar .status { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #555; }
+  .dot.ok { background: var(--ok); }
+  .dot.warn { background: var(--warn); }
+  .top-bar select, .top-bar button, .top-bar input { font-size: 13px; padding: 5px 10px; border-radius: 4px; border: 1px solid #444; background: var(--accent); color: var(--text); cursor: pointer; }
+  .top-bar button:hover { background: var(--highlight); }
+  .top-bar input { width: 180px; }
+  .top-bar label { font-size: 12px; color: var(--dim); }
+
+  .container { display: flex; height: calc(100vh - 46px); }
+  .sidebar { width: 220px; background: var(--surface); border-right: 1px solid #333; padding: 12px; overflow-y: auto; flex-shrink: 0; }
+  .sidebar h3 { font-size: 12px; text-transform: uppercase; color: var(--dim); margin: 12px 0 6px; letter-spacing: 1px; }
+  .sidebar h3:first-child { margin-top: 0; }
+  .mode-btn { display: block; width: 100%; padding: 8px 10px; margin-bottom: 4px; border: 1px solid #333; border-radius: 4px; background: transparent; color: var(--text); text-align: left; cursor: pointer; font-size: 12px; transition: all .15s; }
+  .mode-btn:hover { background: var(--accent); }
+  .mode-btn.active { background: var(--highlight); border-color: var(--highlight); font-weight: 600; }
+
+  .main { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 20px; position: relative; }
+  .main h2 { font-size: 16px; margin-bottom: 16px; color: var(--dim); }
+
+  /* Gamepad layout */
+  .gamepad { display: grid; grid-template-columns: 1fr 100px 1fr; grid-template-rows: auto auto auto; gap: 16px; max-width: 600px; width: 100%; }
+  .gp-left, .gp-right { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .gp-center { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .gp-row { display: flex; gap: 6px; align-items: center; }
+  .gp-btn { width: 48px; height: 48px; border-radius: 50%; border: 2px solid #555; background: var(--accent); color: var(--text); font-weight: 700; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all .1s; user-select: none; }
+  .gp-btn.rect { border-radius: 6px; width: 56px; height: 32px; font-size: 11px; }
+  .gp-btn.small { width: 36px; height: 36px; font-size: 11px; }
+  .gp-btn:hover { border-color: var(--highlight); }
+  .gp-btn.pressed { background: var(--highlight); border-color: var(--highlight); transform: scale(0.93); }
+  .dpad { display: grid; grid-template: 40px 40px 40px / 40px 40px 40px; gap: 2px; }
+  .dpad .gp-btn { border-radius: 4px; width: 40px; height: 40px; }
+  .dpad-empty { width: 40px; height: 40px; }
+
+  /* Mouse area */
+  .mouse-area { width: 400px; height: 300px; background: var(--surface); border: 2px solid #444; border-radius: 8px; cursor: crosshair; display: flex; align-items: center; justify-content: center; color: var(--dim); font-size: 13px; user-select: none; position: relative; }
+  .mouse-area.active { border-color: var(--highlight); }
+  .mouse-btns { display: flex; gap: 8px; margin-top: 10px; }
+  .mouse-btns button { padding: 8px 20px; border: 1px solid #444; border-radius: 4px; background: var(--accent); color: var(--text); cursor: pointer; }
+
+  /* Keyboard area */
+  .kb-area { width: 500px; }
+  .kb-area textarea { width: 100%; height: 120px; background: var(--surface); border: 2px solid #444; border-radius: 8px; color: var(--text); padding: 12px; font-family: monospace; font-size: 14px; resize: none; }
+  .kb-area textarea:focus { border-color: var(--highlight); outline: none; }
+  .kb-hint { font-size: 11px; color: var(--dim); margin-top: 6px; }
+
+  /* Log */
+  .log-panel { position: absolute; bottom: 0; left: 0; right: 0; height: 120px; background: #111; border-top: 1px solid #333; overflow-y: auto; padding: 6px 10px; font-family: monospace; font-size: 11px; color: var(--dim); }
+  .log-panel .err { color: var(--highlight); }
+  .log-panel .ok { color: var(--ok); }
+  .log-panel .cmd { color: #64b5f6; }
+
+  /* Capture overlay */
+  .capture-notice { position: fixed; top: 50px; left: 50%; transform: translateX(-50%); background: var(--highlight); padding: 6px 16px; border-radius: 4px; font-size: 12px; z-index: 100; display: none; }
+  .capture-notice.show { display: block; }
+</style>
+</head>
+<body>
+
+<div class="top-bar">
+  <div class="status"><div class="dot" id="connDot"></div><span id="connLabel">Disconnected</span></div>
+  <select id="connType">
+    <option value="serial">Serial (USB)</option>
+    <option value="ws">WebSocket</option>
+  </select>
+  <input id="wsUrl" placeholder="ws://192.168.1.100:81/" style="display:none">
+  <button id="connectBtn">Connect</button>
+  <button id="disconnectBtn" style="display:none">Disconnect</button>
+</div>
+
+<div class="container">
+  <div class="sidebar">
+    <h3>Bluetooth</h3>
+    <button class="mode-btn" data-mode="bluetooth_combo">Mouse + KB</button>
+    <button class="mode-btn" data-mode="bluetooth_mouse_only">Mouse Only</button>
+    <button class="mode-btn" data-mode="bluetooth_keyboard_only">Keyboard Only</button>
+    <button class="mode-btn" data-mode="bluetooth_xbox_controller">Xbox Controller</button>
+    <h3>Wired (S3)</h3>
+    <button class="mode-btn" data-mode="wired_combo">Mouse + KB</button>
+    <button class="mode-btn" data-mode="wired_mouse_only">Mouse Only</button>
+    <button class="mode-btn" data-mode="wired_keyboard_only">Keyboard Only</button>
+    <button class="mode-btn" data-mode="wired_switch_pro_controller">Switch Pro</button>
+    <h3>Ops</h3>
+    <button class="mode-btn" data-action="restart_ble">Restart BLE</button>
+    <button class="mode-btn" data-action="clear_ble_bonds">Clear BLE Bonds</button>
+  </div>
+
+  <div class="main">
+    <div id="viewGamepad" style="display:none">
+      <h2>Gamepad Mode &mdash; press keyboard keys to send</h2>
+      <div class="gamepad">
+        <div class="gp-left">
+          <div class="gp-row">
+            <div class="gp-btn rect" data-btn="L" id="kb_q">L <small>Q</small></div>
+            <div class="gp-btn rect" data-btn="ZL" id="kb_e">ZL <small>E</small></div>
+          </div>
+          <div class="dpad">
+            <div class="dpad-empty"></div>
+            <div class="gp-btn" data-btn="up" id="kb_ArrowUp">&uarr;</div>
+            <div class="dpad-empty"></div>
+            <div class="gp-btn" data-btn="left" id="kb_ArrowLeft">&larr;</div>
+            <div class="dpad-empty"></div>
+            <div class="gp-btn" data-btn="right" id="kb_ArrowRight">&rarr;</div>
+            <div class="dpad-empty"></div>
+            <div class="gp-btn" data-btn="down" id="kb_ArrowDown">&darr;</div>
+            <div class="dpad-empty"></div>
+          </div>
+          <div class="gp-btn small" data-btn="L3" id="kb_z">L3 <small>Z</small></div>
+        </div>
+        <div class="gp-center">
+          <div class="gp-row">
+            <div class="gp-btn small" data-btn="minus" id="kb_-">&minus;</div>
+            <div class="gp-btn small" data-btn="home" id="kb_h">H</div>
+            <div class="gp-btn small" data-btn="plus" id="kb_=">+</div>
+          </div>
+          <div class="gp-btn small" data-btn="capture" id="kb_c">Cap</div>
+        </div>
+        <div class="gp-right">
+          <div class="gp-row">
+            <div class="gp-btn rect" data-btn="R" id="kb_p">R <small>P</small></div>
+            <div class="gp-btn rect" data-btn="ZR" id="kb_[">ZR <small>[</small></div>
+          </div>
+          <div style="display:grid; grid-template: 48px 48px 48px / 48px 48px 48px; gap: 4px; place-items:center;">
+            <div></div>
+            <div class="gp-btn" data-btn="X" id="kb_i">X</div>
+            <div></div>
+            <div class="gp-btn" data-btn="Y" id="kb_j">Y</div>
+            <div></div>
+            <div class="gp-btn" data-btn="A" id="kb_l">A</div>
+            <div></div>
+            <div class="gp-btn" data-btn="B" id="kb_k">B</div>
+            <div></div>
+          </div>
+          <div class="gp-btn small" data-btn="R3" id="kb_x">R3 <small>X</small></div>
+        </div>
+      </div>
+      <div class="kb-hint" style="text-align:center; margin-top: 12px;">
+        Keys: IJKL=XYBA &bull; Arrows=DPad &bull; QE=L/ZL &bull; P[=R/ZR &bull; -/+=Minus/Plus &bull; H=Home &bull; C=Capture &bull; ZX=L3/R3 &bull; WASD=Left Stick &bull; 8456=Right Stick
+      </div>
+    </div>
+
+    <div id="viewMouse" style="display:none">
+      <h2>Mouse Mode &mdash; move trackpad/mouse over area</h2>
+      <div class="mouse-area" id="mouseArea">Click to capture pointer</div>
+      <div class="mouse-btns">
+        <button data-mb="left">Left Click</button>
+        <button data-mb="right">Right Click</button>
+        <button data-mb="middle">Middle Click</button>
+      </div>
+      <div class="kb-hint" style="margin-top:6px; text-align:center">Click area to lock pointer. ESC to release. Mouse buttons also work while captured.</div>
+    </div>
+
+    <div id="viewKeyboard" style="display:none">
+      <h2>Keyboard Mode &mdash; type below to send keystrokes</h2>
+      <div class="kb-area">
+        <textarea id="kbInput" placeholder="Type here... Each keystroke is sent immediately."></textarea>
+        <div class="kb-hint">Each key press/release is forwarded in real-time. Special keys (Enter, Tab, Esc, arrows) work too.</div>
+      </div>
+    </div>
+
+    <div id="viewNone" style="display:flex; align-items:center; justify-content:center; flex:1;">
+      <p style="color:var(--dim)">Connect to ESP32 and select a mode to begin.</p>
+    </div>
+
+    <div class="log-panel" id="logPanel"></div>
+  </div>
+</div>
+
+<div class="capture-notice" id="captureNotice">Pointer captured &mdash; ESC to release</div>
+
+<script>
+// ========== Connection ==========
+let conn = null; // { type: 'serial'|'ws', send(json), close() }
+let currentMode = null;
+let seq = 0;
+let userDisconnected = false; // true when user clicks Disconnect (suppress auto-reconnect)
+let reconnectTimer = null;
+
+const $ = s => document.querySelector(s);
+const $$ = s => document.querySelectorAll(s);
+
+function log(msg, cls = '') {
+  const p = document.createElement('div');
+  p.className = cls;
+  p.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  const lp = $('#logPanel');
+  lp.appendChild(p);
+  lp.scrollTop = lp.scrollHeight;
+  while (lp.children.length > 200) lp.removeChild(lp.firstChild);
+}
+
+function setConnState(connected, label) {
+  $('#connDot').className = 'dot' + (connected ? ' ok' : '');
+  $('#connLabel').textContent = label || (connected ? 'Connected' : 'Disconnected');
+  $('#connectBtn').style.display = connected ? 'none' : '';
+  $('#disconnectBtn').style.display = connected ? '' : 'none';
+}
+
+function sendCmd(obj) {
+  if (!conn) return;
+  obj.seq = ++seq;
+  const json = JSON.stringify(obj);
+  try {
+    conn.send(json);
+    log(`> ${json}`, 'cmd');
+  } catch (e) {
+    log(`Send error: ${e.message}`, 'err');
+  }
+}
+
+// ---- Auto-reconnect for WebSocket ----
+function scheduleReconnect() {
+  if (userDisconnected || reconnectTimer) return;
+  if ($('#connType').value !== 'ws') return;
+  log('Reconnecting in 2s...', 'warn');
+  setConnState(false, 'Reconnecting...');
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    if (!conn && !userDisconnected) connectWS();
+  }, 2000);
+}
+
+// ---- Serial ----
+async function connectSerial() {
+  if (!('serial' in navigator)) { log('Web Serial not supported in this browser', 'err'); return; }
+  userDisconnected = false;
+  try {
+    const port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+    setConnState(true, 'Serial');
+    log('Serial connected', 'ok');
+
+    const encoder = new TextEncoderStream();
+    const writable = encoder.writable;
+    encoder.readable.pipeTo(port.writable);
+    const writer = writable.getWriter();
+
+    const decoder = new TextDecoderStream();
+    port.readable.pipeTo(decoder.writable);
+    const reader = decoder.readable.getReader();
+
+    conn = {
+      type: 'serial',
+      send(json) { writer.write(json + '\n'); },
+      async close() {
+        try { reader.cancel(); } catch {}
+        try { writer.close(); } catch {}
+        try { await port.close(); } catch {}
+        conn = null;
+        setConnState(false);
+        log('Serial disconnected');
+      }
+    };
+
+    (async () => {
+      let buf = '';
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += value;
+          let nl;
+          while ((nl = buf.indexOf('\n')) !== -1) {
+            const line = buf.slice(0, nl).trim();
+            buf = buf.slice(nl + 1);
+            if (line) handleResponse(line);
+          }
+        }
+      } catch (e) {
+        if (conn) log(`Serial read error: ${e.message}`, 'err');
+      }
+      if (conn) { conn = null; setConnState(false, 'Serial disconnected'); }
+    })();
+
+    setTimeout(() => sendCmd({ action: 'get_mode' }), 500);
+  } catch (e) {
+    log(`Serial error: ${e.message}`, 'err');
+  }
+}
+
+// ---- WebSocket ----
+function connectWS() {
+  const url = $('#wsUrl').value.trim();
+  if (!url) { log('Enter WebSocket URL', 'err'); return; }
+  userDisconnected = false;
+  try {
+    const ws = new WebSocket(url);
+    ws.onopen = () => {
+      setConnState(true, 'WebSocket');
+      log(`WS connected to ${url}`, 'ok');
+    };
+    ws.onmessage = (e) => handleResponse(e.data);
+    ws.onerror = () => log('WS error', 'err');
+    ws.onclose = () => {
+      if (conn && conn._ws === ws) {
+        conn = null;
+        if (!userDisconnected) {
+          scheduleReconnect();
+        } else {
+          setConnState(false);
+          log('WS closed');
+        }
+      }
+    };
+    conn = {
+      type: 'ws', _ws: ws,
+      send(json) {
+        if (ws.readyState === WebSocket.OPEN) ws.send(json);
+      },
+      close() {
+        userDisconnected = true;
+        ws.close();
+        conn = null;
+        setConnState(false);
+        log('WS disconnected');
+      }
+    };
+  } catch (e) {
+    log(`WS error: ${e.message}`, 'err');
+    scheduleReconnect();
+  }
+}
+
+function handleResponse(data) {
+  try {
+    const obj = JSON.parse(data);
+    if (obj.type === 'hello' || obj.mode) {
+      const mode = obj.mode || obj.legacy_mode;
+      if (mode) setActiveMode(mode);
+    }
+    if (obj.type === 'ack') {
+      log(`< ACK ${obj.action} [${obj.status}]`, obj.status === 'ok' ? 'ok' : 'err');
+    } else if (obj.type === 'pong') {
+      // ignore
+    } else {
+      log(`< ${data.slice(0, 200)}`);
+    }
+  } catch {
+    log(`< ${data.slice(0, 200)}`);
+  }
+}
+
+$('#connType').addEventListener('change', function () {
+  $('#wsUrl').style.display = this.value === 'ws' ? '' : 'none';
+});
+$('#connectBtn').addEventListener('click', () => {
+  userDisconnected = false;
+  if ($('#connType').value === 'serial') connectSerial(); else connectWS();
+});
+$('#disconnectBtn').addEventListener('click', () => {
+  userDisconnected = true;
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  if (conn) conn.close();
+});
+
+// ========== Mode switching ==========
+function setActiveMode(mode) {
+  currentMode = mode;
+  $$('.mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+  const isGamepad = /xbox|gamepad|switch|wired_switch/.test(mode);
+  const isMouse = /mouse/.test(mode);
+  const isKb = /keyboard_only/.test(mode);
+  const isCombo = /combo/.test(mode) && !isGamepad;
+  $('#viewGamepad').style.display = isGamepad ? '' : 'none';
+  $('#viewMouse').style.display = (isMouse || isCombo) ? '' : 'none';
+  $('#viewKeyboard').style.display = (isKb || isCombo) ? '' : 'none';
+  $('#viewNone').style.display = (!isGamepad && !isMouse && !isKb && !isCombo) ? 'flex' : 'none';
+  log(`Mode: ${mode}`);
+}
+
+$$('.mode-btn[data-mode]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    sendCmd({ action: 'set_mode', mode: btn.dataset.mode });
+    setActiveMode(btn.dataset.mode);
+  });
+});
+
+$$('.mode-btn[data-action]').forEach(btn => {
+  btn.addEventListener('click', () => sendCmd({ action: btn.dataset.action }));
+});
+
+// ========== Gamepad input ==========
+const keyToButton = {
+  'i': 'X', 'j': 'Y', 'k': 'B', 'l': 'A',
+  'q': 'L', 'e': 'ZL', 'p': 'R', '[': 'ZR',
+  '-': 'minus', '=': 'plus', 'h': 'home', 'c': 'capture',
+  'z': 'L3', 'x': 'R3',
+  'ArrowUp': 'up', 'ArrowDown': 'down', 'ArrowLeft': 'left', 'ArrowRight': 'right',
+};
+
+const stickKeys = { w: [0, -1, 'left'], a: [-1, 0, 'left'], s: [0, 1, 'left'], d: [1, 0, 'left'],
+                    '8': [0, -1, 'right'], '4': [-1, 0, 'right'], '5': [0, 1, 'right'], '6': [1, 0, 'right'] };
+const activeStick = { left: { x: 0, y: 0 }, right: { x: 0, y: 0 } };
+const pressedStickKeys = new Set();
+
+function updateStick(side) {
+  const val = activeStick[side];
+  const mag = 32767;
+  sendCmd({ action: 'stick', stick_id: side, x: val.x * mag, y: val.y * mag });
+}
+
+const pressedButtons = new Set();
+
+document.addEventListener('keydown', (e) => {
+  if (!currentMode || !/xbox|gamepad|switch|wired_switch/.test(currentMode)) return;
+  if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
+  e.preventDefault();
+  const key = e.key;
+
+  if (keyToButton[key] && !pressedButtons.has(key)) {
+    pressedButtons.add(key);
+    sendCmd({ action: 'button_press', button: keyToButton[key] });
+    const el = document.getElementById('kb_' + key);
+    if (el) el.classList.add('pressed');
+  }
+
+  if (stickKeys[key] && !pressedStickKeys.has(key)) {
+    pressedStickKeys.add(key);
+    const [dx, dy, side] = stickKeys[key];
+    activeStick[side].x = Math.max(-1, Math.min(1, activeStick[side].x + dx));
+    activeStick[side].y = Math.max(-1, Math.min(1, activeStick[side].y + dy));
+    updateStick(side);
+  }
+});
+
+document.addEventListener('keyup', (e) => {
+  if (!currentMode || !/xbox|gamepad|switch|wired_switch/.test(currentMode)) return;
+  if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
+  e.preventDefault();
+  const key = e.key;
+
+  if (keyToButton[key]) {
+    pressedButtons.delete(key);
+    sendCmd({ action: 'button_release', button: keyToButton[key] });
+    const el = document.getElementById('kb_' + key);
+    if (el) el.classList.remove('pressed');
+  }
+
+  if (stickKeys[key]) {
+    pressedStickKeys.delete(key);
+    const [dx, dy, side] = stickKeys[key];
+    activeStick[side].x = Math.max(-1, Math.min(1, activeStick[side].x - dx));
+    activeStick[side].y = Math.max(-1, Math.min(1, activeStick[side].y - dy));
+    updateStick(side);
+  }
+});
+
+// Gamepad button click support
+$$('.gp-btn[data-btn]').forEach(btn => {
+  btn.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    sendCmd({ action: 'button_press', button: btn.dataset.btn });
+    btn.classList.add('pressed');
+  });
+  btn.addEventListener('mouseup', (e) => {
+    e.preventDefault();
+    sendCmd({ action: 'button_release', button: btn.dataset.btn });
+    btn.classList.remove('pressed');
+  });
+  btn.addEventListener('mouseleave', () => {
+    if (btn.classList.contains('pressed')) {
+      sendCmd({ action: 'button_release', button: btn.dataset.btn });
+      btn.classList.remove('pressed');
+    }
+  });
+});
+
+// ========== Mouse input ==========
+const mouseArea = $('#mouseArea');
+let pointerLocked = false;
+
+mouseArea.addEventListener('click', () => {
+  if (!pointerLocked) mouseArea.requestPointerLock();
+});
+
+document.addEventListener('pointerlockchange', () => {
+  pointerLocked = document.pointerLockElement === mouseArea;
+  mouseArea.classList.toggle('active', pointerLocked);
+  $('#captureNotice').classList.toggle('show', pointerLocked);
+  mouseArea.textContent = pointerLocked ? 'Pointer captured' : 'Click to capture pointer';
+});
+
+document.addEventListener('mousemove', (e) => {
+  if (!pointerLocked) return;
+  if (e.movementX !== 0 || e.movementY !== 0) {
+    sendCmd({ action: 'move', dx: e.movementX, dy: e.movementY });
+  }
+});
+
+document.addEventListener('mousedown', (e) => {
+  if (!pointerLocked) return;
+  const btn = ['left', 'middle', 'right'][e.button] || 'left';
+  sendCmd({ action: 'press', button: btn });
+});
+
+document.addEventListener('mouseup', (e) => {
+  if (!pointerLocked) return;
+  const btn = ['left', 'middle', 'right'][e.button] || 'left';
+  sendCmd({ action: 'release', button: btn });
+});
+
+$$('.mouse-btns button').forEach(btn => {
+  btn.addEventListener('click', () => sendCmd({ action: 'click', button: btn.dataset.mb }));
+});
+
+// ========== Keyboard input ==========
+const kbInput = $('#kbInput');
+const specialKeyMap = {
+  'Enter': 'enter', 'Escape': 'esc', 'Tab': 'tab', ' ': 'space',
+  'ArrowUp': 'up', 'ArrowDown': 'down', 'ArrowLeft': 'left', 'ArrowRight': 'right',
+  'Backspace': 'backspace', 'Delete': 'delete',
+  'Home': 'home', 'End': 'end', 'PageUp': 'page_up', 'PageDown': 'page_down',
+};
+
+kbInput.addEventListener('keydown', (e) => {
+  if (!currentMode || !/keyboard/.test(currentMode)) return;
+  const mapped = specialKeyMap[e.key];
+  if (mapped) {
+    e.preventDefault();
+    sendCmd({ action: 'key_press', key: mapped });
+  } else if (e.key.length === 1) {
+    sendCmd({ action: 'key_press', key: e.key });
+  }
+});
+
+kbInput.addEventListener('keyup', (e) => {
+  if (!currentMode || !/keyboard/.test(currentMode)) return;
+  const mapped = specialKeyMap[e.key];
+  if (mapped) {
+    sendCmd({ action: 'key_release', key: mapped });
+  } else if (e.key.length === 1) {
+    sendCmd({ action: 'key_release', key: e.key });
+  }
+});
+
+// ========== WS keepalive ==========
+setInterval(() => {
+  if (conn && conn.type === 'ws' && conn._ws.readyState === WebSocket.OPEN) {
+    try { conn._ws.send(JSON.stringify({ type: 'ping', seq: ++seq })); } catch {}
+  }
+}, 5000);
+
+// ========== Init ==========
+if ('serial' in navigator) {
+  $('#connType').value = 'serial';
+} else {
+  $('#connType').value = 'ws';
+  $('#wsUrl').style.display = '';
+}
+log('Ready. Select connection type and click Connect.');
+</script>
+</body>
+</html>

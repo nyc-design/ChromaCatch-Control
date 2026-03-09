@@ -6,54 +6,66 @@
 #include <cstring>
 #include "class/hid/hid_device.h"
 
-// Global instance pointer for the --wrap callback.
+// Global instance pointer for the --wrap callbacks.
 SwitchProUSB* g_switchProUsbDevice = nullptr;
 
 // ============================================================
-// Linker --wrap override for tud_hid_set_report_cb
+// Static USB descriptors — exact Pro Controller identity.
 //
-// The Arduino USBHID layer only routes output reports whose
-// report ID appears in the HID descriptor.  The Pro Controller's
-// USB handshake uses report ID 0x80 / 0x81, which are NOT in the
-// HID descriptor (same as the real controller).  Without this
-// wrapper the 0x80 handshake from the Switch is silently dropped
-// and the controller is never recognised.
+// The Arduino USBHID framework adds BOS/WebUSB/MS-OS-2.0
+// descriptors, uses 1ms polling interval, and EP OUT 0x01.
+// A real Pro Controller has: no BOS at USB 2.0, 8ms polling,
+// EP OUT 0x02, Remote Wakeup, 500mA.
 //
-// Build flag: -Wl,--wrap=tud_hid_set_report_cb
+// We wrap ALL TinyUSB descriptor callbacks to return these
+// exact descriptors when Switch Pro mode is active.
 // ============================================================
-extern "C" {
-    void __real_tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
-                                       hid_report_type_t report_type,
-                                       uint8_t const* buffer, uint16_t bufsize);
 
-    void __wrap_tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
-                                       hid_report_type_t report_type,
-                                       uint8_t const* buffer, uint16_t bufsize) {
-        // OUT endpoint data arrives with report_id=0, report_type=0.
-        // The raw report ID is in buffer[0].
-        if (!report_id && !report_type && bufsize > 0 && g_switchProUsbDevice) {
-            uint8_t rid = buffer[0];
-            if (rid == 0x80) {
-                // Route USB handshake to our handler (not in HID descriptor)
-                g_switchProUsbDevice->_onOutput(rid, buffer + 1, bufsize - 1);
-                return;
-            }
-        }
-        // SET_REPORT control request with report_id=0x80
-        if (report_id == 0x80 && g_switchProUsbDevice) {
-            g_switchProUsbDevice->_onOutput(report_id, buffer, bufsize);
-            return;
-        }
-        // Everything else: delegate to the original Arduino USBHID handler
-        __real_tud_hid_set_report_cb(instance, report_id, report_type, buffer, bufsize);
-    }
-}
+// Device descriptor (18 bytes) — VID 0x057E, PID 0x2009
+static const uint8_t s_deviceDesc[18] = {
+    18, 0x01,           // bLength, bDescriptorType = DEVICE
+    0x00, 0x02,         // bcdUSB = 0x0200 (USB 2.0 LE)
+    0x00, 0x00, 0x00,   // bDeviceClass/SubClass/Protocol = 0
+    64,                  // bMaxPacketSize0
+    0x5E, 0x07,         // idVendor = 0x057E (LE)
+    0x09, 0x20,         // idProduct = 0x2009 (LE)
+    0x00, 0x02,         // bcdDevice = 0x0200 (LE)
+    0x01, 0x02, 0x00,   // iManufacturer=1, iProduct=2, iSerialNumber=0
+    0x01,               // bNumConfigurations = 1
+};
+
+// Configuration descriptor (41 bytes) — exact Pro Controller match
+static const uint8_t s_configDesc[] = {
+    // Configuration descriptor (9 bytes)
+    9, 0x02, 41, 0, 1, 1, 0, 0xA0, 0xFA,
+    //  bLength=9, bDescriptorType=CONFIG, wTotalLength=41, bNumInterfaces=1
+    //  bConfigurationValue=1, iConfiguration=0, bmAttributes=0xA0 (Remote Wakeup)
+    //  bMaxPower=0xFA (500mA)
+
+    // Interface descriptor (9 bytes)
+    9, 0x04, 0, 0, 2, 0x03, 0x00, 0x00, 0,
+    //  bInterfaceNumber=0, bAlternateSetting=0, bNumEndpoints=2
+    //  bInterfaceClass=HID, bInterfaceSubClass=0 (no boot), bInterfaceProtocol=0
+
+    // HID descriptor (9 bytes)
+    9, 0x21, 0x11, 0x01, 0x00, 1, 0x22, 170, 0,
+    //  bcdHID=1.11, bCountryCode=0, bNumDescriptors=1
+    //  bDescriptorType=0x22 (report), wDescriptorLength=170
+
+    // Endpoint IN descriptor (7 bytes) — EP 0x81, 8ms interval
+    7, 0x05, 0x81, 0x03, 64, 0, 8,
+    //  bEndpointAddress=0x81 (IN 1), bmAttributes=Interrupt
+    //  wMaxPacketSize=64, bInterval=8ms
+
+    // Endpoint OUT descriptor (7 bytes) — EP 0x02, 8ms interval
+    7, 0x05, 0x02, 0x03, 64, 0, 8,
+    //  bEndpointAddress=0x02 (OUT 2), bmAttributes=Interrupt
+    //  wMaxPacketSize=64, bInterval=8ms
+};
 
 // ============================================================
 // Pro Controller HID descriptor — identical to the BT descriptor
 // used by the real Pro Controller and Pokemon Automation.
-// This is the key: the Switch uses the SAME descriptor for both
-// wired USB and Bluetooth Pro Controllers.
 // ============================================================
 static const uint8_t kProControllerDescriptor[] = {
     0x05, 0x01,        // Usage Page (Generic Desktop)
@@ -164,6 +176,76 @@ static const uint8_t kProControllerDescriptor[] = {
 
     0xC0,              // End Collection
 };
+
+// ============================================================
+// Linker --wrap overrides for ALL TinyUSB descriptor callbacks.
+//
+// These ensure the Switch sees exact Pro Controller descriptors
+// with no BOS/WebUSB/MS-OS-2.0, correct 8ms polling interval,
+// and correct endpoint addresses (IN 0x81, OUT 0x02).
+//
+// Build flags:
+//   -Wl,--wrap=tud_hid_set_report_cb
+//   -Wl,--wrap=tud_descriptor_device_cb
+//   -Wl,--wrap=tud_descriptor_configuration_cb
+//   -Wl,--wrap=tud_descriptor_bos_cb
+//   -Wl,--wrap=tud_hid_descriptor_report_cb
+// ============================================================
+extern "C" {
+    // --- Report callback wrap (routes 0x80 handshake) ---
+    void __real_tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
+                                       hid_report_type_t report_type,
+                                       uint8_t const* buffer, uint16_t bufsize);
+
+    void __wrap_tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
+                                       hid_report_type_t report_type,
+                                       uint8_t const* buffer, uint16_t bufsize) {
+        if (!report_id && !report_type && bufsize > 0 && g_switchProUsbDevice) {
+            uint8_t rid = buffer[0];
+            if (rid == 0x80) {
+                g_switchProUsbDevice->_onOutput(rid, buffer + 1, bufsize - 1);
+                return;
+            }
+        }
+        if (report_id == 0x80 && g_switchProUsbDevice) {
+            g_switchProUsbDevice->_onOutput(report_id, buffer, bufsize);
+            return;
+        }
+        __real_tud_hid_set_report_cb(instance, report_id, report_type, buffer, bufsize);
+    }
+
+    // --- Device descriptor wrap ---
+    uint8_t const* __real_tud_descriptor_device_cb(void);
+
+    uint8_t const* __wrap_tud_descriptor_device_cb(void) {
+        if (g_switchProUsbDevice) return s_deviceDesc;
+        return __real_tud_descriptor_device_cb();
+    }
+
+    // --- Configuration descriptor wrap ---
+    uint8_t const* __real_tud_descriptor_configuration_cb(uint8_t index);
+
+    uint8_t const* __wrap_tud_descriptor_configuration_cb(uint8_t index) {
+        if (g_switchProUsbDevice) return s_configDesc;
+        return __real_tud_descriptor_configuration_cb(index);
+    }
+
+    // --- BOS descriptor wrap (return NULL = no BOS for USB 2.0) ---
+    uint8_t const* __real_tud_descriptor_bos_cb(void);
+
+    uint8_t const* __wrap_tud_descriptor_bos_cb(void) {
+        if (g_switchProUsbDevice) return nullptr;
+        return __real_tud_descriptor_bos_cb();
+    }
+
+    // --- HID report descriptor wrap ---
+    uint8_t const* __real_tud_hid_descriptor_report_cb(uint8_t instance);
+
+    uint8_t const* __wrap_tud_hid_descriptor_report_cb(uint8_t instance) {
+        if (g_switchProUsbDevice) return kProControllerDescriptor;
+        return __real_tud_hid_descriptor_report_cb(instance);
+    }
+}
 
 // MAC address for device info response
 static const uint8_t kMacAddr[6] = {0x00, 0x00, 0x5E, 0x00, 0x53, 0x5E};
