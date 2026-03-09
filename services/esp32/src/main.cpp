@@ -1757,6 +1757,67 @@ void executeCommand(JsonDocument& doc, JsonDocument& response, CommandSource sou
     else response["source"] = "wifi";
 
     // Control-plane actions (do not require active HID output transport)
+    if (action == "get_mode") {
+        response["status"] = "ok";
+        response["delivery_policy"] = deliveryPolicyToString(deliveryPolicy);
+        response["ble_advertisement_name"] = getBleAdvertisementName();
+        response["ble_profile"] = getBleProfileLabel();
+        response["ble_mode_scoped_mac"] = getModeSpecificBleMacString();
+        response["output_mode"] = (modeAllowsGamepad(currentMode) ? "gamepad" : "mouse_keyboard");
+        response["input_mode"] = BOARD_SUPPORTS_WIRED_INPUT ? "wired>ws>http" : "ws>http";
+        JsonArray supported = response["supported_modes"].to<JsonArray>();
+        for (int i = 0; i < static_cast<int>(EMU_MODE_COUNT); i++) {
+            EmulationMode candidate = static_cast<EmulationMode>(i);
+            if (emulationModeSupported(candidate)) supported.add(emulationModeToString(candidate));
+        }
+        return;
+    }
+    if (action == "get_status") {
+        response["status"] = "ok";
+        response["usb_mounted"] = isUSBMounted();
+        response["ble_connected"] = isBLEConnected();
+        response["board"] = BOARD_IS_ESP32S3 ? "esp32s3" : (BOARD_IS_ESP32 ? "esp32" : "unknown");
+        response["active_delivery"] = runtimeDeliveryToString(chooseRuntimeDelivery());
+        response["ws_connected_clients"] = wsConnectedClients;
+#if defined(CONFIG_IDF_TARGET_ESP32S3) && CONFIG_TINYUSB_HID_ENABLED
+        response["usb_gamepad_profile"] = (UsbHidBridge::getGamepadProfile() == UsbHidBridge::USB_GAMEPAD_PROFILE_SWITCH_PRO) ? "switch_pro" : "generic";
+#endif
+        return;
+    }
+#if defined(CONFIG_IDF_TARGET_ESP32S3) && CONFIG_TINYUSB_ENABLED
+    if (action == "dump_usb") {
+        // Dump USB descriptors as hex strings for debugging Pro Controller recognition.
+        // Compare these byte-for-byte against a real Pro Controller to find mismatches.
+        response["status"] = "ok";
+
+        // Device descriptor (18 bytes)
+        uint8_t devBuf[18];
+        uint8_t const* devDesc = (uint8_t const*)tud_descriptor_device_cb();
+        memcpy(devBuf, devDesc, 18);
+        String devHex;
+        for (int i = 0; i < 18; i++) { char h[4]; snprintf(h, sizeof(h), "%02X", devBuf[i]); devHex += h; if (i < 17) devHex += " "; }
+        response["device_descriptor"] = devHex;
+
+        // Configuration descriptor (variable length, first 2 bytes = total length at offset 2-3)
+        uint8_t const* cfgDesc = tud_descriptor_configuration_cb(0);
+        uint16_t cfgLen = cfgDesc[2] | (cfgDesc[3] << 8);
+        if (cfgLen > 256) cfgLen = 256;
+        String cfgHex;
+        for (int i = 0; i < cfgLen; i++) { char h[4]; snprintf(h, sizeof(h), "%02X", cfgDesc[i]); cfgHex += h; if (i < cfgLen - 1) cfgHex += " "; }
+        response["config_descriptor"] = cfgHex;
+
+        // BOS descriptor (via the wrapped callback)
+        extern "C" uint8_t const* __wrap_tud_descriptor_bos_cb(void);
+        uint8_t const* bosDesc = __wrap_tud_descriptor_bos_cb();
+        uint16_t bosLen = bosDesc[2] | (bosDesc[3] << 8);
+        if (bosLen > 64) bosLen = 64;
+        String bosHex;
+        for (int i = 0; i < bosLen; i++) { char h[4]; snprintf(h, sizeof(h), "%02X", bosDesc[i]); bosHex += h; if (i < bosLen - 1) bosHex += " "; }
+        response["bos_descriptor"] = bosHex;
+
+        return;
+    }
+#endif
     if (action == "set_mode") {
         if (doc["mode"].is<const char*>()) {
             EmulationMode next = parseEmulationModeString(doc["mode"].as<String>());

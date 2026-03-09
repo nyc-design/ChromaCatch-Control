@@ -94,6 +94,9 @@
     <h3>Ops</h3>
     <button class="mode-btn" data-action="restart_ble">Restart BLE</button>
     <button class="mode-btn" data-action="clear_ble_bonds">Clear BLE Bonds</button>
+    <h3>Debug</h3>
+    <button class="mode-btn" data-action="dump_usb">Dump USB Descriptors</button>
+    <button class="mode-btn" data-action="get_status">Get Status</button>
   </div>
 
   <div class="main">
@@ -237,7 +240,9 @@ async function connectSerial() {
   userDisconnected = false;
   try {
     const port = await navigator.serial.requestPort();
-    await port.open({ baudRate: 115200 });
+    await port.open({ baudRate: 115200, bufferSize: 4096 });
+    // Prevent DTR/RTS from resetting the ESP32 on connect
+    await port.setSignals({ dataTerminalReady: false, requestToSend: false });
     setConnState(true, 'Serial');
     log('Serial connected', 'ok');
 
@@ -348,7 +353,17 @@ function handleResponse(data) {
       const mode = obj.mode;
       if (mode) setActiveMode(mode);
     }
-    if (obj.type === 'ack') {
+    if (obj.action === 'dump_usb' && obj.status === 'ok') {
+      log('=== USB Descriptor Dump ===', 'ok');
+      if (obj.device_descriptor) log(`DEV: ${obj.device_descriptor}`);
+      if (obj.config_descriptor) log(`CFG: ${obj.config_descriptor}`);
+      if (obj.bos_descriptor) log(`BOS: ${obj.bos_descriptor}`);
+    } else if (obj.action === 'get_status' && obj.status === 'ok') {
+      log(`Status: usb=${obj.usb_mounted} ble=${obj.ble_connected} board=${obj.board} delivery=${obj.active_delivery} profile=${obj.usb_gamepad_profile||'n/a'}`, 'ok');
+    } else if (obj.action === 'get_mode' && obj.status === 'ok') {
+      if (obj.mode) setActiveMode(obj.mode);
+      log(`Mode: ${obj.mode} policy=${obj.input_policy} profile=${obj.ble_profile||'n/a'}`, 'ok');
+    } else if (obj.type === 'ack') {
       log(`< ACK ${obj.action} [${obj.status}]`, obj.status === 'ok' ? 'ok' : 'err');
     } else if (obj.type === 'pong') {
       // ignore
@@ -356,7 +371,10 @@ function handleResponse(data) {
       log(`< ${data.slice(0, 200)}`);
     }
   } catch {
-    log(`< ${data.slice(0, 200)}`);
+    // Filter non-JSON serial output (boot messages, debug prints)
+    const trimmed = data.trim();
+    if (trimmed && !trimmed.startsWith('ets ') && !trimmed.startsWith('rst:'))
+      log(`< ${trimmed.slice(0, 200)}`);
   }
 }
 
