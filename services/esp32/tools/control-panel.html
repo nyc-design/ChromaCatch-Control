@@ -411,6 +411,9 @@ function updateStick(side) {
 }
 
 const pressedButtons = new Set();
+const buttonPressTime = {};      // key → Date.now() when pressed
+const pendingRelease = {};       // key → setTimeout id for delayed release
+const MIN_HOLD_MS = 80;          // minimum hold so Switch sees button in ≥10 report cycles (8ms each)
 
 document.addEventListener('keydown', (e) => {
   if (!currentMode || !/xbox|gamepad|switch|wired_switch/.test(currentMode)) return;
@@ -419,7 +422,10 @@ document.addEventListener('keydown', (e) => {
   const key = e.key;
 
   if (keyToButton[key] && !pressedButtons.has(key)) {
+    // Cancel any pending delayed release for this key (re-press before release fired)
+    if (pendingRelease[key]) { clearTimeout(pendingRelease[key]); delete pendingRelease[key]; }
     pressedButtons.add(key);
+    buttonPressTime[key] = Date.now();
     sendCmd({ action: 'button_press', button: keyToButton[key] });
     const el = document.getElementById('kb_' + key);
     if (el) el.classList.add('pressed');
@@ -434,17 +440,30 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+function doButtonRelease(key) {
+  pressedButtons.delete(key);
+  delete buttonPressTime[key];
+  delete pendingRelease[key];
+  sendCmd({ action: 'button_release', button: keyToButton[key] });
+  const el = document.getElementById('kb_' + key);
+  if (el) el.classList.remove('pressed');
+}
+
 document.addEventListener('keyup', (e) => {
   if (!currentMode || !/xbox|gamepad|switch|wired_switch/.test(currentMode)) return;
   if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
   e.preventDefault();
   const key = e.key;
 
-  if (keyToButton[key]) {
-    pressedButtons.delete(key);
-    sendCmd({ action: 'button_release', button: keyToButton[key] });
-    const el = document.getElementById('kb_' + key);
-    if (el) el.classList.remove('pressed');
+  if (keyToButton[key] && pressedButtons.has(key)) {
+    const elapsed = Date.now() - (buttonPressTime[key] || 0);
+    const remaining = MIN_HOLD_MS - elapsed;
+    if (remaining > 0) {
+      // Delay release so the Switch sees the button held for at least MIN_HOLD_MS
+      pendingRelease[key] = setTimeout(() => doButtonRelease(key), remaining);
+    } else {
+      doButtonRelease(key);
+    }
   }
 
   if (stickKeys[key]) {
@@ -456,24 +475,28 @@ document.addEventListener('keyup', (e) => {
   }
 });
 
-// Gamepad button click support
+// Gamepad button click support (with min hold time)
+const btnPressTime = new WeakMap();
 $$('.gp-btn[data-btn]').forEach(btn => {
   btn.addEventListener('mousedown', (e) => {
     e.preventDefault();
     sendCmd({ action: 'button_press', button: btn.dataset.btn });
     btn.classList.add('pressed');
+    btnPressTime.set(btn, Date.now());
   });
-  btn.addEventListener('mouseup', (e) => {
-    e.preventDefault();
-    sendCmd({ action: 'button_release', button: btn.dataset.btn });
-    btn.classList.remove('pressed');
-  });
-  btn.addEventListener('mouseleave', () => {
-    if (btn.classList.contains('pressed')) {
+  function releaseBtn() {
+    if (!btn.classList.contains('pressed')) return;
+    const elapsed = Date.now() - (btnPressTime.get(btn) || 0);
+    const remaining = MIN_HOLD_MS - elapsed;
+    if (remaining > 0) {
+      setTimeout(() => { sendCmd({ action: 'button_release', button: btn.dataset.btn }); btn.classList.remove('pressed'); }, remaining);
+    } else {
       sendCmd({ action: 'button_release', button: btn.dataset.btn });
       btn.classList.remove('pressed');
     }
-  });
+  }
+  btn.addEventListener('mouseup', (e) => { e.preventDefault(); releaseBtn(); });
+  btn.addEventListener('mouseleave', () => releaseBtn());
 });
 
 // ========== Mouse input ==========

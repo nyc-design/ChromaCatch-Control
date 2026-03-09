@@ -124,20 +124,30 @@ static const uint8_t kProControllerDescriptor[] = {
 };
 
 // ============================================================
-// Linker --wrap override for tud_hid_set_report_cb
+// Linker --wrap overrides for Pro Controller USB
 //
-// The Arduino USBHID layer only routes output reports whose
-// report ID appears in the HID descriptor. The Pro Controller's
-// USB handshake uses report ID 0x80 / 0x81, which are NOT in the
-// HID descriptor (same as the real controller). Without this
-// wrapper the 0x80 handshake from the Switch is silently dropped
-// and the controller is never recognised.
+// 1) tud_hid_set_report_cb: Route 0x80 handshake reports to our
+//    handler. Arduino USBHID only routes report IDs that appear in
+//    the HID descriptor, but the Pro Controller 0x80/0x81 handshake
+//    uses vendor-specific report IDs (same as the real controller).
 //
-// VID/PID are set via USB.VID() / USB.PID() in the constructor.
-// HID report descriptor is returned via _onGetDescriptor().
+// 2) tud_descriptor_bos_cb: Return a minimal empty BOS descriptor.
+//    Arduino/TinyUSB generates a BOS with WebUSB + MS OS descriptors
+//    which real Pro Controllers don't have. Combined with USB 2.0
+//    (bcdUSB=0x0200), the host shouldn't request BOS at all, but
+//    this provides a safe fallback.
 //
-// Build flag: -Wl,--wrap=tud_hid_set_report_cb
+// Build flags: -Wl,--wrap=tud_hid_set_report_cb,--wrap=tud_descriptor_bos_cb
 // ============================================================
+
+// Minimal BOS descriptor: just the header with 0 capabilities
+static const uint8_t kEmptyBosDescriptor[] = {
+    5,                     // bLength
+    0x0F,                  // bDescriptorType = BOS
+    5, 0,                  // wTotalLength = 5 (just the header)
+    0,                     // bNumDeviceCaps = 0
+};
+
 extern "C" {
     void __real_tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
                                        hid_report_type_t report_type,
@@ -158,6 +168,17 @@ extern "C" {
             return;
         }
         __real_tud_hid_set_report_cb(instance, report_id, report_type, buffer, bufsize);
+    }
+
+    // Override BOS descriptor: return empty BOS (no WebUSB/MS OS capabilities)
+    // Real Pro Controllers are USB 2.0 with no BOS. Returning NULL crashes TinyUSB,
+    // so we return a valid but empty BOS header instead.
+    uint8_t const* __real_tud_descriptor_bos_cb(void);
+    uint8_t const* __wrap_tud_descriptor_bos_cb(void) {
+        if (g_switchProUsbDevice) {
+            return kEmptyBosDescriptor;
+        }
+        return __real_tud_descriptor_bos_cb();
     }
 }
 
@@ -228,14 +249,17 @@ static constexpr size_t kReportLen = 48;
 // ============================================================
 SwitchProUSB::SwitchProUSB() : _hid() {
     static bool registered = false;
-    // Set Pro Controller USB identity
+    // Set Pro Controller USB identity — must match real device exactly
     USB.VID(0x057E);
     USB.PID(0x2009);
+    USB.usbVersion(0x0200);        // USB 2.0 — prevents BOS descriptor generation
+    USB.firmwareVersion(0x0200);    // bcdDevice — matches real Pro Controller
     USB.usbClass(0);
     USB.usbSubClass(0);
     USB.usbProtocol(0);
     USB.manufacturerName("Nintendo Co., Ltd.");
     USB.productName("Pro Controller");
+    USB.serialNumber("000000000001");
     if (!registered) {
         registered = true;
         _hid.addDevice(this, sizeof(kProControllerDescriptor));
