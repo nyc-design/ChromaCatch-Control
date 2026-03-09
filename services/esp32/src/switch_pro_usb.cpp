@@ -10,22 +10,27 @@
 SwitchProUSB* g_switchProUsbDevice = nullptr;
 
 // ============================================================
-// Pro Controller USB HID descriptor — byte-for-byte match of the
-// real Nintendo Switch Pro Controller wired USB descriptor (201 bytes, 203 original minus
-// 2 bytes for top-level Logical Minimum removed for ESP-IDF parser compatibility).
+// Pro Controller USB HID descriptor — 203 bytes, matching the real
+// Nintendo Switch Pro Controller wired USB descriptor.
 // Source: https://gist.github.com/ToadKing/b883a8ccfa26adcc6ba9905e75aeb4f2
 //
 // NOTE: This is the USB descriptor, NOT the Bluetooth one.
 // The USB descriptor uses Joystick usage, vendor page 0xFF00,
 // 63-byte reports, and includes 0x80/0x81/0x82 report IDs.
+//
+// PARSER COMPAT: The real descriptor has Logical Minimum (0x15,0x00)
+// between Usage Page and Usage at the top level, but ESP-IDF's HID
+// parser rejects that ("expected USAGE, got 0x14"). We move it to
+// just inside the Collection where the parser silently ignores it.
+// Semantically identical — Logical Minimum is a Global item that
+// propagates into sub-scopes either way, and it's overridden by each
+// report section anyway. Keeps the descriptor at exactly 203 bytes.
 // ============================================================
 static const uint8_t kProControllerDescriptor[] = {
     0x05, 0x01,        // Usage Page (Generic Desktop)
-    // NOTE: Real Pro Controller has 0x15,0x00 (Logical Minimum) here,
-    // but ESP-IDF's HID parser rejects it ("expected USAGE, got 0x14").
-    // Omitting it is safe — Logical Minimum is set again inside each report section.
     0x09, 0x04,        // Usage (Joystick)
     0xA1, 0x01,        // Collection (Application)
+    0x15, 0x00,        // Logical Minimum (0) — moved here from before Usage for parser compat
 
     // --- Report ID 0x30: Standard full input report (63 bytes) ---
     // HID-standard button/axis/hat layout for device enumeration.
