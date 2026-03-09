@@ -338,6 +338,18 @@ void SwitchProUSB::onVendorRx(const uint8_t* data, uint16_t len) {
     uint8_t arg = (len >= 4) ? data[3] : 0;
 
     switch (cmdId) {
+        case 0x03:
+            if (arg == 0x0D) {
+                // Start HID output at 4ms intervals — this is the key command.
+                // The real controller is SILENT until receiving this.
+                _hidOutputEnabled = true;
+                Serial.println("[Switch2Pro] HID output ENABLED by host (0x03/0x0D)");
+            } else if (arg == 0x0A) {
+                Serial.println("[Switch2Pro] Haptics enabled (0x03/0x0A)");
+            } else if (arg == 0x01) {
+                Serial.printf("[Switch2Pro] CMD 0x03 arg 0x%02X\n", arg);
+            }
+            break;
         case 0x15:
             if (arg == 0x01) {
                 // MAC request — respond with our fake MAC
@@ -345,21 +357,28 @@ void SwitchProUSB::onVendorRx(const uint8_t* data, uint16_t len) {
                 memcpy(ack + 8, kFakeMAC, 6);
                 ack[14] = 0x00;
                 ack[15] = 0x00;
+                Serial.println("[Switch2Pro] MAC request → responded");
             } else if (arg == 0x02) {
                 // LTK request — respond with zeroed key (USB mode, no BT pairing)
                 ackLen = 24;
                 // Key bytes already zeroed from memset
+                Serial.println("[Switch2Pro] LTK request → responded (zeroed)");
+            } else if (arg == 0x03) {
+                Serial.println("[Switch2Pro] CMD 0x15 arg 0x03");
             }
             break;
-        case 0x03:
-            if (arg == 0x0D) {
-                // Start HID output — we're already sending reports, just ACK
-                _vendorInitReceived = true;
-                Serial.println("[Switch2Pro] HID output start command received");
-            }
+        case 0x09:
+            // LED init / Set Player LED
+            Serial.printf("[Switch2Pro] Player LED cmd, pattern=0x%02X\n",
+                          (len >= 9) ? data[8] : 0);
+            break;
+        case 0x0C:
+            // IMU config commands
+            Serial.printf("[Switch2Pro] IMU config arg=0x%02X\n", arg);
             break;
         default:
             // Generic ACK — echo first bytes
+            Serial.printf("[Switch2Pro] CMD 0x%02X (generic ACK)\n", cmdId);
             break;
     }
 
@@ -398,6 +417,8 @@ void SwitchProUSB::begin() {
 void SwitchProUSB::end() {
     _buttons = 0;
     _lx = _ly = _rx = _ry = 0x80;
+    _hidOutputEnabled = false;
+    _vendorCmdCount = 0;
 }
 
 // ============================================================
@@ -584,7 +605,7 @@ void SwitchProUSB::setFullState(uint32_t buttons, uint8_t lx, uint8_t ly, uint8_
     _rx = rx;
     _ry = ry;
     _pendingReleaseMask = 0;
-    sendReport09();
+    if (_hidOutputEnabled) sendReport09();
 }
 
 bool SwitchProUSB::isConnected() const {
@@ -595,12 +616,29 @@ bool SwitchProUSB::isConnected() const {
 // write / loop
 // ============================================================
 bool SwitchProUSB::write() {
+    if (!_hidOutputEnabled) return false;
     sendReport09();
     return true;
 }
 
 void SwitchProUSB::loop() {
     flushPendingReplies();
+
+    // One-time log when USB mount is detected
+    static bool mountLogged = false;
+    if (!mountLogged && tud_mounted()) {
+        mountLogged = true;
+        Serial.println("[Switch2Pro] USB mounted — waiting for host init (0x03/0x0D)");
+    }
+    if (mountLogged && !tud_mounted()) {
+        mountLogged = false;
+        Serial.println("[Switch2Pro] USB unmounted");
+    }
+
+    // Don't send any HID reports until the host enables output via
+    // vendor bulk command 0x03/0x0D ("Start HID output at 4ms intervals").
+    // The real Switch 2 Pro Controller is silent until this command.
+    if (!_hidOutputEnabled) return;
 
     // Process deferred releases after minimum hold time
     if (_pendingReleaseMask && (millis() - _lastPressMs >= kMinHoldMs)) {

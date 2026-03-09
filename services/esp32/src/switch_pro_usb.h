@@ -148,7 +148,10 @@ private:
     uint8_t _ry = 0x80;
 
     // Vendor bulk init tracking
-    bool _vendorInitReceived = false;
+    // The real controller starts SILENT — no HID reports until the host sends
+    // the init command (0x03, arg 0x0D) via Vendor Bulk. We mirror this
+    // behavior: only send Report 0x09 after _hidOutputEnabled is set.
+    bool _hidOutputEnabled = false;
     uint8_t _vendorCmdCount = 0;
 };
 
