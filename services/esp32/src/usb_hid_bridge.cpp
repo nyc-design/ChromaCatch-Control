@@ -102,6 +102,18 @@ void init() {
     if (!usbOk) {
         Serial.println("[USB] ERROR: TinyUSB failed to start — check USB PHY and ARDUINO_USB_MODE");
     }
+    // Dump device descriptor for verification
+    const uint8_t* devDesc = tud_descriptor_device_cb();
+    if (devDesc) {
+        uint16_t vid = devDesc[8] | (devDesc[9] << 8);
+        uint16_t pid = devDesc[10] | (devDesc[11] << 8);
+        uint8_t devClass = devDesc[4];
+        uint8_t devSubClass = devDesc[5];
+        uint8_t devProtocol = devDesc[6];
+        uint16_t bcdUSB = devDesc[2] | (devDesc[3] << 8);
+        Serial.printf("[USB] Device descriptor: VID=%04X PID=%04X class=%d/%d/%d bcdUSB=%04X\n",
+                      vid, pid, devClass, devSubClass, devProtocol, bcdUSB);
+    }
 #endif
 #endif
 

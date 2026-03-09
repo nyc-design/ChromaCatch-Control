@@ -94,40 +94,27 @@ static const uint8_t kSwitch2ProDescriptor[] = {
 static_assert(sizeof(kSwitch2ProDescriptor) == 97, "Switch 2 Pro descriptor must be 97 bytes");
 
 // ============================================================
-// Switch 2 Pro Controller Configuration Descriptor — 80 bytes.
-// Exact match of the real device: 2 interfaces + 2 IADs.
-// Source: lsusb -v -d 057e:2069 on Linux
+// Switch 2 Pro Controller Configuration Descriptor — 41 bytes.
+// HID-only (no vendor bulk, no IADs).
+//
+// The original Switch Pro Controller (0x2009) is HID-only and
+// works fine. We start with HID-only for Switch 2 (0x2069) to
+// verify basic recognition before adding vendor bulk.
 //
 // Interface 0: HID (Game Pad)
-//   IAD → bFunctionClass=3 (HID)
 //   EP 0x81 IN Interrupt 64B bInterval=4 (4ms report interval)
 //   EP 0x01 OUT Interrupt 64B bInterval=4
-//
-// Interface 1: Vendor Specific (Bulk)
-//   IAD → bFunctionClass=255 (Vendor)
-//   EP 0x02 OUT Bulk 64B  — Switch sends init commands here
-//   EP 0x82 IN Bulk 64B   — Controller ACKs here
 // ============================================================
 static const uint8_t kSwitch2ProConfigDescriptor[] = {
     // --- Configuration Descriptor (9 bytes) ---
     0x09,        // bLength
     0x02,        // bDescriptorType (Configuration)
-    0x50, 0x00,  // wTotalLength (80)
-    0x02,        // bNumInterfaces
+    0x29, 0x00,  // wTotalLength (41)
+    0x01,        // bNumInterfaces
     0x01,        // bConfigurationValue
     0x00,        // iConfiguration (no string)
-    0xC0,        // bmAttributes (Self Powered)
+    0xA0,        // bmAttributes (Bus Powered, Remote Wakeup)
     0xFA,        // MaxPower (500mA = 250 * 2)
-
-    // --- IAD for Interface 0: HID (8 bytes) ---
-    0x08,        // bLength
-    0x0B,        // bDescriptorType (IAD)
-    0x00,        // bFirstInterface
-    0x01,        // bInterfaceCount
-    0x03,        // bFunctionClass (HID)
-    0x00,        // bFunctionSubClass
-    0x00,        // bFunctionProtocol
-    0x00,        // iFunction
 
     // --- Interface 0: HID (9 bytes) ---
     0x09,        // bLength
@@ -164,46 +151,9 @@ static const uint8_t kSwitch2ProConfigDescriptor[] = {
     0x03,        // bmAttributes (Interrupt)
     0x40, 0x00,  // wMaxPacketSize (64)
     0x04,        // bInterval (4ms)
-
-    // --- IAD for Interface 1: Vendor (8 bytes) ---
-    0x08,        // bLength
-    0x0B,        // bDescriptorType (IAD)
-    0x01,        // bFirstInterface
-    0x01,        // bInterfaceCount
-    0xFF,        // bFunctionClass (Vendor)
-    0x00,        // bFunctionSubClass
-    0x00,        // bFunctionProtocol
-    0x00,        // iFunction
-
-    // --- Interface 1: Vendor Specific (9 bytes) ---
-    0x09,        // bLength
-    0x04,        // bDescriptorType (Interface)
-    0x01,        // bInterfaceNumber
-    0x00,        // bAlternateSetting
-    0x02,        // bNumEndpoints
-    0xFF,        // bInterfaceClass (Vendor)
-    0x00,        // bInterfaceSubClass
-    0x00,        // bInterfaceProtocol
-    0x00,        // iInterface (no string)
-
-    // --- EP 0x02 OUT Bulk (7 bytes) ---
-    0x07,        // bLength
-    0x05,        // bDescriptorType (Endpoint)
-    0x02,        // bEndpointAddress (OUT 2)
-    0x02,        // bmAttributes (Bulk)
-    0x40, 0x00,  // wMaxPacketSize (64)
-    0x00,        // bInterval (0)
-
-    // --- EP 0x82 IN Bulk (7 bytes) ---
-    0x07,        // bLength
-    0x05,        // bDescriptorType (Endpoint)
-    0x82,        // bEndpointAddress (IN 2)
-    0x02,        // bmAttributes (Bulk)
-    0x40, 0x00,  // wMaxPacketSize (64)
-    0x00,        // bInterval (0)
 };
 
-static_assert(sizeof(kSwitch2ProConfigDescriptor) == 80, "Config descriptor must be 80 bytes");
+static_assert(sizeof(kSwitch2ProConfigDescriptor) == 41, "Config descriptor must be 41 bytes");
 
 // ============================================================
 // Linker --wrap overrides for Switch 2 Pro Controller USB
@@ -396,9 +346,9 @@ SwitchProUSB::SwitchProUSB() : _hid() {
     USB.PID(0x2069);
     USB.usbVersion(0x0200);
     USB.firmwareVersion(0x0101);   // bcdDevice 1.01
-    USB.usbClass(0xEF);            // Miscellaneous Device (IAD composite)
-    USB.usbSubClass(2);            // Common Class
-    USB.usbProtocol(1);            // Interface Association
+    USB.usbClass(0);               // Class defined at interface level (real Pro Controller uses 0x00)
+    USB.usbSubClass(0);
+    USB.usbProtocol(0);
     USB.manufacturerName("Nintendo");
     USB.productName("Pro Controller");
     USB.serialNumber("00");
@@ -417,7 +367,9 @@ void SwitchProUSB::begin() {
 void SwitchProUSB::end() {
     _buttons = 0;
     _lx = _ly = _rx = _ry = 0x80;
-    _hidOutputEnabled = false;
+    // HID-only mode: start sending reports immediately on mount.
+    // No vendor bulk interface = no init handshake needed.
+    _hidOutputEnabled = true;
     _vendorCmdCount = 0;
 }
 
@@ -633,39 +585,43 @@ void SwitchProUSB::loop() {
     // --- USB state diagnostics (periodic, every 5 seconds) ---
     static uint32_t lastDiagMs = 0;
     static bool mountLogged = false;
-    static uint32_t mountTimeMs = 0;
+    static bool descriptorDumped = false;
 
     bool mounted = tud_mounted();
 
     if (!mountLogged && mounted) {
         mountLogged = true;
-        mountTimeMs = millis();
-        Serial.println("[Switch2Pro] USB mounted — waiting for host vendor init (0x03/0x0D)");
+        Serial.println("[Switch2Pro] USB mounted — sending HID reports immediately (HID-only mode)");
     }
     if (mountLogged && !mounted) {
         mountLogged = false;
-        mountTimeMs = 0;
-        _hidOutputEnabled = false;
+        descriptorDumped = false;
         Serial.println("[Switch2Pro] USB unmounted");
     }
 
     if (millis() - lastDiagMs >= 5000) {
         lastDiagMs = millis();
-        Serial.printf("[Switch2Pro] USB state: mounted=%d suspended=%d hidEnabled=%d vendorCmds=%d\n",
-                      mounted, tud_suspended(), _hidOutputEnabled, _vendorCmdCount);
+        Serial.printf("[Switch2Pro] USB state: mounted=%d suspended=%d hidEnabled=%d reportsSent=%d\n",
+                      mounted, tud_suspended(), _hidOutputEnabled, _timer);
+
+        // Dump descriptor verification once after mount
+        if (mounted && !descriptorDumped) {
+            descriptorDumped = true;
+            // Verify config descriptor is our custom one
+            const uint8_t* cfg = tud_descriptor_configuration_cb(0);
+            uint16_t cfgLen = cfg[2] | (cfg[3] << 8);
+            uint8_t cfgNumItf = cfg[4];
+            Serial.printf("[Switch2Pro] Config descriptor: wTotalLength=%d bNumInterfaces=%d (expected len=%d)\n",
+                          cfgLen, cfgNumItf, sizeof(kSwitch2ProConfigDescriptor));
+            // Dump first 16 bytes for manual verification
+            Serial.printf("[Switch2Pro] Config hex:");
+            for (int i = 0; i < 16 && i < cfgLen; i++) {
+                Serial.printf(" %02X", cfg[i]);
+            }
+            Serial.println();
+        }
     }
 
-    // Auto-enable HID output after 10 seconds if mounted but no vendor init
-    // received. This helps diagnose whether the Switch is even enumerating us.
-    if (mounted && !_hidOutputEnabled && mountTimeMs > 0 &&
-        (millis() - mountTimeMs >= 10000)) {
-        _hidOutputEnabled = true;
-        Serial.println("[Switch2Pro] AUTO-ENABLED HID output (no vendor init after 10s)");
-    }
-
-    // Don't send any HID reports until the host enables output via
-    // vendor bulk command 0x03/0x0D ("Start HID output at 4ms intervals").
-    // The real Switch 2 Pro Controller is silent until this command.
     if (!_hidOutputEnabled) return;
 
     // Process deferred releases after minimum hold time
