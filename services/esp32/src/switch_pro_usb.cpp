@@ -11,14 +11,9 @@
 // Global instance pointer for the --wrap callbacks.
 SwitchProUSB* g_switchProUsbDevice = nullptr;
 
-// C-linkage bridge for switch_pro_vendor.cpp (separate TU to get strong symbols).
-// switch_pro_vendor.cpp cannot include switch_pro_usb.h (it would pull in
-// tusb.h → vendor_device.h → TU_ATTR_WEAK on the vendor callbacks).
-extern "C" void switch_pro_vendor_bridge_rx(const uint8_t* data, uint16_t len) {
-    if (g_switchProUsbDevice) {
-        g_switchProUsbDevice->onVendorRx(data, len);
-    }
-}
+#if CONFIG_TINYUSB_VENDOR_ENABLED
+#include "USBVendor.h"
+#endif
 
 // ============================================================
 // Switch 2 Pro Controller HID descriptor — byte-for-byte match of the real
@@ -363,8 +358,13 @@ void SwitchProUSB::onVendorRx(const uint8_t* data, uint16_t len) {
             break;
     }
 
-    tud_vendor_write(ack, ackLen);
-    tud_vendor_write_flush();
+#if CONFIG_TINYUSB_VENDOR_ENABLED
+    if (_vendor) {
+        _vendor->write(ack, ackLen);
+        // USBVendor::flush() is a no-op, so call TinyUSB flush directly
+        tud_vendor_n_write_flush(0);
+    }
+#endif
 }
 
 // ============================================================
@@ -609,7 +609,24 @@ bool SwitchProUSB::write() {
     return true;
 }
 
+#if CONFIG_TINYUSB_VENDOR_ENABLED
+void SwitchProUSB::pollVendorRx() {
+    if (!_vendor) return;
+    int avail = _vendor->available();
+    if (avail <= 0) return;
+    // Read all available bytes (vendor commands are max 64 bytes)
+    uint8_t buf[64];
+    size_t count = _vendor->read(buf, sizeof(buf));
+    if (count > 0) {
+        onVendorRx(buf, static_cast<uint16_t>(count));
+    }
+}
+#endif
+
 void SwitchProUSB::loop() {
+#if CONFIG_TINYUSB_VENDOR_ENABLED
+    pollVendorRx();
+#endif
     flushPendingReplies();
 
     // --- USB state diagnostics (periodic, every 5 seconds) ---
@@ -636,8 +653,8 @@ void SwitchProUSB::loop() {
 
     if (millis() - lastDiagMs >= 5000) {
         lastDiagMs = millis();
-        Serial.printf("[Switch2Pro] USB state: mounted=%d suspended=%d hidEnabled=%d reportsSent=%d\n",
-                      mounted, tud_suspended(), _hidOutputEnabled, _timer);
+        Serial.printf("[Switch2Pro] USB state: mounted=%d suspended=%d hidEnabled=%d vendorCmds=%d reportsSent=%d\n",
+                      mounted, tud_suspended(), _hidOutputEnabled, _vendorCmdCount, _timer);
 
         // Dump descriptor verification once after mount
         if (mounted && !descriptorDumped) {

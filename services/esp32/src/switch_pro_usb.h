@@ -6,6 +6,10 @@
 #include "USB.h"
 #include "USBHID.h"
 
+#if CONFIG_TINYUSB_VENDOR_ENABLED
+class USBVendor;  // forward declaration (avoid including USBVendor.h → tusb.h here)
+#endif
+
 #if CONFIG_TINYUSB_HID_ENABLED
 
 // ============================================================
@@ -108,8 +112,12 @@ public:
     bool isConnected() const;
 
     // --- Vendor Bulk Interface 1 ---
-    // Called from the TinyUSB vendor class rx callback when the Switch
-    // console sends init commands via Bulk OUT (EP 0x02).
+    // Set the USBVendor interface for polling vendor bulk data.
+    // The USBVendor instance is created in usb_hid_bridge.cpp.
+#if CONFIG_TINYUSB_VENDOR_ENABLED
+    void setVendorInterface(USBVendor* vendor) { _vendor = vendor; }
+#endif
+    // Called when vendor bulk data is received from the host.
     void onVendorRx(const uint8_t* data, uint16_t len);
 
     // USBHIDDevice overrides
@@ -158,6 +166,11 @@ private:
     // behavior: only send Report 0x09 after _hidOutputEnabled is set.
     bool _hidOutputEnabled = false;
     uint8_t _vendorCmdCount = 0;
+
+#if CONFIG_TINYUSB_VENDOR_ENABLED
+    USBVendor* _vendor = nullptr;
+    void pollVendorRx();
+#endif
 };
 
 // Global pointer for the linker --wrap callbacks.

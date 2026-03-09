@@ -10,6 +10,10 @@
 #if CONFIG_TINYUSB_ENABLED
 #include "tusb.h"
 #endif
+
+#if CONFIG_TINYUSB_VENDOR_ENABLED
+#include "USBVendor.h"
+#endif
 #endif
 
 namespace UsbHidBridge {
@@ -23,6 +27,9 @@ USBHIDMouse* mouse = nullptr;
 USBHIDGamepad* gamepad = nullptr;
 #if CONFIG_TINYUSB_HID_ENABLED
 SwitchProUSB* switchProUsb = nullptr;
+#if CONFIG_TINYUSB_VENDOR_ENABLED
+USBVendor* vendorBulk = nullptr;
+#endif
 #endif
 #endif
 bool initialized = false;
@@ -69,7 +76,17 @@ void init() {
         switchProUsb = new SwitchProUSB();
         g_switchProUsbDevice = switchProUsb;  // expose for --wrap callback
         switchProUsb->begin();
-        Serial.println("[USB] Switch Pro Controller USB mode initialized");
+#if CONFIG_TINYUSB_VENDOR_ENABLED
+        // USBVendor constructor calls tinyusb_enable_interface(USB_INTERFACE_VENDOR)
+        // which registers the vendor interface with the framework. Without this,
+        // TinyUSB never opens the vendor bulk endpoints (EP 0x02/0x82).
+        vendorBulk = new USBVendor();
+        vendorBulk->begin();
+        switchProUsb->setVendorInterface(vendorBulk);
+        Serial.println("[USB] Switch Pro Controller USB mode initialized (HID + Vendor Bulk)");
+#else
+        Serial.println("[USB] Switch Pro Controller USB mode initialized (HID only)");
+#endif
     } else {
 #if CONFIG_TINYUSB_ENABLED
         USB.manufacturerName("ChromaCatch");

@@ -13,38 +13,17 @@
 
 #include <stdint.h>
 
-// CONFIG_TINYUSB_VENDOR_ENABLED is set by platformio.ini build_flags for esp32s3.
-// On esp32 builds this file compiles to nothing.
-#if defined(CONFIG_TINYUSB_VENDOR_ENABLED) && CONFIG_TINYUSB_VENDOR_ENABLED
-
-// These are the actual linker symbols for the TinyUSB vendor class.
-// The non-_n names (tud_vendor_read etc.) are inline wrappers in vendor_device.h
-// that we can't include here.
-extern "C" {
-    uint32_t tud_vendor_n_read(uint8_t itf, void* buffer, uint32_t bufsize);
-}
-
-// C-linkage bridge function defined in switch_pro_usb.cpp.
-// Forwards vendor bulk data to SwitchProUSB::onVendorRx() without
-// requiring us to include switch_pro_usb.h (which pulls in tusb.h).
-extern "C" void switch_pro_vendor_bridge_rx(const uint8_t* data, uint16_t len);
-
-extern "C" {
-    // Called when the Switch console sends data on Bulk OUT (EP 0x02).
-    // The Switch sends 18+ init commands during controller setup.
-    void tud_vendor_rx_cb(uint8_t itf) {
-        uint8_t buf[64];
-        uint32_t count = tud_vendor_n_read(itf, buf, sizeof(buf));
-        if (count > 0) {
-            switch_pro_vendor_bridge_rx(buf, static_cast<uint16_t>(count));
-        }
-    }
-
-    // Called when our ACK response has been sent on Bulk IN (EP 0x82).
-    void tud_vendor_tx_cb(uint8_t itf, uint32_t sent_bytes) {
-        (void)itf;
-        (void)sent_bytes;
-    }
-}
-
-#endif  // CONFIG_TINYUSB_VENDOR_ENABLED
+// DISABLED: Using Arduino's USBVendor class instead.
+// The framework's USBVendor.cpp provides tud_vendor_rx_cb. Creating a
+// USBVendor instance also registers the vendor interface with the framework
+// via tinyusb_enable_interface(), which is the ONLY way to get the framework
+// to open the vendor bulk endpoints in TinyUSB's DCD layer.
+//
+// Our previous approach (defining tud_vendor_rx_cb here + --wrap for the
+// config descriptor) failed because the framework never called
+// tinyusb_enable_interface() for vendor, so the vendor class driver's
+// endpoints were never opened internally — even though the host saw them
+// in the descriptor we served via --wrap.
+//
+// Vendor data is now polled via USBVendor::available()/read() in
+// SwitchProUSB::loop(), which runs at 4ms cadence.
