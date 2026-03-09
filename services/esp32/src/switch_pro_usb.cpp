@@ -10,26 +10,6 @@
 SwitchProUSB* g_switchProUsbDevice = nullptr;
 
 // ============================================================
-// Static device descriptor — Pro Controller VID/PID identity.
-//
-// We only override the device descriptor (VID/PID/strings) via
-// --wrap. The config descriptor and BOS are left to Arduino/
-// TinyUSB because they must match the actual endpoint allocation
-// done by the HID class driver internally.
-// ============================================================
-static const uint8_t s_deviceDesc[18] = {
-    18, 0x01,           // bLength, bDescriptorType = DEVICE
-    0x00, 0x02,         // bcdUSB = 0x0200 (USB 2.0 LE)
-    0x00, 0x00, 0x00,   // bDeviceClass/SubClass/Protocol = 0
-    64,                  // bMaxPacketSize0
-    0x5E, 0x07,         // idVendor = 0x057E (LE)
-    0x09, 0x20,         // idProduct = 0x2009 (LE)
-    0x00, 0x02,         // bcdDevice = 0x0200 (LE)
-    0x01, 0x02, 0x00,   // iManufacturer=1, iProduct=2, iSerialNumber=0
-    0x01,               // bNumConfigurations = 1
-};
-
-// ============================================================
 // Pro Controller HID descriptor — identical to the BT descriptor
 // used by the real Pro Controller and Pokemon Automation.
 // ============================================================
@@ -144,20 +124,21 @@ static const uint8_t kProControllerDescriptor[] = {
 };
 
 // ============================================================
-// Linker --wrap overrides for TinyUSB callbacks.
+// Linker --wrap override for tud_hid_set_report_cb
 //
-// Safe to override: device descriptor (VID/PID presentation),
-//   HID report descriptor, and report callback (0x80 routing).
-// NOT safe to override: config descriptor (must match TinyUSB's
-//   internal endpoint allocation) and BOS (NULL crashes stack).
+// The Arduino USBHID layer only routes output reports whose
+// report ID appears in the HID descriptor. The Pro Controller's
+// USB handshake uses report ID 0x80 / 0x81, which are NOT in the
+// HID descriptor (same as the real controller). Without this
+// wrapper the 0x80 handshake from the Switch is silently dropped
+// and the controller is never recognised.
 //
-// Build flags:
-//   -Wl,--wrap=tud_hid_set_report_cb
-//   -Wl,--wrap=tud_descriptor_device_cb
-//   -Wl,--wrap=tud_hid_descriptor_report_cb
+// VID/PID are set via USB.VID() / USB.PID() in the constructor.
+// HID report descriptor is returned via _onGetDescriptor().
+//
+// Build flag: -Wl,--wrap=tud_hid_set_report_cb
 // ============================================================
 extern "C" {
-    // --- Report callback wrap (routes 0x80 handshake) ---
     void __real_tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
                                        hid_report_type_t report_type,
                                        uint8_t const* buffer, uint16_t bufsize);
@@ -177,22 +158,6 @@ extern "C" {
             return;
         }
         __real_tud_hid_set_report_cb(instance, report_id, report_type, buffer, bufsize);
-    }
-
-    // --- Device descriptor wrap (Pro Controller VID/PID) ---
-    uint8_t const* __real_tud_descriptor_device_cb(void);
-
-    uint8_t const* __wrap_tud_descriptor_device_cb(void) {
-        if (g_switchProUsbDevice) return s_deviceDesc;
-        return __real_tud_descriptor_device_cb();
-    }
-
-    // --- HID report descriptor wrap ---
-    uint8_t const* __real_tud_hid_descriptor_report_cb(uint8_t instance);
-
-    uint8_t const* __wrap_tud_hid_descriptor_report_cb(uint8_t instance) {
-        if (g_switchProUsbDevice) return kProControllerDescriptor;
-        return __real_tud_hid_descriptor_report_cb(instance);
     }
 }
 

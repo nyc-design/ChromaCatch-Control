@@ -336,7 +336,7 @@ function handleResponse(data) {
   try {
     const obj = JSON.parse(data);
     if (obj.type === 'hello' || obj.mode) {
-      const mode = obj.mode || obj.legacy_mode;
+      const mode = obj.mode;
       if (mode) setActiveMode(mode);
     }
     if (obj.type === 'ack') {

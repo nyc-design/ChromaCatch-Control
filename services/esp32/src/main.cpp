@@ -1725,7 +1725,7 @@ void executeCommand(JsonDocument& doc, JsonDocument& response, CommandSource sou
     String action = doc["action"].as<String>();
     response["action"] = action;
     response["mode"] = emulationModeToString(currentEmulationMode);
-    response["legacy_mode"] = modeToString(currentMode);
+
     response["input_policy"] = inputPolicyToString(inputPolicy);
     if (source == SOURCE_WIRED) response["source"] = "wired";
     else if (source == SOURCE_WEBSOCKET) response["source"] = "websocket";
@@ -1891,7 +1891,7 @@ void handleStatus() {
     doc["ble_mode_scoped_mac"] = getModeSpecificBleMacString();
     doc["ip"] = WiFi.localIP().toString();
     doc["mode"] = emulationModeToString(currentEmulationMode);
-    doc["legacy_mode"] = modeToString(currentMode);
+
     doc["delivery_policy"] = deliveryPolicyToString(deliveryPolicy);
     doc["input_policy"] = inputPolicyToString(inputPolicy);
     doc["active_delivery"] = runtimeDeliveryToString(chooseRuntimeDelivery());
@@ -1925,7 +1925,7 @@ void handleStatus() {
 void handleGetMode() {
     JsonDocument doc;
     doc["mode"] = emulationModeToString(currentEmulationMode);
-    doc["legacy_mode"] = modeToString(currentMode);
+
     doc["delivery_policy"] = deliveryPolicyToString(deliveryPolicy);
     doc["input_policy"] = inputPolicyToString(inputPolicy);
     doc["ble_advertisement_name"] = getBleAdvertisementName();
@@ -2157,7 +2157,6 @@ void onWSEvent(uint8_t clientId, WStype_t type, uint8_t* payload, size_t length)
             hello["type"] = "hello";
             hello["status"] = "ok";
             hello["mode"] = emulationModeToString(currentEmulationMode);
-            hello["legacy_mode"] = modeToString(currentMode);
             hello["delivery_policy"] = deliveryPolicyToString(deliveryPolicy);
             hello["input_policy"] = inputPolicyToString(inputPolicy);
             hello["ble_advertisement_name"] = getBleAdvertisementName();
