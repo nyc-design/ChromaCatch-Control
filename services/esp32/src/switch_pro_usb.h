@@ -43,7 +43,6 @@ public:
 private:
     void sendInputReport(uint8_t reportId, const uint8_t* data, size_t len);
     void sendStandardInputReport();
-    void sendSimpleInputReport();
     void sendSubcommandReply(uint8_t subcmd, uint8_t ackByte, const uint8_t* data, size_t dataLen);
     void handleSpiFlashRead(const uint8_t* cmdData, uint16_t cmdLen);
     void handleUsbCommand(const uint8_t* data, uint16_t len);
@@ -62,7 +61,7 @@ private:
 
     // Reply queue: callbacks can't block, so buffer replies for loop() to flush.
     static constexpr size_t kMaxPending = 8;
-    static constexpr size_t kReportBufLen = 48;
+    static constexpr size_t kReportBufLen = 63;
     struct PendingReport {
         uint8_t reportId;
         uint8_t data[kReportBufLen];

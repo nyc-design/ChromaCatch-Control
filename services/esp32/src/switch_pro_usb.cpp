@@ -10,126 +10,134 @@
 SwitchProUSB* g_switchProUsbDevice = nullptr;
 
 // ============================================================
-// Pro Controller HID descriptor — identical to the BT descriptor
-// used by the real Pro Controller and Pokemon Automation.
+// Pro Controller USB HID descriptor — byte-for-byte match of the
+// real Nintendo Switch Pro Controller wired USB descriptor (203 bytes).
+// Source: https://gist.github.com/ToadKing/b883a8ccfa26adcc6ba9905e75aeb4f2
+//
+// NOTE: This is the USB descriptor, NOT the Bluetooth one.
+// The USB descriptor uses Joystick usage, vendor page 0xFF00,
+// 63-byte reports, and includes 0x80/0x81/0x82 report IDs.
 // ============================================================
 static const uint8_t kProControllerDescriptor[] = {
     0x05, 0x01,        // Usage Page (Generic Desktop)
-    0x09, 0x05,        // Usage (Game Pad)
+    0x15, 0x00,        // Logical Minimum (0)
+    0x09, 0x04,        // Usage (Joystick)
     0xA1, 0x01,        // Collection (Application)
 
-    // --- Vendor-defined input reports ---
-    0x06, 0x01, 0xFF,  //   Usage Page (Vendor Defined 0xFF01)
+    // --- Report ID 0x30: Standard full input report (63 bytes) ---
+    // HID-standard button/axis/hat layout for device enumeration.
+    // Actual data uses vendor-format (3-byte buttons + 12-bit sticks).
+    0x85, 0x30,                    //   Report ID (0x30)
+    0x05, 0x01,                    //   Usage Page (Generic Desktop)
+    0x05, 0x09,                    //   Usage Page (Button)
+    0x19, 0x01,                    //   Usage Minimum (1)
+    0x29, 0x0A,                    //   Usage Maximum (10)
+    0x15, 0x00,                    //   Logical Minimum (0)
+    0x25, 0x01,                    //   Logical Maximum (1)
+    0x75, 0x01,                    //   Report Size (1)
+    0x95, 0x0A,                    //   Report Count (10)
+    0x55, 0x00,                    //   Unit Exponent (0)
+    0x65, 0x00,                    //   Unit (None)
+    0x81, 0x02,                    //   Input (Data,Var,Abs)
+    0x05, 0x09,                    //   Usage Page (Button)
+    0x19, 0x0B,                    //   Usage Minimum (11)
+    0x29, 0x0E,                    //   Usage Maximum (14)
+    0x15, 0x00,                    //   Logical Minimum (0)
+    0x25, 0x01,                    //   Logical Maximum (1)
+    0x75, 0x01,                    //   Report Size (1)
+    0x95, 0x04,                    //   Report Count (4)
+    0x81, 0x02,                    //   Input (Data,Var,Abs)
+    0x75, 0x01,                    //   Report Size (1)
+    0x95, 0x02,                    //   Report Count (2) — padding
+    0x81, 0x03,                    //   Input (Const,Var,Abs)
+    0x0B, 0x01, 0x00, 0x01, 0x00, //   Usage (Generic Desktop: Pointer)
+    0xA1, 0x00,                    //   Collection (Physical)
+    0x0B, 0x30, 0x00, 0x01, 0x00, //     Usage (X)
+    0x0B, 0x31, 0x00, 0x01, 0x00, //     Usage (Y)
+    0x0B, 0x32, 0x00, 0x01, 0x00, //     Usage (Z)
+    0x0B, 0x35, 0x00, 0x01, 0x00, //     Usage (Rz)
+    0x15, 0x00,                    //     Logical Minimum (0)
+    0x27, 0xFF, 0xFF, 0x00, 0x00, //     Logical Maximum (65534)
+    0x75, 0x10,                    //     Report Size (16)
+    0x95, 0x04,                    //     Report Count (4)
+    0x81, 0x02,                    //     Input (Data,Var,Abs)
+    0xC0,                          //   End Collection
+    0x0B, 0x39, 0x00, 0x01, 0x00, //   Usage (Hat Switch)
+    0x15, 0x00,                    //   Logical Minimum (0)
+    0x25, 0x07,                    //   Logical Maximum (7)
+    0x35, 0x00,                    //   Physical Minimum (0)
+    0x46, 0x3B, 0x01,             //   Physical Maximum (315)
+    0x65, 0x14,                    //   Unit (Eng Rot: Degree)
+    0x75, 0x04,                    //   Report Size (4)
+    0x95, 0x01,                    //   Report Count (1)
+    0x81, 0x02,                    //   Input (Data,Var,Abs)
+    0x05, 0x09,                    //   Usage Page (Button)
+    0x19, 0x0F,                    //   Usage Minimum (15)
+    0x29, 0x12,                    //   Usage Maximum (18)
+    0x15, 0x00,                    //   Logical Minimum (0)
+    0x25, 0x01,                    //   Logical Maximum (1)
+    0x75, 0x01,                    //   Report Size (1)
+    0x95, 0x04,                    //   Report Count (4)
+    0x81, 0x02,                    //   Input (Data,Var,Abs)
+    0x75, 0x08,                    //   Report Size (8)
+    0x95, 0x34,                    //   Report Count (52) — padding/IMU
+    0x81, 0x03,                    //   Input (Const,Var,Abs)
 
-    // Report ID 0x21: Subcommand reply (48 bytes)
-    0x85, 0x21,        //   Report ID (0x21)
-    0x09, 0x21,        //   Usage (0x21)
-    0x75, 0x08,        //   Report Size (8)
-    0x95, 0x30,        //   Report Count (48)
-    0x81, 0x02,        //   Input (Data,Var,Abs)
+    // --- Vendor-defined reports (Usage Page 0xFF00) ---
+    0x06, 0x00, 0xFF,             //   Usage Page (Vendor Defined 0xFF00)
 
-    // Report ID 0x30: Standard full input report (48 bytes)
-    0x85, 0x30,        //   Report ID (0x30)
-    0x09, 0x30,        //   Usage (0x30)
-    0x75, 0x08,        //   Report Size (8)
-    0x95, 0x30,        //   Report Count (48)
-    0x81, 0x02,        //   Input (Data,Var,Abs)
+    // Report ID 0x21: Subcommand reply input (63 bytes)
+    0x85, 0x21,                    //   Report ID (0x21)
+    0x09, 0x01,                    //   Usage (0x01)
+    0x75, 0x08,                    //   Report Size (8)
+    0x95, 0x3F,                    //   Report Count (63)
+    0x81, 0x03,                    //   Input (Const,Var,Abs)
 
-    // Report ID 0x31: NFC/IR MCU FW update (361 bytes)
-    0x85, 0x31,        //   Report ID (0x31)
-    0x09, 0x31,        //   Usage (0x31)
-    0x75, 0x08,        //   Report Size (8)
-    0x96, 0x69, 0x01,  //   Report Count (361)
-    0x81, 0x02,        //   Input (Data,Var,Abs)
+    // Report ID 0x81: USB handshake reply input (63 bytes)
+    0x85, 0x81,                    //   Report ID (0x81)
+    0x09, 0x02,                    //   Usage (0x02)
+    0x75, 0x08,                    //   Report Size (8)
+    0x95, 0x3F,                    //   Report Count (63)
+    0x81, 0x03,                    //   Input (Const,Var,Abs)
 
-    // Report ID 0x32 (361 bytes)
-    0x85, 0x32,        //   Report ID (0x32)
-    0x09, 0x32,        //   Usage (0x32)
-    0x75, 0x08,        //   Report Size (8)
-    0x96, 0x69, 0x01,  //   Report Count (361)
-    0x81, 0x02,        //   Input (Data,Var,Abs)
+    // Report ID 0x01: Subcommand output (63 bytes)
+    0x85, 0x01,                    //   Report ID (0x01)
+    0x09, 0x03,                    //   Usage (0x03)
+    0x75, 0x08,                    //   Report Size (8)
+    0x95, 0x3F,                    //   Report Count (63)
+    0x91, 0x83,                    //   Output (Const,Var,Abs,Volatile)
 
-    // Report ID 0x33 (361 bytes)
-    0x85, 0x33,        //   Report ID (0x33)
-    0x09, 0x33,        //   Usage (0x33)
-    0x75, 0x08,        //   Report Size (8)
-    0x96, 0x69, 0x01,  //   Report Count (361)
-    0x81, 0x02,        //   Input (Data,Var,Abs)
+    // Report ID 0x10: Rumble output (63 bytes)
+    0x85, 0x10,                    //   Report ID (0x10)
+    0x09, 0x04,                    //   Usage (0x04)
+    0x75, 0x08,                    //   Report Size (8)
+    0x95, 0x3F,                    //   Report Count (63)
+    0x91, 0x83,                    //   Output (Const,Var,Abs,Volatile)
 
-    // Report ID 0x3F: Simple button report (used during initial pairing)
-    // 16 buttons + hat + 4 analog sticks (16-bit each)
-    0x85, 0x3F,        //   Report ID (0x3F)
-    0x05, 0x09,        //   Usage Page (Button)
-    0x19, 0x01,        //   Usage Minimum (1)
-    0x29, 0x10,        //   Usage Maximum (16)
-    0x15, 0x00,        //   Logical Minimum (0)
-    0x25, 0x01,        //   Logical Maximum (1)
-    0x75, 0x01,        //   Report Size (1)
-    0x95, 0x10,        //   Report Count (16)
-    0x81, 0x02,        //   Input (Data,Var,Abs)
-    0x05, 0x01,        //   Usage Page (Generic Desktop)
-    0x09, 0x39,        //   Usage (Hat Switch)
-    0x15, 0x00,        //   Logical Minimum (0)
-    0x25, 0x07,        //   Logical Maximum (7)
-    0x75, 0x04,        //   Report Size (4)
-    0x95, 0x01,        //   Report Count (1)
-    0x81, 0x42,        //   Input (Data,Var,Abs,Null)
-    0x05, 0x09,        //   Usage Page (Button)
-    0x75, 0x04,        //   Report Size (4)
-    0x95, 0x01,        //   Report Count (1)
-    0x81, 0x01,        //   Input (Const)
-    0x05, 0x01,        //   Usage Page (Generic Desktop)
-    0x09, 0x30,        //   Usage (X)
-    0x09, 0x31,        //   Usage (Y)
-    0x09, 0x33,        //   Usage (Rx)
-    0x09, 0x34,        //   Usage (Ry)
-    0x16, 0x00, 0x00,  //   Logical Minimum (0)
-    0x27, 0xFF, 0xFF, 0x00, 0x00, // Logical Maximum (65535)
-    0x75, 0x10,        //   Report Size (16)
-    0x95, 0x04,        //   Report Count (4)
-    0x81, 0x02,        //   Input (Data,Var,Abs)
+    // Report ID 0x80: USB handshake output (63 bytes)
+    0x85, 0x80,                    //   Report ID (0x80)
+    0x09, 0x05,                    //   Usage (0x05)
+    0x75, 0x08,                    //   Report Size (8)
+    0x95, 0x3F,                    //   Report Count (63)
+    0x91, 0x83,                    //   Output (Const,Var,Abs,Volatile)
 
-    // --- Vendor-defined output reports ---
-    0x06, 0x01, 0xFF,  //   Usage Page (Vendor Defined 0xFF01)
+    // Report ID 0x82: USB handshake output 2 (63 bytes)
+    0x85, 0x82,                    //   Report ID (0x82)
+    0x09, 0x06,                    //   Usage (0x06)
+    0x75, 0x08,                    //   Report Size (8)
+    0x95, 0x3F,                    //   Report Count (63)
+    0x91, 0x83,                    //   Output (Const,Var,Abs,Volatile)
 
-    // Report ID 0x01: Subcommand (48 bytes)
-    0x85, 0x01,        //   Report ID (0x01)
-    0x09, 0x01,        //   Usage (0x01)
-    0x75, 0x08,        //   Report Size (8)
-    0x95, 0x30,        //   Report Count (48)
-    0x91, 0x02,        //   Output (Data,Var,Abs)
-
-    // Report ID 0x10: Rumble (48 bytes — must match real Pro Controller descriptor)
-    0x85, 0x10,        //   Report ID (0x10)
-    0x09, 0x10,        //   Usage (0x10)
-    0x75, 0x08,        //   Report Size (8)
-    0x95, 0x30,        //   Report Count (48)
-    0x91, 0x02,        //   Output (Data,Var,Abs)
-
-    // Report ID 0x11 (48 bytes)
-    0x85, 0x11,        //   Report ID (0x11)
-    0x09, 0x11,        //   Usage (0x11)
-    0x75, 0x08,        //   Report Size (8)
-    0x95, 0x30,        //   Report Count (48)
-    0x91, 0x02,        //   Output (Data,Var,Abs)
-
-    // Report ID 0x12 (48 bytes)
-    0x85, 0x12,        //   Report ID (0x12)
-    0x09, 0x12,        //   Usage (0x12)
-    0x75, 0x08,        //   Report Size (8)
-    0x95, 0x30,        //   Report Count (48)
-    0x91, 0x02,        //   Output (Data,Var,Abs)
-
-    0xC0,              // End Collection
+    0xC0,                          // End Collection
 };
 
 // ============================================================
 // Linker --wrap overrides for Pro Controller USB
 //
-// 1) tud_hid_set_report_cb: Route 0x80 handshake reports to our
-//    handler. Arduino USBHID only routes report IDs that appear in
-//    the HID descriptor, but the Pro Controller 0x80/0x81 handshake
-//    uses vendor-specific report IDs (same as the real controller).
+// 1) tud_hid_set_report_cb: Safety net for 0x80 reports. The 0x80
+//    report ID is now in the HID descriptor so TinyUSB should route
+//    it natively, but some hosts send it without a report_id prefix
+//    (raw SET_REPORT with report_id=0). The wrap catches that case.
 //
 // 2) tud_descriptor_bos_cb: Return a minimal empty BOS descriptor.
 //    Arduino/TinyUSB generates a BOS with WebUSB + MS OS descriptors
@@ -241,8 +249,9 @@ static const uint8_t kSpiUserMotionCal[24] = {
     0x3B, 0x34, 0x3B, 0x34, 0x3B, 0x34,
 };
 
-// Report body size: 48 bytes (report ID sent separately by TinyUSB)
-static constexpr size_t kReportLen = 48;
+// Report body size: 63 bytes (report ID sent separately by TinyUSB).
+// All USB Pro Controller reports are 63 bytes per the HID descriptor.
+static constexpr size_t kReportLen = 63;
 
 // ============================================================
 // Constructor / begin / end
@@ -309,8 +318,8 @@ void SwitchProUSB::_onOutput(uint8_t report_id, const uint8_t* buffer, uint16_t 
 
 // ============================================================
 // USB-specific 0x80 command handler
-// Not in the HID descriptor (handled at USB level), but some
-// Switch firmware versions send it. Handle gracefully.
+// Report ID 0x80 is in the USB HID descriptor as a vendor output.
+// The Switch sends 0x80 commands during the USB handshake.
 // ============================================================
 void SwitchProUSB::handleUsbCommand(const uint8_t* data, uint16_t len) {
     if (len < 1) return;
@@ -434,11 +443,11 @@ void SwitchProUSB::handleSpiFlashRead(const uint8_t* data, uint16_t len) {
     uint32_t addr = static_cast<uint32_t>(data[10]) | (static_cast<uint32_t>(data[11]) << 8) |
                     (static_cast<uint32_t>(data[12]) << 16) | (static_cast<uint32_t>(data[13]) << 24);
     uint8_t reqLen = data[14];
-    if (reqLen > 29) reqLen = 29;
+    if (reqLen > 44) reqLen = 44;  // max data in 63-byte report: 63 - 14 (header) - 5 (SPI header) = 44
 
     Serial.printf("[SwitchProUSB] SPI read 0x%04X len=%d\n", addr, reqLen);
 
-    uint8_t resp[34] = {0};
+    uint8_t resp[49] = {0};  // 5 (SPI header) + up to 44 data bytes
     resp[0] = addr & 0xFF;
     resp[1] = (addr >> 8) & 0xFF;
     resp[2] = (addr >> 16) & 0xFF;
@@ -561,37 +570,9 @@ void SwitchProUSB::sendStandardInputReport() {
     sendInputReport(0x30, payload, sizeof(payload));
 }
 
-// ============================================================
-// 0x3F simple button report — sent during initial pairing
-// before the 0x80 USB handshake completes.
-// Format from the HID descriptor:
-//   16 buttons (2 bytes) + hat (4 bits + 4 pad) + 4 axes (16-bit each)
-//   Total: 11 bytes
-// ============================================================
-void SwitchProUSB::sendSimpleInputReport() {
-    uint8_t payload[11];
-    memset(payload, 0, sizeof(payload));
-
-    // 16 buttons packed into 2 bytes (same NSGamepad bit order)
-    payload[0] = _buttons & 0xFF;
-    payload[1] = (_buttons >> 8) & 0xFF;
-
-    // Hat switch (4 bits) + 4 bits padding
-    // Our _dpad is already in 0-7 / 0x0F (centered) format
-    payload[2] = (_dpad == 0x0F) ? 0x08 : _dpad;  // 0x08 = centered in 0x3F hat
-
-    // 4 analog axes as 16-bit LE (center = 0x8000)
-    uint16_t lx16 = static_cast<uint16_t>(_lx) << 8;
-    uint16_t ly16 = static_cast<uint16_t>(_ly) << 8;
-    uint16_t rx16 = static_cast<uint16_t>(_rx) << 8;
-    uint16_t ry16 = static_cast<uint16_t>(_ry) << 8;
-    payload[3] = lx16 & 0xFF; payload[4] = (lx16 >> 8) & 0xFF;
-    payload[5] = ly16 & 0xFF; payload[6] = (ly16 >> 8) & 0xFF;
-    payload[7] = rx16 & 0xFF; payload[8] = (rx16 >> 8) & 0xFF;
-    payload[9] = ry16 & 0xFF; payload[10] = (ry16 >> 8) & 0xFF;
-
-    sendInputReport(0x3F, payload, sizeof(payload));
-}
+// Note: 0x3F simple report is NOT part of the USB descriptor.
+// It exists only in the Bluetooth descriptor. Over USB, the Switch
+// initiates the 0x80 handshake directly — no pre-handshake reports needed.
 
 void SwitchProUSB::sendSubcommandReply(uint8_t subcmd, uint8_t ackByte, const uint8_t* data, size_t dataLen) {
     uint8_t buf[kReportLen];
@@ -679,19 +660,15 @@ void SwitchProUSB::loop() {
         _pendingDpad = 0xFF;
     }
 
-    // Two-phase reporting:
-    // Phase 1 (pre-handshake): Send 0x3F simple reports so the Switch
-    //   recognises us as a Pro Controller and initiates the 0x80 handshake.
-    // Phase 2 (post-handshake): Send 0x30 full reports at ~8ms cadence.
-    uint32_t cadence = _connected ? 8 : 16;
-    if (millis() - _lastReportMs < cadence) return;
+    // Over USB, the Switch initiates the 0x80 handshake first.
+    // Before handshake: do nothing (no 0x3F — it's BT-only).
+    // After handshake: send 0x30 full reports at ~8ms cadence.
+    if (!_connected) return;
+
+    if (millis() - _lastReportMs < 8) return;
     _lastReportMs = millis();
 
-    if (_connected) {
-        sendStandardInputReport();
-    } else {
-        sendSimpleInputReport();
-    }
+    sendStandardInputReport();
 }
 
 #endif  // CONFIG_TINYUSB_HID_ENABLED
