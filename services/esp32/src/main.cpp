@@ -81,6 +81,15 @@ const int EPD_ROTATION = 1; // landscape rotated layout
 const unsigned long WIRED_PRIORITY_WINDOW_MS = 250;
 const unsigned long WS_PRIORITY_WINDOW_MS = 200;
 
+// Forward declarations for TinyUSB descriptor callbacks (used by dump_usb debug command)
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+extern "C" {
+    uint8_t const* tud_descriptor_device_cb(void);
+    uint8_t const* tud_descriptor_configuration_cb(uint8_t index);
+    uint8_t const* __wrap_tud_descriptor_bos_cb(void);
+}
+#endif
+
 // Board capabilities
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
 constexpr bool BOARD_IS_ESP32S3 = true;
@@ -1807,7 +1816,6 @@ void executeCommand(JsonDocument& doc, JsonDocument& response, CommandSource sou
         response["config_descriptor"] = cfgHex;
 
         // BOS descriptor (via the wrapped callback)
-        extern "C" uint8_t const* __wrap_tud_descriptor_bos_cb(void);
         uint8_t const* bosDesc = __wrap_tud_descriptor_bos_cb();
         uint16_t bosLen = bosDesc[2] | (bosDesc[3] << 8);
         if (bosLen > 64) bosLen = 64;
