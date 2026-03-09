@@ -97,8 +97,11 @@ void init() {
 #endif
 
 #if CONFIG_TINYUSB_ENABLED
-    USB.begin();
-    Serial.printf("[USB] USB.begin() done, profile=%d\n", gamepadProfile);
+    bool usbOk = USB.begin();
+    Serial.printf("[USB] USB.begin() %s, profile=%d\n", usbOk ? "OK" : "FAILED", gamepadProfile);
+    if (!usbOk) {
+        Serial.println("[USB] ERROR: TinyUSB failed to start — check USB PHY and ARDUINO_USB_MODE");
+    }
 #endif
 #endif
 

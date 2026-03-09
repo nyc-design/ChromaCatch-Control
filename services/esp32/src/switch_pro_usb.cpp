@@ -463,22 +463,25 @@ void SwitchProUSB::_onOutput(uint8_t report_id, const uint8_t* buffer, uint16_t 
 // ============================================================
 // Report 0x09 builder and sender
 //
-// Exact match of the real Switch 2 Pro Controller report layout
-// as documented in joypad-os switch2_pro.h:
+// Verified against joycon2cpp (TheFrano/joycon2cpp) which reads
+// the real Switch 2 Pro Controller on Windows via HID API.
 //
-//   Offset 0:     Counter (uint8_t, increments each report)
-//   Offset 1:     Fixed vendor byte (0x00)
-//   Offset 2:     Buttons byte 3: B(0), A(1), Y(2), X(3), R(4), ZR(5), +(6), R3(7)
-//   Offset 3:     Buttons byte 4: DD(0), DR(1), DL(2), DU(3), L(4), ZL(5), -(6), L3(7)
-//   Offset 4:     Buttons byte 5: Home(0), Capture(1), R4(2), L4(3), Square(4), pad(5-7)
-//   Offset 5-7:   Left stick  (packed 12-bit X[11:0], Y[11:0])
-//   Offset 8-10:  Right stick (packed 12-bit X[11:0], Y[11:0])
-//   Offset 11-62: IMU/vendor data (52 bytes, zeroed — no IMU emulation)
+// Payload offsets (63 bytes, report ID 0x09 sent separately):
+//   [0]      Counter (uint8_t, increments each report)
+//   [1]      Fixed vendor/status byte (0x00)
+//   [2]      Status byte (0x00)
+//   [3]      Buttons A: Y(0), X(1), B(2), A(3), ?(4), ?(5), R(6), ZR(7)
+//   [4]      Buttons B: -(0), +(1), R3(2), L3(3), Home(4), Cap(5), R4(6), L4(7)
+//   [5]      Buttons C: DD(0), DU(1), DR(2), DL(3), ?(4), ?(5), L(6), ZL(7)
+//   [6-8]    Reserved (zeroed)
+//   [9-11]   Left stick  (packed 12-bit X, Y)
+//   [12-14]  Right stick (packed 12-bit X, Y)
+//   [15-62]  Vendor data (zeroed — optical mouse, IMU, etc.)
 //
-// 12-bit stick packing (matches real controller):
-//   stick[0] = X[7:0]
-//   stick[1] = Y[3:0] << 4 | X[11:8]
-//   stick[2] = Y[11:4]
+// 12-bit stick packing:
+//   byte[0] = X[7:0]
+//   byte[1] = Y[3:0] << 4 | X[11:8]
+//   byte[2] = Y[11:4]
 //
 // Stick center: 0x80 → 0x800 (2048) in 12-bit space
 // ============================================================
@@ -486,17 +489,20 @@ void SwitchProUSB::sendReport09() {
     uint8_t payload[kReportLen];
     memset(payload, 0, sizeof(payload));
 
-    // Byte 0: incrementing counter
+    // [0]: incrementing counter
     payload[0] = _timer++;
 
-    // Byte 1: fixed vendor byte
+    // [1-2]: vendor/status bytes
     payload[1] = 0x00;
+    payload[2] = 0x00;
 
-    // Bytes 2-4: 21 buttons + 3 bits padding
-    // _buttons bits 0-20 map directly to the report bitfield.
-    payload[2] = static_cast<uint8_t>(_buttons & 0xFF);
-    payload[3] = static_cast<uint8_t>((_buttons >> 8) & 0xFF);
-    payload[4] = static_cast<uint8_t>((_buttons >> 16) & 0x1F);
+    // [3-5]: 3 button bytes — bits map directly from _buttons word
+    // _buttons bits 0-7 → payload[3], bits 8-15 → payload[4], bits 16-23 → payload[5]
+    payload[3] = static_cast<uint8_t>(_buttons & 0xFF);
+    payload[4] = static_cast<uint8_t>((_buttons >> 8) & 0xFF);
+    payload[5] = static_cast<uint8_t>((_buttons >> 16) & 0xFF);
+
+    // [6-8]: reserved (zeroed)
 
     // Scale 8-bit (0x00-0xFF) to 12-bit (0x000-0xFF0)
     // Center: 0x80 → 0x800 (2048) — matches real controller center
@@ -505,17 +511,17 @@ void SwitchProUSB::sendReport09() {
     uint16_t rx12 = static_cast<uint16_t>(_rx) << 4;
     uint16_t ry12 = static_cast<uint16_t>(_ry) << 4;
 
-    // Pack left stick (12-bit X, 12-bit Y) into 3 bytes
-    payload[5] = lx12 & 0xFF;
-    payload[6] = ((lx12 >> 8) & 0x0F) | ((ly12 & 0x0F) << 4);
-    payload[7] = (ly12 >> 4) & 0xFF;
+    // [9-11]: left stick (12-bit X, 12-bit Y packed into 3 bytes)
+    payload[9]  = lx12 & 0xFF;
+    payload[10] = ((lx12 >> 8) & 0x0F) | ((ly12 & 0x0F) << 4);
+    payload[11] = (ly12 >> 4) & 0xFF;
 
-    // Pack right stick (12-bit X, 12-bit Y) into 3 bytes
-    payload[8]  = rx12 & 0xFF;
-    payload[9]  = ((rx12 >> 8) & 0x0F) | ((ry12 & 0x0F) << 4);
-    payload[10] = (ry12 >> 4) & 0xFF;
+    // [12-14]: right stick (12-bit X, 12-bit Y packed into 3 bytes)
+    payload[12] = rx12 & 0xFF;
+    payload[13] = ((rx12 >> 8) & 0x0F) | ((ry12 & 0x0F) << 4);
+    payload[14] = (ry12 >> 4) & 0xFF;
 
-    // Bytes 11-62: IMU/vendor suffix (zeroed — no IMU emulation)
+    // [15-62]: vendor data (optical mouse, IMU, etc.) — zeroed
 
     trySendReport(0x09, payload, sizeof(payload));
 }
@@ -599,7 +605,7 @@ void SwitchProUSB::release(uint8_t b) {
 }
 
 void SwitchProUSB::setFullState(uint32_t buttons, uint8_t lx, uint8_t ly, uint8_t rx, uint8_t ry) {
-    _buttons = buttons & ((1UL << SW2_BTN_COUNT) - 1);
+    _buttons = buttons & 0x00FFFFFF;  // 24 bits (3 button bytes)
     _lx = lx;
     _ly = ly;
     _rx = rx;
@@ -624,15 +630,37 @@ bool SwitchProUSB::write() {
 void SwitchProUSB::loop() {
     flushPendingReplies();
 
-    // One-time log when USB mount is detected
+    // --- USB state diagnostics (periodic, every 5 seconds) ---
+    static uint32_t lastDiagMs = 0;
     static bool mountLogged = false;
-    if (!mountLogged && tud_mounted()) {
+    static uint32_t mountTimeMs = 0;
+
+    bool mounted = tud_mounted();
+
+    if (!mountLogged && mounted) {
         mountLogged = true;
-        Serial.println("[Switch2Pro] USB mounted — waiting for host init (0x03/0x0D)");
+        mountTimeMs = millis();
+        Serial.println("[Switch2Pro] USB mounted — waiting for host vendor init (0x03/0x0D)");
     }
-    if (mountLogged && !tud_mounted()) {
+    if (mountLogged && !mounted) {
         mountLogged = false;
+        mountTimeMs = 0;
+        _hidOutputEnabled = false;
         Serial.println("[Switch2Pro] USB unmounted");
+    }
+
+    if (millis() - lastDiagMs >= 5000) {
+        lastDiagMs = millis();
+        Serial.printf("[Switch2Pro] USB state: mounted=%d suspended=%d hidEnabled=%d vendorCmds=%d\n",
+                      mounted, tud_suspended(), _hidOutputEnabled, _vendorCmdCount);
+    }
+
+    // Auto-enable HID output after 10 seconds if mounted but no vendor init
+    // received. This helps diagnose whether the Switch is even enumerating us.
+    if (mounted && !_hidOutputEnabled && mountTimeMs > 0 &&
+        (millis() - mountTimeMs >= 10000)) {
+        _hidOutputEnabled = true;
+        Serial.println("[Switch2Pro] AUTO-ENABLED HID output (no vendor init after 10s)");
     }
 
     // Don't send any HID reports until the host enables output via
