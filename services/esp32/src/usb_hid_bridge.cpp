@@ -225,7 +225,8 @@ void gamepadHat(uint8_t hat) {
 #if CONFIG_TINYUSB_HID_ENABLED
     if (gamepadProfile == USB_GAMEPAD_PROFILE_SWITCH_PRO && switchProUsb) {
         // USB_HAT_* uses 0=center, 1-8=directions (1-indexed).
-        // SwitchProUSB expects standard HID hat: 0-7=directions, 0x0F=center.
+        // SwitchProUSB::dPad() expects 0-7=directions, 0x0F=center.
+        // It converts hat to individual SW2_BTN_D* bits internally.
         uint8_t stdHat = (hat == 0) ? 0x0F : (hat - 1);
         switchProUsb->dPad(stdHat);
         return;
@@ -277,13 +278,40 @@ void gamepadSetFullState(uint16_t buttons, uint8_t hat, uint8_t lx, uint8_t ly, 
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
 #if CONFIG_TINYUSB_HID_ENABLED
     if (gamepadProfile == USB_GAMEPAD_PROFILE_SWITCH_PRO && switchProUsb) {
-        switchProUsb->buttons(buttons);
-        switchProUsb->dPad(hat);
-        switchProUsb->leftXAxis(lx);
-        switchProUsb->leftYAxis(ly);
-        switchProUsb->rightXAxis(rx);
-        switchProUsb->rightYAxis(ry);
-        switchProUsb->write();
+        // Remap PA wired button format (Y=b0,B=b1,...Cap=b13) to
+        // Switch 2 Pro report bitfield (SW2_BTN_* positions).
+        uint32_t sw2 = 0;
+        // PA byte 0: Y=b0, B=b1, A=b2, X=b3, L=b4, R=b5, ZL=b6, ZR=b7
+        if (buttons & (1 << 0))  sw2 |= (1UL << SW2_BTN_Y);
+        if (buttons & (1 << 1))  sw2 |= (1UL << SW2_BTN_B);
+        if (buttons & (1 << 2))  sw2 |= (1UL << SW2_BTN_A);
+        if (buttons & (1 << 3))  sw2 |= (1UL << SW2_BTN_X);
+        if (buttons & (1 << 4))  sw2 |= (1UL << SW2_BTN_L);
+        if (buttons & (1 << 5))  sw2 |= (1UL << SW2_BTN_R);
+        if (buttons & (1 << 6))  sw2 |= (1UL << SW2_BTN_ZL);
+        if (buttons & (1 << 7))  sw2 |= (1UL << SW2_BTN_ZR);
+        // PA byte 1: Minus=b0, Plus=b1, L3=b2, R3=b3, Home=b4, Cap=b5
+        if (buttons & (1 << 8))  sw2 |= (1UL << SW2_BTN_MINUS);
+        if (buttons & (1 << 9))  sw2 |= (1UL << SW2_BTN_PLUS);
+        if (buttons & (1 << 10)) sw2 |= (1UL << SW2_BTN_L3);
+        if (buttons & (1 << 11)) sw2 |= (1UL << SW2_BTN_R3);
+        if (buttons & (1 << 12)) sw2 |= (1UL << SW2_BTN_HOME);
+        if (buttons & (1 << 13)) sw2 |= (1UL << SW2_BTN_CAPTURE);
+
+        // Remap hat (0-7=directions, 0x0F=center) to individual D-pad bits
+        switch (hat) {
+            case 0: sw2 |= (1UL << SW2_BTN_DUP); break;
+            case 1: sw2 |= (1UL << SW2_BTN_DUP) | (1UL << SW2_BTN_DRIGHT); break;
+            case 2: sw2 |= (1UL << SW2_BTN_DRIGHT); break;
+            case 3: sw2 |= (1UL << SW2_BTN_DDOWN) | (1UL << SW2_BTN_DRIGHT); break;
+            case 4: sw2 |= (1UL << SW2_BTN_DDOWN); break;
+            case 5: sw2 |= (1UL << SW2_BTN_DDOWN) | (1UL << SW2_BTN_DLEFT); break;
+            case 6: sw2 |= (1UL << SW2_BTN_DLEFT); break;
+            case 7: sw2 |= (1UL << SW2_BTN_DUP) | (1UL << SW2_BTN_DLEFT); break;
+            default: break;  // 0x0F = center, no D-pad bits
+        }
+
+        switchProUsb->setFullState(sw2, lx, ly, rx, ry);
         return;
     }
 #endif

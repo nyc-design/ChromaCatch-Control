@@ -39,6 +39,7 @@
 #include "esp_mac.h"
 
 #include "usb_hid_bridge.h"
+#include "switch_pro_usb.h"
 #include "switch_pro_bt.h"
 
 // ============================================================
@@ -1225,25 +1226,24 @@ uint8_t mapGamepadButtonUSB(const String& name, bool switchLayout) {
     return 0xFF;
 }
 
-// NSGamepad button indices — used by SwitchProUSB::press/release and fillInputHeader().
+// Switch 2 Pro Controller button indices — mapped to SW2_BTN_* bit positions
+// that match the real controller's Report 0x09 bitfield (joypad-os verified).
 // These are DIFFERENT from USB_BUTTON_* constants used by the generic gamepad.
 uint8_t mapSwitchProButtonNS(const String& name) {
-    // NSGamepad: Y=0, B=1, A=2, X=3, L=4, R=5, ZL=6, ZR=7,
-    //            Minus=8, Plus=9, LStick=10, RStick=11, Home=12, Capture=13
-    if (strEqIgnoreCase(name, "A")) return 2;
-    if (strEqIgnoreCase(name, "B")) return 1;
-    if (strEqIgnoreCase(name, "X")) return 3;
-    if (strEqIgnoreCase(name, "Y")) return 0;
-    if (strEqIgnoreCase(name, "L") || strEqIgnoreCase(name, "LB")) return 4;
-    if (strEqIgnoreCase(name, "R") || strEqIgnoreCase(name, "RB")) return 5;
-    if (strEqIgnoreCase(name, "ZL") || strEqIgnoreCase(name, "LT")) return 6;
-    if (strEqIgnoreCase(name, "ZR") || strEqIgnoreCase(name, "RT")) return 7;
-    if (strEqIgnoreCase(name, "minus") || strEqIgnoreCase(name, "select")) return 8;
-    if (strEqIgnoreCase(name, "plus") || strEqIgnoreCase(name, "start")) return 9;
-    if (strEqIgnoreCase(name, "L3") || strEqIgnoreCase(name, "lstick")) return 10;
-    if (strEqIgnoreCase(name, "R3") || strEqIgnoreCase(name, "rstick")) return 11;
-    if (strEqIgnoreCase(name, "home")) return 12;
-    if (strEqIgnoreCase(name, "capture")) return 13;
+    if (strEqIgnoreCase(name, "A")) return SW2_BTN_A;        // 1
+    if (strEqIgnoreCase(name, "B")) return SW2_BTN_B;        // 0
+    if (strEqIgnoreCase(name, "X")) return SW2_BTN_X;        // 3
+    if (strEqIgnoreCase(name, "Y")) return SW2_BTN_Y;        // 2
+    if (strEqIgnoreCase(name, "L") || strEqIgnoreCase(name, "LB")) return SW2_BTN_L;      // 12
+    if (strEqIgnoreCase(name, "R") || strEqIgnoreCase(name, "RB")) return SW2_BTN_R;      // 4
+    if (strEqIgnoreCase(name, "ZL") || strEqIgnoreCase(name, "LT")) return SW2_BTN_ZL;    // 13
+    if (strEqIgnoreCase(name, "ZR") || strEqIgnoreCase(name, "RT")) return SW2_BTN_ZR;    // 5
+    if (strEqIgnoreCase(name, "minus") || strEqIgnoreCase(name, "select")) return SW2_BTN_MINUS;   // 14
+    if (strEqIgnoreCase(name, "plus") || strEqIgnoreCase(name, "start")) return SW2_BTN_PLUS;     // 6
+    if (strEqIgnoreCase(name, "L3") || strEqIgnoreCase(name, "lstick")) return SW2_BTN_L3;        // 15
+    if (strEqIgnoreCase(name, "R3") || strEqIgnoreCase(name, "rstick")) return SW2_BTN_R3;        // 7
+    if (strEqIgnoreCase(name, "home")) return SW2_BTN_HOME;       // 16
+    if (strEqIgnoreCase(name, "capture")) return SW2_BTN_CAPTURE; // 17
     return 0xFF;
 }
 

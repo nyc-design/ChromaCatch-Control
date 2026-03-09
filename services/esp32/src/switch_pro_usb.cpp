@@ -6,9 +6,19 @@
 #include <cstring>
 #include "tusb.h"
 #include "class/hid/hid_device.h"
+#include "class/vendor/vendor_device.h"
 
 // Global instance pointer for the --wrap callbacks.
 SwitchProUSB* g_switchProUsbDevice = nullptr;
+
+// C-linkage bridge for switch_pro_vendor.cpp (separate TU to get strong symbols).
+// switch_pro_vendor.cpp cannot include switch_pro_usb.h (it would pull in
+// tusb.h → vendor_device.h → TU_ATTR_WEAK on the vendor callbacks).
+extern "C" void switch_pro_vendor_bridge_rx(const uint8_t* data, uint16_t len) {
+    if (g_switchProUsbDevice) {
+        g_switchProUsbDevice->onVendorRx(data, len);
+    }
+}
 
 // ============================================================
 // Switch 2 Pro Controller HID descriptor — byte-for-byte match of the real
@@ -18,11 +28,7 @@ SwitchProUSB* g_switchProUsbDevice = nullptr;
 // Report IDs:
 //   0x05 (Input, 63B): Vendor-defined full state
 //   0x09 (Input, 63B): 2B vendor + 21 buttons + 4x12-bit sticks + 52B vendor
-//   0x02 (Output, 63B): Host commands
-//
-// This descriptor is ESP-IDF HID parser compatible (standard Usage Page →
-// Usage → Collection sequence). The --wrap bypass may not be strictly needed
-// but is kept as a safety net.
+//   0x02 (Output, 63B): Host commands (haptics/rumble)
 // ============================================================
 static const uint8_t kSwitch2ProDescriptor[] = {
     0x05, 0x01,        // Usage Page (Generic Desktop)
@@ -85,7 +91,6 @@ static const uint8_t kSwitch2ProDescriptor[] = {
     0xC0,              // End Collection
 };
 
-// Verify descriptor is exactly 97 bytes
 static_assert(sizeof(kSwitch2ProDescriptor) == 97, "Switch 2 Pro descriptor must be 97 bytes");
 
 // ============================================================
@@ -95,13 +100,13 @@ static_assert(sizeof(kSwitch2ProDescriptor) == 97, "Switch 2 Pro descriptor must
 //
 // Interface 0: HID (Game Pad)
 //   IAD → bFunctionClass=3 (HID)
-//   EP 0x81 IN Interrupt 64B bInterval=4
+//   EP 0x81 IN Interrupt 64B bInterval=4 (4ms report interval)
 //   EP 0x01 OUT Interrupt 64B bInterval=4
 //
 // Interface 1: Vendor Specific (Bulk)
 //   IAD → bFunctionClass=255 (Vendor)
-//   EP 0x02 OUT Bulk 64B
-//   EP 0x82 IN Bulk 64B
+//   EP 0x02 OUT Bulk 64B  — Switch sends init commands here
+//   EP 0x82 IN Bulk 64B   — Controller ACKs here
 // ============================================================
 static const uint8_t kSwitch2ProConfigDescriptor[] = {
     // --- Configuration Descriptor (9 bytes) ---
@@ -150,7 +155,7 @@ static const uint8_t kSwitch2ProConfigDescriptor[] = {
     0x81,        // bEndpointAddress (IN 1)
     0x03,        // bmAttributes (Interrupt)
     0x40, 0x00,  // wMaxPacketSize (64)
-    0x04,        // bInterval (4)
+    0x04,        // bInterval (4ms)
 
     // --- EP 0x01 OUT Interrupt (7 bytes) ---
     0x07,        // bLength
@@ -158,7 +163,7 @@ static const uint8_t kSwitch2ProConfigDescriptor[] = {
     0x01,        // bEndpointAddress (OUT 1)
     0x03,        // bmAttributes (Interrupt)
     0x40, 0x00,  // wMaxPacketSize (64)
-    0x04,        // bInterval (4)
+    0x04,        // bInterval (4ms)
 
     // --- IAD for Interface 1: Vendor (8 bytes) ---
     0x08,        // bLength
@@ -202,14 +207,6 @@ static_assert(sizeof(kSwitch2ProConfigDescriptor) == 80, "Config descriptor must
 
 // ============================================================
 // Linker --wrap overrides for Switch 2 Pro Controller USB
-//
-// 1) tud_hid_descriptor_report_cb: Return exact 97-byte HID report descriptor
-// 2) tud_hid_set_report_cb: Route output reports to our device
-// 3) tud_descriptor_bos_cb: Empty BOS (USB 2.0, no BOS needed)
-// 4) tud_descriptor_configuration_cb: Return exact 80-byte config descriptor
-//    with both interfaces (HID + Vendor Bulk) and IADs
-//
-// Build flags: -Wl,--wrap=tud_hid_descriptor_report_cb,--wrap=tud_hid_set_report_cb,--wrap=tud_descriptor_bos_cb,--wrap=tud_descriptor_configuration_cb
 // ============================================================
 
 static const uint8_t kEmptyBosDescriptor[] = {
@@ -266,17 +263,116 @@ extern "C" {
         }
         return __real_tud_descriptor_configuration_cb(index);
     }
+
+    // Vendor Bulk callbacks are in switch_pro_vendor.cpp (separate TU to avoid
+    // inheriting TU_ATTR_WEAK from vendor_device.h included via tusb.h).
 }
 
 // Report body size (report ID sent separately by TinyUSB)
 static constexpr size_t kReportLen = 63;
 
 // ============================================================
+// Vendor Bulk Init Protocol
+//
+// The Switch 2 console sends init commands via Bulk OUT (EP 0x02)
+// after USB enumeration. Commands follow the format:
+//   [cmd_id, 0x91, 0x00, arg, ...]
+//
+// The real controller responds on Bulk IN (EP 0x82) with ACK data.
+// Based on procon2tool (HandHeldLegend) and joypad-os init sequence:
+//
+// Commands sent by the Switch (host → device):
+//  0x03 (0x0D): Start HID output at 4ms intervals
+//  0x07       : Unknown
+//  0x16       : Unknown
+//  0x15 (0x01): Request controller MAC
+//  0x15 (0x02): LTK (Long-Term Key) request
+//  0x15 (0x03): Unknown
+//  0x09       : LED init / Set Player LED
+//  0x0C (0x02): IMU config
+//  0x0C (0x04): IMU config
+//  0x03 (0x0A): Enable haptics
+//  0x11       : Unknown
+//  0x0A (0x08): Unknown
+//  0x10       : Unknown
+//  0x01       : Unknown
+//  0x03 (0x01): Unknown
+//  0x0A (0x02): Unknown
+//
+// ACK format: echo the command header bytes back with status.
+// The joypad-os driver works WITHOUT reading responses, suggesting
+// the Switch doesn't strictly require ACKs. But we provide them
+// for full protocol compliance.
+// ============================================================
+
+// Fake MAC address for BT pairing coordination responses
+static const uint8_t kFakeMAC[] = { 0xCC, 0xCC, 0x01, 0x02, 0x03, 0x04 };
+
+void SwitchProUSB::onVendorRx(const uint8_t* data, uint16_t len) {
+    if (len == 0) return;
+
+    _vendorCmdCount++;
+    uint8_t cmdId = data[0];
+
+    Serial.printf("[Switch2Pro] vendor bulk cmd 0x%02X len=%d (#%d)", cmdId, len, _vendorCmdCount);
+    if (len > 1) {
+        Serial.printf(" data:");
+        for (uint16_t i = 0; i < len && i < 16; i++) {
+            Serial.printf(" %02X", data[i]);
+        }
+        if (len > 16) Serial.printf("...");
+    }
+    Serial.println();
+
+    // Build ACK response — echo command structure with status bytes.
+    // Format: [cmd_id, 0x91, 0x00, arg, 0x00, ack_len, 0x00, 0x00, ...ack_data...]
+    uint8_t ack[32];
+    memset(ack, 0, sizeof(ack));
+    uint8_t ackLen = 8;  // default minimal ACK
+
+    // Copy command header as base for ACK
+    uint8_t copyLen = (len < 8) ? len : 8;
+    memcpy(ack, data, copyLen);
+
+    // Command-specific response data
+    uint8_t arg = (len >= 4) ? data[3] : 0;
+
+    switch (cmdId) {
+        case 0x15:
+            if (arg == 0x01) {
+                // MAC request — respond with our fake MAC
+                ackLen = 16;
+                memcpy(ack + 8, kFakeMAC, 6);
+                ack[14] = 0x00;
+                ack[15] = 0x00;
+            } else if (arg == 0x02) {
+                // LTK request — respond with zeroed key (USB mode, no BT pairing)
+                ackLen = 24;
+                // Key bytes already zeroed from memset
+            }
+            break;
+        case 0x03:
+            if (arg == 0x0D) {
+                // Start HID output — we're already sending reports, just ACK
+                _vendorInitReceived = true;
+                Serial.println("[Switch2Pro] HID output start command received");
+            }
+            break;
+        default:
+            // Generic ACK — echo first bytes
+            break;
+    }
+
+    tud_vendor_write(ack, ackLen);
+    tud_vendor_write_flush();
+}
+
+// ============================================================
 // Constructor / begin / end
 // ============================================================
 SwitchProUSB::SwitchProUSB() : _hid() {
     static bool registered = false;
-    // Switch 2 Pro Controller USB identity
+    // Switch 2 Pro Controller USB identity — exact match of real device
     USB.VID(0x057E);
     USB.PID(0x2069);
     USB.usbVersion(0x0200);
@@ -301,7 +397,6 @@ void SwitchProUSB::begin() {
 
 void SwitchProUSB::end() {
     _buttons = 0;
-    _dpadBits = 0;
     _lx = _ly = _rx = _ry = 0x80;
 }
 
@@ -314,11 +409,25 @@ uint16_t SwitchProUSB::_onGetDescriptor(uint8_t* buffer) {
 }
 
 // ============================================================
-// Output report callback — Report 0x02
+// Output report callback — Report 0x02 (Haptics)
+//
+// The Switch sends haptic/rumble data via HID Output Report 0x02:
+//   Byte 0: Report ID (0x02) — already stripped by TinyUSB
+//   Byte 1: Counter (0x50-0x5F, cycles 0-F)
+//   Bytes 2-6: Left motor haptic data (5 bytes)
+//   Bytes 7-16: Padding
+//   Byte 17: Counter (duplicate of byte 1)
+//   Bytes 18-22: Right motor haptic data (5 bytes)
+//   Bytes 23-63: Padding
 // ============================================================
 void SwitchProUSB::_onOutput(uint8_t report_id, const uint8_t* buffer, uint16_t len) {
-    // Log received output reports for debugging.
-    // The Switch 2 protocol for output reports is not yet documented.
+    if (report_id == 0x02 && len >= 22) {
+        // Haptic output — acknowledge silently.
+        // We don't have motors, but accepting without error is correct behavior.
+        return;
+    }
+
+    // Log any unexpected output reports
     Serial.printf("[Switch2Pro] output report 0x%02X len=%d", report_id, len);
     if (len > 0) {
         Serial.printf(" data:");
@@ -333,53 +442,59 @@ void SwitchProUSB::_onOutput(uint8_t report_id, const uint8_t* buffer, uint16_t 
 // ============================================================
 // Report 0x09 builder and sender
 //
-// Layout (63 bytes payload, report ID sent separately):
-//   [0-1]   Vendor prefix (timer counter)
-//   [2-4]   21 buttons + 3 bits padding
-//   [5-10]  4x 12-bit stick axes (X, Y, Rx, Rz)
-//   [11-62] 52 bytes vendor suffix (zeroed)
+// Exact match of the real Switch 2 Pro Controller report layout
+// as documented in joypad-os switch2_pro.h:
+//
+//   Offset 0:     Counter (uint8_t, increments each report)
+//   Offset 1:     Fixed vendor byte (0x00)
+//   Offset 2:     Buttons byte 3: B(0), A(1), Y(2), X(3), R(4), ZR(5), +(6), R3(7)
+//   Offset 3:     Buttons byte 4: DD(0), DR(1), DL(2), DU(3), L(4), ZL(5), -(6), L3(7)
+//   Offset 4:     Buttons byte 5: Home(0), Capture(1), R4(2), L4(3), Square(4), pad(5-7)
+//   Offset 5-7:   Left stick  (packed 12-bit X[11:0], Y[11:0])
+//   Offset 8-10:  Right stick (packed 12-bit X[11:0], Y[11:0])
+//   Offset 11-62: IMU/vendor data (52 bytes, zeroed — no IMU emulation)
+//
+// 12-bit stick packing (matches real controller):
+//   stick[0] = X[7:0]
+//   stick[1] = Y[3:0] << 4 | X[11:8]
+//   stick[2] = Y[11:4]
+//
+// Stick center: 0x80 → 0x800 (2048) in 12-bit space
 // ============================================================
 void SwitchProUSB::sendReport09() {
     uint8_t payload[kReportLen];
     memset(payload, 0, sizeof(payload));
 
-    // Vendor prefix: use as a timer/counter (educated guess)
+    // Byte 0: incrementing counter
     payload[0] = _timer++;
+
+    // Byte 1: fixed vendor byte
     payload[1] = 0x00;
 
-    // Pack 21 buttons into 3 bytes (bits 0-20 + 3 bits padding)
-    // Bits 0-13: face/shoulder/system buttons from _buttons
-    // Bits 14-17: D-pad (Up, Right, Down, Left) from _dpadBits
-    // Bits 18-20: unused (SL, SR, etc.)
-    uint32_t allButtons = static_cast<uint32_t>(_buttons & 0x3FFF)
-                        | (static_cast<uint32_t>(_dpadBits & 0x0F) << 14);
-    payload[2] = allButtons & 0xFF;
-    payload[3] = (allButtons >> 8) & 0xFF;
-    payload[4] = (allButtons >> 16) & 0x1F;  // only bits 16-20
+    // Bytes 2-4: 21 buttons + 3 bits padding
+    // _buttons bits 0-20 map directly to the report bitfield.
+    payload[2] = static_cast<uint8_t>(_buttons & 0xFF);
+    payload[3] = static_cast<uint8_t>((_buttons >> 8) & 0xFF);
+    payload[4] = static_cast<uint8_t>((_buttons >> 16) & 0x1F);
 
-    // Pack 4x 12-bit stick axes
     // Scale 8-bit (0x00-0xFF) to 12-bit (0x000-0xFF0)
+    // Center: 0x80 → 0x800 (2048) — matches real controller center
     uint16_t lx12 = static_cast<uint16_t>(_lx) << 4;
     uint16_t ly12 = static_cast<uint16_t>(_ly) << 4;
     uint16_t rx12 = static_cast<uint16_t>(_rx) << 4;
     uint16_t ry12 = static_cast<uint16_t>(_ry) << 4;
 
-    // HID packs consecutive 12-bit fields sequentially:
-    // X[11:0] | Y[11:0] | Rx[11:0] | Rz[11:0]
-    // Byte 5: X[7:0]
-    // Byte 6: Y[3:0] << 4 | X[11:8]
-    // Byte 7: Y[11:4]
-    // Byte 8: Rx[7:0]
-    // Byte 9: Rz[3:0] << 4 | Rx[11:8]
-    // Byte 10: Rz[11:4]
-    payload[5]  = lx12 & 0xFF;
-    payload[6]  = ((lx12 >> 8) & 0x0F) | ((ly12 & 0x0F) << 4);
-    payload[7]  = (ly12 >> 4) & 0xFF;
+    // Pack left stick (12-bit X, 12-bit Y) into 3 bytes
+    payload[5] = lx12 & 0xFF;
+    payload[6] = ((lx12 >> 8) & 0x0F) | ((ly12 & 0x0F) << 4);
+    payload[7] = (ly12 >> 4) & 0xFF;
+
+    // Pack right stick (12-bit X, 12-bit Y) into 3 bytes
     payload[8]  = rx12 & 0xFF;
     payload[9]  = ((rx12 >> 8) & 0x0F) | ((ry12 & 0x0F) << 4);
     payload[10] = (ry12 >> 4) & 0xFF;
 
-    // Bytes 11-62: vendor suffix (zeroed — possibly IMU, vibration state, etc.)
+    // Bytes 11-62: IMU/vendor suffix (zeroed — no IMU emulation)
 
     trySendReport(0x09, payload, sizeof(payload));
 }
@@ -400,33 +515,42 @@ void SwitchProUSB::flushPendingReplies() {
 }
 
 // ============================================================
-// D-pad: convert hat value (0-7=directions, 0x0F=center) to button bits
+// D-pad: convert hat value (0-7=directions, 0x0F=center) to
+// individual direction bits in the button word.
+//
+// The real Switch 2 Pro Controller reports D-pad as individual
+// button bits (not a hat switch), matching the HID descriptor's
+// 21-button layout.
 // ============================================================
 void SwitchProUSB::dPad(uint8_t d) {
-    // Convert hat to 4 direction bits: bit0=Up, bit1=Right, bit2=Down, bit3=Left
-    uint8_t bits = 0;
+    // Clear all dpad bits first
+    uint32_t cleared = _buttons & ~SW2_DPAD_MASK;
+
+    uint32_t dpadBits = 0;
     switch (d) {
-        case 0: bits = 0x01; break;           // Up
-        case 1: bits = 0x01 | 0x02; break;    // Up-Right
-        case 2: bits = 0x02; break;            // Right
-        case 3: bits = 0x02 | 0x04; break;    // Down-Right
-        case 4: bits = 0x04; break;            // Down
-        case 5: bits = 0x04 | 0x08; break;    // Down-Left
-        case 6: bits = 0x08; break;            // Left
-        case 7: bits = 0x01 | 0x08; break;    // Up-Left
-        default: bits = 0; break;              // Center (0x0F or any other)
+        case 0: dpadBits = (1UL << SW2_BTN_DUP); break;
+        case 1: dpadBits = (1UL << SW2_BTN_DUP) | (1UL << SW2_BTN_DRIGHT); break;
+        case 2: dpadBits = (1UL << SW2_BTN_DRIGHT); break;
+        case 3: dpadBits = (1UL << SW2_BTN_DDOWN) | (1UL << SW2_BTN_DRIGHT); break;
+        case 4: dpadBits = (1UL << SW2_BTN_DDOWN); break;
+        case 5: dpadBits = (1UL << SW2_BTN_DDOWN) | (1UL << SW2_BTN_DLEFT); break;
+        case 6: dpadBits = (1UL << SW2_BTN_DLEFT); break;
+        case 7: dpadBits = (1UL << SW2_BTN_DUP) | (1UL << SW2_BTN_DLEFT); break;
+        default: break;  // 0x0F or other = center, no bits set
     }
 
-    if (bits != 0) {
-        _dpadBits = bits;
-        _pendingDpadRelease = 0;
+    if (dpadBits != 0) {
+        _buttons = cleared | dpadBits;
+        // Clear any pending d-pad release
+        _pendingReleaseMask &= ~SW2_DPAD_MASK;
         _lastPressMs = millis();
     } else {
+        // Release d-pad — enforce minimum hold
         if (millis() - _lastPressMs < kMinHoldMs) {
-            _pendingDpadRelease = 0x0F;  // mark all for release
+            _pendingReleaseMask |= (_buttons & SW2_DPAD_MASK);
         } else {
-            _dpadBits = 0;
-            _pendingDpadRelease = 0;
+            _buttons = cleared;
+            _pendingReleaseMask &= ~SW2_DPAD_MASK;
         }
     }
 }
@@ -435,16 +559,16 @@ void SwitchProUSB::dPad(uint8_t d) {
 // Button press/release with minimum hold enforcement
 // ============================================================
 void SwitchProUSB::press(uint8_t b) {
-    if (b > 15) b = 15;
-    uint16_t mask = (uint16_t)1 << b;
+    if (b >= SW2_BTN_COUNT) return;
+    uint32_t mask = 1UL << b;
     _buttons |= mask;
     _pendingReleaseMask &= ~mask;
     _lastPressMs = millis();
 }
 
 void SwitchProUSB::release(uint8_t b) {
-    if (b > 15) b = 15;
-    uint16_t mask = (uint16_t)1 << b;
+    if (b >= SW2_BTN_COUNT) return;
+    uint32_t mask = 1UL << b;
     if (millis() - _lastPressMs < kMinHoldMs) {
         _pendingReleaseMask |= mask;
     } else {
@@ -453,8 +577,17 @@ void SwitchProUSB::release(uint8_t b) {
     }
 }
 
+void SwitchProUSB::setFullState(uint32_t buttons, uint8_t lx, uint8_t ly, uint8_t rx, uint8_t ry) {
+    _buttons = buttons & ((1UL << SW2_BTN_COUNT) - 1);
+    _lx = lx;
+    _ly = ly;
+    _rx = rx;
+    _ry = ry;
+    _pendingReleaseMask = 0;
+    sendReport09();
+}
+
 bool SwitchProUSB::isConnected() const {
-    // No handshake protocol — connected as soon as USB is mounted
     return tud_mounted() && !tud_suspended();
 }
 
@@ -474,12 +607,8 @@ void SwitchProUSB::loop() {
         _buttons &= ~_pendingReleaseMask;
         _pendingReleaseMask = 0;
     }
-    if (_pendingDpadRelease && (millis() - _lastPressMs >= kMinHoldMs)) {
-        _dpadBits = 0;
-        _pendingDpadRelease = 0;
-    }
 
-    // Send Report 0x09 at ~4ms cadence (bInterval=4)
+    // Send Report 0x09 at ~4ms cadence (bInterval=4, matches real controller)
     if (millis() - _lastReportMs < 4) return;
     _lastReportMs = millis();
 
