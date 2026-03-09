@@ -99,11 +99,11 @@ static const uint8_t kProControllerDescriptor[] = {
     0x95, 0x30,        //   Report Count (48)
     0x91, 0x02,        //   Output (Data,Var,Abs)
 
-    // Report ID 0x10: Rumble (9 bytes)
+    // Report ID 0x10: Rumble (48 bytes — must match real Pro Controller descriptor)
     0x85, 0x10,        //   Report ID (0x10)
     0x09, 0x10,        //   Usage (0x10)
     0x75, 0x08,        //   Report Size (8)
-    0x95, 0x09,        //   Report Count (9)
+    0x95, 0x30,        //   Report Count (48)
     0x91, 0x02,        //   Output (Data,Var,Abs)
 
     // Report ID 0x11 (48 bytes)

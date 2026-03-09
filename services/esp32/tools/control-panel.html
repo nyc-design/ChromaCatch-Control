@@ -71,7 +71,7 @@
 <div class="top-bar">
   <div class="status"><div class="dot" id="connDot"></div><span id="connLabel">Disconnected</span></div>
   <select id="connType">
-    <option value="serial">Serial (USB)</option>
+    <option value="serial">Serial (UART port)</option>
     <option value="ws">WebSocket</option>
   </select>
   <input id="wsUrl" placeholder="ws://192.168.1.100:81/" style="display:none">
@@ -241,21 +241,26 @@ async function connectSerial() {
     setConnState(true, 'Serial');
     log('Serial connected', 'ok');
 
+    // Use AbortController so close() can cleanly tear down both pipes
+    const abortCtrl = new AbortController();
+    const signal = abortCtrl.signal;
+
     const encoder = new TextEncoderStream();
-    const writable = encoder.writable;
-    encoder.readable.pipeTo(port.writable);
-    const writer = writable.getWriter();
+    const writer = encoder.writable.getWriter();
+    const txPipe = encoder.readable.pipeTo(port.writable, { signal }).catch(() => {});
 
     const decoder = new TextDecoderStream();
-    port.readable.pipeTo(decoder.writable);
+    const rxPipe = port.readable.pipeTo(decoder.writable, { signal }).catch(() => {});
     const reader = decoder.readable.getReader();
 
     conn = {
-      type: 'serial',
-      send(json) { writer.write(json + '\n'); },
+      type: 'serial', _port: port,
+      send(json) { writer.write(json + '\n').catch(() => {}); },
       async close() {
-        try { reader.cancel(); } catch {}
-        try { writer.close(); } catch {}
+        abortCtrl.abort();
+        try { await reader.cancel(); } catch {}
+        try { await writer.close(); } catch {}
+        await Promise.allSettled([txPipe, rxPipe]);
         try { await port.close(); } catch {}
         conn = null;
         setConnState(false);
@@ -278,14 +283,18 @@ async function connectSerial() {
           }
         }
       } catch (e) {
-        if (conn) log(`Serial read error: ${e.message}`, 'err');
+        if (conn && e.name !== 'AbortError') log(`Serial read error: ${e.message}`, 'err');
       }
       if (conn) { conn = null; setConnState(false, 'Serial disconnected'); }
     })();
 
     setTimeout(() => sendCmd({ action: 'get_mode' }), 500);
   } catch (e) {
-    log(`Serial error: ${e.message}`, 'err');
+    if (e.name === 'NotFoundError') {
+      log('No serial port selected', 'err');
+    } else {
+      log(`Serial error: ${e.message}`, 'err');
+    }
   }
 }
 
