@@ -74,6 +74,9 @@ static const uint8_t s_configDesc[] = {
     8,              // bInterval = 8ms
 };
 
+// Forward declaration (defined below after this extern "C" block)
+static const uint8_t kProControllerDescriptor[];
+
 // ============================================================
 // Linker --wrap overrides
 //
