@@ -85,7 +85,7 @@ const unsigned long WS_PRIORITY_WINDOW_MS = 200;
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
 extern "C" {
     uint8_t const* tud_descriptor_device_cb(void);
-    uint8_t const* tud_descriptor_configuration_cb(uint8_t index);
+    uint8_t const* __wrap_tud_descriptor_configuration_cb(uint8_t index);
     uint8_t const* __wrap_tud_descriptor_bos_cb(void);
 }
 #endif
@@ -1808,7 +1808,7 @@ void executeCommand(JsonDocument& doc, JsonDocument& response, CommandSource sou
         response["device_descriptor"] = devHex;
 
         // Configuration descriptor (variable length, first 2 bytes = total length at offset 2-3)
-        uint8_t const* cfgDesc = tud_descriptor_configuration_cb(0);
+        uint8_t const* cfgDesc = __wrap_tud_descriptor_configuration_cb(0);
         uint16_t cfgLen = cfgDesc[2] | (cfgDesc[3] << 8);
         if (cfgLen > 256) cfgLen = 256;
         String cfgHex;
