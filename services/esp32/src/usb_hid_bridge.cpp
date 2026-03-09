@@ -223,7 +223,10 @@ void gamepadHat(uint8_t hat) {
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
 #if CONFIG_TINYUSB_HID_ENABLED
     if (gamepadProfile == USB_GAMEPAD_PROFILE_SWITCH_PRO && switchProUsb) {
-        switchProUsb->dPad(hat);
+        // USB_HAT_* uses 0=center, 1-8=directions (1-indexed).
+        // SwitchProUSB::fillInputHeader expects standard HID hat: 0-7=directions, 0x0F=center.
+        uint8_t stdHat = (hat == 0) ? 0x0F : (hat - 1);
+        switchProUsb->dPad(stdHat);
         switchProUsb->write();
         return;
     }

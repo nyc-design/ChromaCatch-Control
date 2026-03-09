@@ -346,11 +346,11 @@ void SwitchProUSB::handleSubcommand(const uint8_t* data, uint16_t len) {
             sendSubcommandReply(0x01, 0x81, nullptr, 0);
             break;
         case 0x02: {
-            // Device info
+            // Device info — match nuxbt/PA values
             uint8_t info[12] = {0};
-            info[0] = 0x04; info[1] = 0x21;  // FW version
+            info[0] = 0x03; info[1] = 0x8B;  // FW version (nuxbt: 0x03, 0x8B)
             info[2] = 0x03;                   // Pro Controller
-            info[3] = 0x02;
+            info[3] = 0x00;                   // connection_info: 0x00 for Pro Controller (nuxbt)
             memcpy(&info[4], kMacAddr, 6);
             info[10] = 0x01;
             info[11] = 0x01;                  // SPI color available
@@ -364,8 +364,10 @@ void SwitchProUSB::handleSubcommand(const uint8_t* data, uint16_t len) {
         case 0x38:  // Set HOME light
         case 0x40:  // Enable IMU
         case 0x41:  // Set IMU sensitivity
-        case 0x48:  // Enable vibration
             sendSubcommandReply(subcmd, 0x80, nullptr, 0);
+            break;
+        case 0x48:  // Enable vibration — nuxbt returns 0x82
+            sendSubcommandReply(subcmd, 0x82, nullptr, 0);
             break;
         case 0x04: {
             // Trigger buttons elapsed time
@@ -378,7 +380,18 @@ void SwitchProUSB::handleSubcommand(const uint8_t* data, uint16_t len) {
         case 0x10:
             handleSpiFlashRead(data, len);
             break;
-        case 0x21:  // Set NFC/IR MCU configuration — simple ACK (we don't emulate NFC)
+        case 0x21: {
+            // Set NFC/IR MCU configuration — nuxbt returns 0xA0 with MCU state data
+            uint8_t mcuData[34] = {0};
+            mcuData[0] = 0x01; mcuData[1] = 0x00; mcuData[2] = 0xFF;
+            mcuData[3] = 0x00; mcuData[4] = 0x08; mcuData[5] = 0x00;
+            mcuData[6] = 0x1B; mcuData[7] = 0x01;
+            // Byte index 36 (offset 36-14=22 in extra data) = 0xC8 checksum
+            // In nuxbt: report[49] = 0xC8, which is buf[49-14=35] of data
+            mcuData[33] = 0xC8;
+            sendSubcommandReply(0x21, 0xA0, mcuData, sizeof(mcuData));
+            break;
+        }
         case 0x22:  // Set NFC/IR MCU state
             sendSubcommandReply(subcmd, 0x80, nullptr, 0);
             break;
@@ -507,13 +520,13 @@ void SwitchProUSB::fillInputHeader(uint8_t* buf) {
     if (_buttons & (1 << 6))  btnLeft |= 0x80;   // ZL
 
     buf[0] = _timer++;
-    buf[1] = 0x8E;       // battery full, Pro Controller, USB powered
+    buf[1] = 0x90;       // battery full + connection_info 0x00 (nuxbt: 0x90 for Pro Controller)
     buf[2] = btnRight;
     buf[3] = btnShared;
     buf[4] = btnLeft;
     packStick12bit(lx12, ly12, &buf[5]);
     packStick12bit(rx12, ry12, &buf[8]);
-    buf[11] = 0x08;      // vibration ACK
+    buf[11] = 0x80;      // vibration ACK (nuxbt uses 0x80-0xC0 cycle; 0x80 is safe default)
     // Bytes 12-47 = IMU data (zeros = stationary)
 }
 

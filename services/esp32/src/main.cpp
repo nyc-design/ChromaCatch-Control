@@ -1216,6 +1216,28 @@ uint8_t mapGamepadButtonUSB(const String& name, bool switchLayout) {
     return 0xFF;
 }
 
+// NSGamepad button indices — used by SwitchProUSB::press/release and fillInputHeader().
+// These are DIFFERENT from USB_BUTTON_* constants used by the generic gamepad.
+uint8_t mapSwitchProButtonNS(const String& name) {
+    // NSGamepad: Y=0, B=1, A=2, X=3, L=4, R=5, ZL=6, ZR=7,
+    //            Minus=8, Plus=9, LStick=10, RStick=11, Home=12, Capture=13
+    if (strEqIgnoreCase(name, "A")) return 2;
+    if (strEqIgnoreCase(name, "B")) return 1;
+    if (strEqIgnoreCase(name, "X")) return 3;
+    if (strEqIgnoreCase(name, "Y")) return 0;
+    if (strEqIgnoreCase(name, "L") || strEqIgnoreCase(name, "LB")) return 4;
+    if (strEqIgnoreCase(name, "R") || strEqIgnoreCase(name, "RB")) return 5;
+    if (strEqIgnoreCase(name, "ZL") || strEqIgnoreCase(name, "LT")) return 6;
+    if (strEqIgnoreCase(name, "ZR") || strEqIgnoreCase(name, "RT")) return 7;
+    if (strEqIgnoreCase(name, "minus") || strEqIgnoreCase(name, "select")) return 8;
+    if (strEqIgnoreCase(name, "plus") || strEqIgnoreCase(name, "start")) return 9;
+    if (strEqIgnoreCase(name, "L3") || strEqIgnoreCase(name, "lstick")) return 10;
+    if (strEqIgnoreCase(name, "R3") || strEqIgnoreCase(name, "rstick")) return 11;
+    if (strEqIgnoreCase(name, "home")) return 12;
+    if (strEqIgnoreCase(name, "capture")) return 13;
+    return 0xFF;
+}
+
 // ============================================================
 // Command execution by category & transport
 // ============================================================
@@ -1648,6 +1670,8 @@ void executeGamepadCommand(RuntimeDelivery transport, const String& action, Json
     }
 
     if (transport == RUNTIME_USB) {
+        bool isSwitchProUsb = (UsbHidBridge::getGamepadProfile() == UsbHidBridge::USB_GAMEPAD_PROFILE_SWITCH_PRO);
+
         if (action == "button_press") {
             String button = doc["button"].as<String>();
             uint8_t hat = mapDPadToUsbHat(button);
@@ -1657,7 +1681,8 @@ void executeGamepadCommand(RuntimeDelivery transport, const String& action, Json
                 return;
             }
 
-            uint8_t btn = mapGamepadButtonUSB(button, switchLayout);
+            // Switch Pro USB uses NSGamepad indices; generic USB uses USB_BUTTON_* constants
+            uint8_t btn = isSwitchProUsb ? mapSwitchProButtonNS(button) : mapGamepadButtonUSB(button, switchLayout);
             if (btn == 0xFF) {
                 response["status"] = "error";
                 response["error"] = "unknown button";
@@ -1677,7 +1702,7 @@ void executeGamepadCommand(RuntimeDelivery transport, const String& action, Json
                 return;
             }
 
-            uint8_t btn = mapGamepadButtonUSB(button, switchLayout);
+            uint8_t btn = isSwitchProUsb ? mapSwitchProButtonNS(button) : mapGamepadButtonUSB(button, switchLayout);
             if (btn == 0xFF) {
                 response["status"] = "error";
                 response["error"] = "unknown button";
