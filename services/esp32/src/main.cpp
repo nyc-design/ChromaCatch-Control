@@ -168,6 +168,7 @@ bool prefsReady = false;
 constexpr const char* PREFS_NAMESPACE = "ccctl";
 constexpr const char* PREF_KEY_MODE = "mode";
 constexpr const char* PREF_KEY_INPUT_POLICY = "in_policy";
+constexpr const char* PREF_KEY_USB_SWITCH_ID = "usb_sw_id";
 
 // BLE outputs (created/destroyed on mode changes)
 BleComboKeyboard* bleComboKb = nullptr;
@@ -183,6 +184,8 @@ DeviceMode currentMode = MODE_COMBO;
 DeliveryPolicy deliveryPolicy = DELIVERY_AUTO;
 EmulationMode currentEmulationMode = EMU_BLUETOOTH_COMBO;
 InputPolicy inputPolicy = INPUT_POLICY_AUTO;
+UsbHidBridge::UsbSwitchIdentityProfile wiredSwitchUsbIdentity = UsbHidBridge::USB_SWITCH_IDENTITY_PRO_COMPAT;
+UsbHidBridge::UsbSwitchIdentityProfile usbSwitchIdentityAppliedAtBoot = UsbHidBridge::USB_SWITCH_IDENTITY_PRO_COMPAT;
 
 String serialBuffer = "";
 std::vector<uint8_t> serialBinaryBuffer;
@@ -472,6 +475,25 @@ const char* inputPolicyToString(InputPolicy p) {
     }
 }
 
+const char* usbSwitchIdentityToString(UsbHidBridge::UsbSwitchIdentityProfile profile) {
+    switch (profile) {
+        case UsbHidBridge::USB_SWITCH_IDENTITY_PRO2: return "switch2_pro";
+        case UsbHidBridge::USB_SWITCH_IDENTITY_PRO_COMPAT:
+        default:
+            return "switch_pro_compat";
+    }
+}
+
+UsbHidBridge::UsbSwitchIdentityProfile parseUsbSwitchIdentity(const String& rawInput) {
+    String raw = rawInput;
+    raw.toLowerCase();
+    raw.trim();
+    if (raw == "switch2_pro" || raw == "switch2" || raw == "pro2") {
+        return UsbHidBridge::USB_SWITCH_IDENTITY_PRO2;
+    }
+    return UsbHidBridge::USB_SWITCH_IDENTITY_PRO_COMPAT;
+}
+
 InputPolicy parseInputPolicy(const String& rawInput) {
     String raw = rawInput;
     raw.toLowerCase();
@@ -515,6 +537,7 @@ void persistRuntimeConfig() {
     if (!prefsReady) return;
     prefs.putInt(PREF_KEY_MODE, static_cast<int>(currentEmulationMode));
     prefs.putInt(PREF_KEY_INPUT_POLICY, static_cast<int>(inputPolicy));
+    prefs.putInt(PREF_KEY_USB_SWITCH_ID, static_cast<int>(wiredSwitchUsbIdentity));
 }
 
 void loadPersistedRuntimeConfig() {
@@ -523,6 +546,7 @@ void loadPersistedRuntimeConfig() {
 
     int savedModeRaw = prefs.getInt(PREF_KEY_MODE, static_cast<int>(EMU_BLUETOOTH_COMBO));
     int savedInputPolicyRaw = prefs.getInt(PREF_KEY_INPUT_POLICY, static_cast<int>(INPUT_POLICY_AUTO));
+    int savedUsbSwitchIdentityRaw = prefs.getInt(PREF_KEY_USB_SWITCH_ID, static_cast<int>(UsbHidBridge::USB_SWITCH_IDENTITY_PRO_COMPAT));
 
     EmulationMode savedMode = static_cast<EmulationMode>(savedModeRaw);
     if (savedModeRaw >= 0 &&
@@ -537,6 +561,11 @@ void loadPersistedRuntimeConfig() {
         if (!(savedPolicy == INPUT_POLICY_WIRED_ONLY && !BOARD_SUPPORTS_WIRED_INPUT)) {
             inputPolicy = savedPolicy;
         }
+    }
+
+    if (savedUsbSwitchIdentityRaw >= static_cast<int>(UsbHidBridge::USB_SWITCH_IDENTITY_PRO_COMPAT) &&
+        savedUsbSwitchIdentityRaw <= static_cast<int>(UsbHidBridge::USB_SWITCH_IDENTITY_PRO2)) {
+        wiredSwitchUsbIdentity = static_cast<UsbHidBridge::UsbSwitchIdentityProfile>(savedUsbSwitchIdentityRaw);
     }
 }
 
@@ -706,6 +735,7 @@ void applyEmulationMode(EmulationMode mode) {
         default:
             break;
     }
+    UsbHidBridge::setSwitchIdentityProfile(wiredSwitchUsbIdentity);
     UsbHidBridge::setGamepadProfile(emulationModeToUsbProfile(mode));
     pabbCommandQueue.clear();
     pabbCommandActive = false;
@@ -1909,6 +1939,9 @@ void handleStatus() {
     doc["ws_port"] = WS_PORT;
     doc["ws_connected_clients"] = wsConnectedClients;
     doc["usb_gamepad_profile"] = (UsbHidBridge::getGamepadProfile() == UsbHidBridge::USB_GAMEPAD_PROFILE_SWITCH_PRO) ? "switch_pro" : "generic";
+    doc["wired_switch_usb_identity"] = usbSwitchIdentityToString(wiredSwitchUsbIdentity);
+    doc["wired_switch_usb_identity_applied"] = usbSwitchIdentityToString(usbSwitchIdentityAppliedAtBoot);
+    doc["wired_switch_usb_identity_reboot_required"] = (wiredSwitchUsbIdentity != usbSwitchIdentityAppliedAtBoot);
     doc["status_led_rgb"] = String(ledColor.r) + "," + String(ledColor.g) + "," + String(ledColor.b);
     doc["status_led_behavior"] = (chooseRuntimeDelivery() == RUNTIME_NONE) ? "blinking" : "solid";
     doc["status_led_rgb_pin_primary"] = statusLedRgbPinPrimary;
@@ -1931,6 +1964,9 @@ void handleGetMode() {
     doc["ble_advertisement_name"] = getBleAdvertisementName();
     doc["ble_profile"] = getBleProfileLabel();
     doc["ble_mode_scoped_mac"] = getModeSpecificBleMacString();
+    doc["wired_switch_usb_identity"] = usbSwitchIdentityToString(wiredSwitchUsbIdentity);
+    doc["wired_switch_usb_identity_applied"] = usbSwitchIdentityToString(usbSwitchIdentityAppliedAtBoot);
+    doc["wired_switch_usb_identity_reboot_required"] = (wiredSwitchUsbIdentity != usbSwitchIdentityAppliedAtBoot);
     // Backward-compatible fields
     doc["output_mode"] = (modeAllowsGamepad(currentMode) ? "gamepad" : "mouse_keyboard");
     doc["output_delivery"] = deliveryPolicyToString(deliveryPolicy);
@@ -1995,6 +2031,14 @@ void handleSetMode() {
         InputPolicy nextInputPolicy = parseInputPolicy(doc["input_policy"].as<String>());
         if (!(nextInputPolicy == INPUT_POLICY_WIRED_ONLY && !BOARD_SUPPORTS_WIRED_INPUT)) {
             inputPolicy = nextInputPolicy;
+            persistRuntimeConfig();
+        }
+    }
+    if (doc["wired_switch_usb_identity"].is<const char*>()) {
+        UsbHidBridge::UsbSwitchIdentityProfile nextIdentity = parseUsbSwitchIdentity(doc["wired_switch_usb_identity"].as<String>());
+        if (nextIdentity != wiredSwitchUsbIdentity) {
+            wiredSwitchUsbIdentity = nextIdentity;
+            UsbHidBridge::setSwitchIdentityProfile(wiredSwitchUsbIdentity);
             persistRuntimeConfig();
         }
     }
@@ -2903,6 +2947,7 @@ void setup() {
     setupWiFi();
     applyEmulationMode(currentEmulationMode);
     initUSBHID();
+    usbSwitchIdentityAppliedAtBoot = UsbHidBridge::getSwitchIdentityProfile();
     initBLE();
 
     server.on("/ping", HTTP_GET, handlePing);

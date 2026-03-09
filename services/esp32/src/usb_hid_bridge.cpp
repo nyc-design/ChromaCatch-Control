@@ -27,6 +27,7 @@ SwitchProUSB* switchProUsb = nullptr;
 #endif
 bool initialized = false;
 UsbGamepadProfile gamepadProfile = USB_GAMEPAD_PROFILE_GENERIC;
+UsbSwitchIdentityProfile switchIdentityProfile = USB_SWITCH_IDENTITY_PRO_COMPAT;
 
 int8_t clampInt8(int value) {
     if (value > 127) return 127;
@@ -58,6 +59,14 @@ UsbGamepadProfile getGamepadProfile() {
     return gamepadProfile;
 }
 
+void setSwitchIdentityProfile(UsbSwitchIdentityProfile profile) {
+    switchIdentityProfile = profile;
+}
+
+UsbSwitchIdentityProfile getSwitchIdentityProfile() {
+    return switchIdentityProfile;
+}
+
 void init() {
     if (initialized) return;
 
@@ -66,7 +75,11 @@ void init() {
     if (gamepadProfile == USB_GAMEPAD_PROFILE_SWITCH_PRO) {
         // SwitchProUSB sets its own VID/PID/manufacturer/product in constructor.
         // Only this device gets registered — no keyboard/mouse/generic gamepad.
-        switchProUsb = new SwitchProUSB();
+        SwitchProUsbIdentityProfile identity = SWITCH_PRO_USB_IDENTITY_PRO_COMPAT;
+        if (switchIdentityProfile == USB_SWITCH_IDENTITY_PRO2) {
+            identity = SWITCH_PRO_USB_IDENTITY_PRO2;
+        }
+        switchProUsb = new SwitchProUSB(identity);
         g_switchProUsbDevice = switchProUsb;  // expose for --wrap callback
         switchProUsb->begin();
         Serial.println("[USB] Switch Pro Controller USB mode initialized");
