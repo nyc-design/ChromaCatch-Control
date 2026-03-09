@@ -11,7 +11,8 @@ SwitchProUSB* g_switchProUsbDevice = nullptr;
 
 // ============================================================
 // Pro Controller USB HID descriptor — byte-for-byte match of the
-// real Nintendo Switch Pro Controller wired USB descriptor (203 bytes).
+// real Nintendo Switch Pro Controller wired USB descriptor (201 bytes, 203 original minus
+// 2 bytes for top-level Logical Minimum removed for ESP-IDF parser compatibility).
 // Source: https://gist.github.com/ToadKing/b883a8ccfa26adcc6ba9905e75aeb4f2
 //
 // NOTE: This is the USB descriptor, NOT the Bluetooth one.
@@ -20,7 +21,9 @@ SwitchProUSB* g_switchProUsbDevice = nullptr;
 // ============================================================
 static const uint8_t kProControllerDescriptor[] = {
     0x05, 0x01,        // Usage Page (Generic Desktop)
-    0x15, 0x00,        // Logical Minimum (0)
+    // NOTE: Real Pro Controller has 0x15,0x00 (Logical Minimum) here,
+    // but ESP-IDF's HID parser rejects it ("expected USAGE, got 0x14").
+    // Omitting it is safe — Logical Minimum is set again inside each report section.
     0x09, 0x04,        // Usage (Joystick)
     0xA1, 0x01,        // Collection (Application)
 
