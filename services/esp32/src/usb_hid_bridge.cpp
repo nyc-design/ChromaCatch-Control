@@ -192,9 +192,10 @@ void gamepadPress(uint8_t button) {
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
 #if CONFIG_TINYUSB_HID_ENABLED
     if (gamepadProfile == USB_GAMEPAD_PROFILE_SWITCH_PRO && switchProUsb) {
-        // SwitchProUSB uses same NSGamepad-style button indices
+        // State change only — loop() sends 0x30 reports at 8ms cadence.
+        // No write() here: avoids interfering with the report cadence and
+        // works with the minimum hold enforcement in SwitchProUSB.
         switchProUsb->press(button);
-        switchProUsb->write();
         return;
     }
 #endif
@@ -208,8 +209,8 @@ void gamepadRelease(uint8_t button) {
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
 #if CONFIG_TINYUSB_HID_ENABLED
     if (gamepadProfile == USB_GAMEPAD_PROFILE_SWITCH_PRO && switchProUsb) {
+        // Release may be deferred by SwitchProUSB's minimum hold logic.
         switchProUsb->release(button);
-        switchProUsb->write();
         return;
     }
 #endif
@@ -224,10 +225,9 @@ void gamepadHat(uint8_t hat) {
 #if CONFIG_TINYUSB_HID_ENABLED
     if (gamepadProfile == USB_GAMEPAD_PROFILE_SWITCH_PRO && switchProUsb) {
         // USB_HAT_* uses 0=center, 1-8=directions (1-indexed).
-        // SwitchProUSB::fillInputHeader expects standard HID hat: 0-7=directions, 0x0F=center.
+        // SwitchProUSB expects standard HID hat: 0-7=directions, 0x0F=center.
         uint8_t stdHat = (hat == 0) ? 0x0F : (hat - 1);
         switchProUsb->dPad(stdHat);
-        switchProUsb->write();
         return;
     }
 #endif
@@ -245,7 +245,6 @@ void gamepadLeftStick(int x, int y) {
         uint8_t mappedY = static_cast<uint8_t>(clampInt8(y) + 128);
         switchProUsb->leftXAxis(mappedX);
         switchProUsb->leftYAxis(mappedY);
-        switchProUsb->write();
         return;
     }
 #endif
@@ -264,7 +263,6 @@ void gamepadRightStick(int x, int y) {
         uint8_t mappedY = static_cast<uint8_t>(clampInt8(y) + 128);
         switchProUsb->rightXAxis(mappedX);
         switchProUsb->rightYAxis(mappedY);
-        switchProUsb->write();
         return;
     }
 #endif

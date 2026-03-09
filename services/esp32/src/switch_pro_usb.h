@@ -32,7 +32,7 @@ public:
     inline void leftYAxis(uint8_t a) { _ly = a; }
     inline void rightXAxis(uint8_t a) { _rx = a; }
     inline void rightYAxis(uint8_t a) { _ry = a; }
-    inline void dPad(uint8_t d) { _dpad = d; }
+    void dPad(uint8_t d);
 
     bool isConnected() const { return _connected; }
 
@@ -70,6 +70,15 @@ private:
     };
     PendingReport _pendingQueue[kMaxPending];
     volatile uint8_t _pendingCount = 0;
+
+    // Minimum hold enforcement: PA uses 48ms hold + 24ms cooldown.
+    // When a button is pressed, we prevent any release from taking effect
+    // until at least kMinHoldMs has elapsed, ensuring the Switch sees the
+    // pressed state across multiple 0x30 report cycles.
+    static constexpr uint32_t kMinHoldMs = 48;
+    uint32_t _lastPressMs = 0;       // millis() of last press() call
+    uint16_t _pendingReleaseMask = 0; // buttons waiting to be released
+    uint8_t _pendingDpad = 0xFF;      // pending dpad release (0xFF = none)
 
     // 8-bit axis state (0x80 = center, NSGamepad-compatible API)
     uint16_t _buttons = 0;

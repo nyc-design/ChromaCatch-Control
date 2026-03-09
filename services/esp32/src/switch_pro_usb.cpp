@@ -616,16 +616,45 @@ void SwitchProUSB::packStick12bit(uint16_t x, uint16_t y, uint8_t out[3]) {
 }
 
 // ============================================================
-// Button press/release (NSGamepad-compatible bit indices)
+// Button press/release with minimum hold enforcement.
+// PA uses 48ms hold to ensure the Switch sees the button across
+// multiple report cycles. Release is deferred if called too soon.
 // ============================================================
 void SwitchProUSB::press(uint8_t b) {
     if (b > 15) b = 15;
-    _buttons |= (uint16_t)1 << b;
+    uint16_t mask = (uint16_t)1 << b;
+    _buttons |= mask;
+    _pendingReleaseMask &= ~mask;  // cancel any pending release for this button
+    _lastPressMs = millis();
 }
 
 void SwitchProUSB::release(uint8_t b) {
     if (b > 15) b = 15;
-    _buttons &= ~((uint16_t)1 << b);
+    uint16_t mask = (uint16_t)1 << b;
+    if (millis() - _lastPressMs < kMinHoldMs) {
+        // Too soon — defer the release until loop() processes it
+        _pendingReleaseMask |= mask;
+    } else {
+        _buttons &= ~mask;
+        _pendingReleaseMask &= ~mask;
+    }
+}
+
+void SwitchProUSB::dPad(uint8_t d) {
+    if (d != 0x0F) {
+        // Pressing a direction — apply immediately, record press time
+        _dpad = d;
+        _pendingDpad = 0xFF;
+        _lastPressMs = millis();
+    } else {
+        // Centering (release) — defer if too soon after last press
+        if (millis() - _lastPressMs < kMinHoldMs) {
+            _pendingDpad = 0x0F;
+        } else {
+            _dpad = 0x0F;
+            _pendingDpad = 0xFF;
+        }
+    }
 }
 
 // ============================================================
@@ -639,6 +668,16 @@ bool SwitchProUSB::write() {
 void SwitchProUSB::loop() {
     // Flush any queued replies first (from _onOutput callback context)
     flushPendingReplies();
+
+    // Process deferred button/dpad releases after minimum hold time
+    if (_pendingReleaseMask && (millis() - _lastPressMs >= kMinHoldMs)) {
+        _buttons &= ~_pendingReleaseMask;
+        _pendingReleaseMask = 0;
+    }
+    if (_pendingDpad != 0xFF && (millis() - _lastPressMs >= kMinHoldMs)) {
+        _dpad = _pendingDpad;
+        _pendingDpad = 0xFF;
+    }
 
     // Two-phase reporting:
     // Phase 1 (pre-handshake): Send 0x3F simple reports so the Switch
