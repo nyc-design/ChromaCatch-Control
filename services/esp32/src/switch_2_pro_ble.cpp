@@ -370,6 +370,14 @@ void Switch2ProBLE::onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) {
                   connInfo.getConnTimeout());
     Serial.printf("[SW2BLE] Security: encrypted=%d, authenticated=%d, bonded=%d\n",
                   connInfo.isEncrypted(), connInfo.isAuthenticated(), connInfo.isBonded());
+
+    // NSO GC Protocol Guide: SMP pairing happens immediately after connection,
+    // BEFORE MTU exchange and GATT discovery. The peripheral (controller) may need
+    // to initiate the security procedure since the Switch might wait for it.
+    if (!connInfo.isEncrypted()) {
+        Serial.println("[SW2BLE] Initiating SMP pairing from peripheral...");
+        NimBLEDevice::startSecurity(connInfo.getConnHandle());
+    }
 }
 
 void Switch2ProBLE::onAuthenticationComplete(NimBLEConnInfo& connInfo) {
