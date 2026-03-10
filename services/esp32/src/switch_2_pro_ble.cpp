@@ -226,7 +226,7 @@ bool Switch2ProBLE::begin() {
     _server->setCallbacks(this);
 
     // ================================================================
-    // CRITICAL: Reset GATT table to control handle ordering.
+    // CRITICAL: Free entire GATT service list to control handle ordering.
     //
     // NimBLEDevice::createServer() registers GAP (0x1800) and GATT (0x1801)
     // services FIRST, consuming handles 1-13+. But the real Switch 2 Pro
@@ -240,10 +240,11 @@ bool Switch2ProBLE::begin() {
     // isn't at handle 0x0005, the Switch writes to the wrong handle and
     // the protocol fails silently.
     //
-    // Strategy: reset the GATT table, register OUR services first (lowest
-    // handles), then re-register GAP+GATT at the end (highest handles).
+    // ble_gatts_reset() only zeroes handle assignments but leaves services
+    // in the list. ble_gatts_free_svcs() actually frees the list so we can
+    // re-register services in the correct order.
     // ================================================================
-    ble_gatts_reset();
+    ble_gatts_free_svcs();
 
     // --- Register secondary service FIRST (handles 1-7) ---
     // Handle layout:
