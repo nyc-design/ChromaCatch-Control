@@ -393,9 +393,6 @@ bool Switch2ProBLE::begin() {
 
     _active = true;
     _connected = false;
-    _connHandle = BLE_HS_CONN_HANDLE_NONE;
-    _smpPending = false;
-    _connectTimeMs = 0;
     _inputSubscribed = false;
     _ackSubscribed = false;
     _serviceEnabled = false;
@@ -458,41 +455,30 @@ void Switch2ProBLE::end() {
 // ============================================================
 void Switch2ProBLE::onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) {
     _connected = true;
-    _connHandle = connInfo.getConnHandle();
-    _connectTimeMs = millis();
-    _smpPending = true;  // Will trigger Security Request from loop() after delay
-
-    Serial.printf("[SW2BLE] Host connected (addr: %s, type: %d, connHandle=%d)\n",
+    Serial.printf("[SW2BLE] Host connected (addr: %s, type: %d)\n",
                   connInfo.getAddress().toString().c_str(),
-                  connInfo.getAddress().getType(),
-                  _connHandle);
+                  connInfo.getAddress().getType());
     Serial.printf("[SW2BLE] Conn params: interval=%d, latency=%d, timeout=%d\n",
                   connInfo.getConnInterval(),
                   connInfo.getConnLatency(),
                   connInfo.getConnTimeout());
     Serial.printf("[SW2BLE] Security: encrypted=%d, authenticated=%d, bonded=%d\n",
                   connInfo.isEncrypted(), connInfo.isAuthenticated(), connInfo.isBonded());
-    Serial.println("[SW2BLE] SMP Security Request will be sent after 300ms delay...");
+
+    // Don't initiate SMP from peripheral — let the Switch drive the flow.
+    // The Switch connects → MTU → GATT discovery → service enable → protocol init.
 }
 
 void Switch2ProBLE::onAuthenticationComplete(NimBLEConnInfo& connInfo) {
-    _smpPending = false;  // SMP completed (success or fail)
     Serial.printf("[SW2BLE] AUTH COMPLETE: encrypted=%d, authenticated=%d, bonded=%d, "
                   "keySize=%d, addr=%s\n",
                   connInfo.isEncrypted(), connInfo.isAuthenticated(), connInfo.isBonded(),
                   connInfo.getSecKeySize(),
                   connInfo.getAddress().toString().c_str());
-    if (connInfo.isEncrypted()) {
-        Serial.println("[SW2BLE] Link encrypted — Switch should proceed with GATT discovery");
-    } else {
-        Serial.println("[SW2BLE] WARNING: Auth complete but NOT encrypted — Switch may reject");
-    }
 }
 
 void Switch2ProBLE::onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo, int reason) {
     _connected = false;
-    _connHandle = BLE_HS_CONN_HANDLE_NONE;
-    _smpPending = false;
     _inputSubscribed = false;
     _ackSubscribed = false;
     _serviceEnabled = false;
@@ -950,18 +936,9 @@ void Switch2ProBLE::setFullState(uint32_t buttons, uint8_t lx, uint8_t ly, uint8
 // ============================================================
 void Switch2ProBLE::loop() {
     if (!_active || !_connected) return;
-
-    // --- SMP Security Request (peripheral-initiated) ---
-    // NSO GC Protocol Guide sequence: Connect → SMP → MTU → GATT discovery.
-    // The Switch may be waiting for us (the peripheral) to send a Security Request
-    // PDU before it proceeds. We delay 300ms after connect to let PHY/MTU settle.
-    if (_smpPending && _connHandle != BLE_HS_CONN_HANDLE_NONE &&
-        millis() - _connectTimeMs >= 300) {
-        _smpPending = false;
-        Serial.println("[SW2BLE] Sending SMP Security Request (peripheral-initiated)...");
-        bool rc = NimBLEDevice::startSecurity(_connHandle);
-        Serial.printf("[SW2BLE] startSecurity() returned %s\n", rc ? "true" : "false");
-    }
+    // Send input reports immediately upon connection — don't wait for CCCD subscription.
+    // Real controllers start sending reports right away, which may be what triggers
+    // the Switch to proceed with service enable and protocol init.
 
     // Process deferred releases
     if (_pendingReleaseMask && (millis() - _lastPressMs >= kMinHoldMs)) {
