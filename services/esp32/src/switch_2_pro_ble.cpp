@@ -1,6 +1,7 @@
 #include "switch_2_pro_ble.h"
 #include <cstring>
 #include <esp_mac.h>
+#include <esp_log.h>
 
 // ============================================================
 // Nintendo Switch 2 Pro Controller BLE GATT UUIDs
@@ -146,6 +147,12 @@ bool Switch2ProBLE::begin() {
     if (_active) return true;
 
     Serial.println("[SW2BLE] Initializing BLE Switch 2 Pro Controller...");
+
+    // Enable verbose NimBLE logging to see ATT operations, SMP exchanges, etc.
+    esp_log_level_set("NimBLE", ESP_LOG_VERBOSE);
+    esp_log_level_set("NimBLEServer", ESP_LOG_VERBOSE);
+    esp_log_level_set("NimBLEDevice", ESP_LOG_VERBOSE);
+    esp_log_level_set("NimBLECharacteristic", ESP_LOG_VERBOSE);
 
     // --- Nintendo OUI PUBLIC BLE address ---
     // NSO GC Protocol Guide: "Connect to the controller's **public** BLE address
@@ -325,6 +332,20 @@ void Switch2ProBLE::onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) {
     Serial.printf("[SW2BLE] Host connected (addr: %s, type: %d)\n",
                   connInfo.getAddress().toString().c_str(),
                   connInfo.getAddress().getType());
+    Serial.printf("[SW2BLE] Conn params: interval=%d, latency=%d, timeout=%d\n",
+                  connInfo.getConnInterval(),
+                  connInfo.getConnLatency(),
+                  connInfo.getConnTimeout());
+    Serial.printf("[SW2BLE] Security: encrypted=%d, authenticated=%d, bonded=%d\n",
+                  connInfo.isEncrypted(), connInfo.isAuthenticated(), connInfo.isBonded());
+}
+
+void Switch2ProBLE::onAuthenticationComplete(NimBLEConnInfo& connInfo) {
+    Serial.printf("[SW2BLE] AUTH COMPLETE: encrypted=%d, authenticated=%d, bonded=%d, "
+                  "keySize=%d, addr=%s\n",
+                  connInfo.isEncrypted(), connInfo.isAuthenticated(), connInfo.isBonded(),
+                  connInfo.getSecKeySize(),
+                  connInfo.getAddress().toString().c_str());
 }
 
 void Switch2ProBLE::onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo, int reason) {
@@ -338,6 +359,15 @@ void Switch2ProBLE::onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo
         NimBLEDevice::getAdvertising()->start();
         Serial.println("[SW2BLE] Re-advertising...");
     }
+}
+
+// ============================================================
+// Characteristic read callback — log all GATT reads
+// ============================================================
+void Switch2ProBLE::onRead(NimBLECharacteristic* pChar, NimBLEConnInfo& connInfo) {
+    Serial.printf("[SW2BLE] READ on %s (handle=0x%04X)\n",
+                  pChar->getUUID().toString().c_str(),
+                  pChar->getHandle());
 }
 
 // ============================================================
