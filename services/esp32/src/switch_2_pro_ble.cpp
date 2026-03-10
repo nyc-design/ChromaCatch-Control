@@ -371,13 +371,10 @@ void Switch2ProBLE::onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) {
     Serial.printf("[SW2BLE] Security: encrypted=%d, authenticated=%d, bonded=%d\n",
                   connInfo.isEncrypted(), connInfo.isAuthenticated(), connInfo.isBonded());
 
-    // NSO GC Protocol Guide: SMP pairing happens immediately after connection,
-    // BEFORE MTU exchange and GATT discovery. The peripheral (controller) may need
-    // to initiate the security procedure since the Switch might wait for it.
-    if (!connInfo.isEncrypted()) {
-        Serial.println("[SW2BLE] Initiating SMP pairing from peripheral...");
-        NimBLEDevice::startSecurity(connInfo.getConnHandle());
-    }
+    // Don't initiate SMP from peripheral — let the Switch drive the flow.
+    // The Switch connects → MTU → GATT discovery → service enable → protocol init.
+    // Forcing startSecurity() from our side was causing SMP failure (encrypted=0).
+    // Debug logging (CONFIG_BT_NIMBLE_LOG_LEVEL=0) will show what the Switch does.
 }
 
 void Switch2ProBLE::onAuthenticationComplete(NimBLEConnInfo& connInfo) {
