@@ -41,6 +41,7 @@
 #include "usb_hid_bridge.h"
 #include "switch_pro_usb.h"
 #include "switch_pro_bt.h"
+#include "switch_2_pro_ble.h"
 
 // ============================================================
 // USER CONFIGURATION -- Edit before flashing
@@ -152,6 +153,7 @@ enum EmulationMode {
     EMU_BLUETOOTH_XBOX_CONTROLLER,
     EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER,
     EMU_WIRED_SWITCH_PRO_CONTROLLER,
+    EMU_BLUETOOTH_SWITCH_2_PRO_CONTROLLER,
     EMU_MODE_COUNT
 };
 
@@ -188,6 +190,7 @@ XboxGamepadDevice* bleXboxGamepad = nullptr;
 #if defined(CONFIG_IDF_TARGET_ESP32)
 SwitchProBT switchProBt;
 #endif
+Switch2ProBLE switch2ProBle;
 
 DeviceMode currentMode = MODE_COMBO;
 DeliveryPolicy deliveryPolicy = DELIVERY_AUTO;
@@ -333,6 +336,10 @@ bool isSwitchMode(DeviceMode mode) {
     return mode == MODE_SWITCH_CONTROLLER;
 }
 
+bool isSwitch2BlEMode() {
+    return currentEmulationMode == EMU_BLUETOOTH_SWITCH_2_PRO_CONTROLLER;
+}
+
 bool isXboxMode(DeviceMode mode) {
     return mode == MODE_GAMEPAD;
 }
@@ -373,6 +380,8 @@ bool emulationModeSupported(EmulationMode mode) {
             return true;
         case EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER:
             return BOARD_SUPPORTS_BT_SWITCH_PRO_MODE;
+        case EMU_BLUETOOTH_SWITCH_2_PRO_CONTROLLER:
+            return true;  // Both ESP32 and ESP32-S3 support BLE
         case EMU_WIRED_COMBO:
         case EMU_WIRED_MOUSE_ONLY:
         case EMU_WIRED_KEYBOARD_ONLY:
@@ -401,6 +410,7 @@ const char* emulationModeToString(EmulationMode mode) {
         case EMU_BLUETOOTH_XBOX_CONTROLLER: return "bluetooth_xbox_controller";
         case EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER: return "bluetooth_switch_2_pro_controller";
         case EMU_WIRED_SWITCH_PRO_CONTROLLER: return "wired_switch_2_pro_controller";
+        case EMU_BLUETOOTH_SWITCH_2_PRO_CONTROLLER: return "bluetooth_switch_2_pro_controller_ble";
         default: return "bluetooth_combo";
     }
 }
@@ -441,6 +451,7 @@ String getBleAdvertisementName() {
         case EMU_BLUETOOTH_KEYBOARD_ONLY: return "ChromaCatch Keyboard";
         case EMU_BLUETOOTH_XBOX_CONTROLLER: return "Xbox Wireless Controller";
         case EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER: return "Pro Controller";
+        case EMU_BLUETOOTH_SWITCH_2_PRO_CONTROLLER: return "Pro Controller";
         default: return String(DEVICE_NAME);
     }
 }
@@ -452,6 +463,7 @@ String getBleProfileLabel() {
         case EMU_BLUETOOTH_KEYBOARD_ONLY: return "ble_keyboard";
         case EMU_BLUETOOTH_XBOX_CONTROLLER: return "ble_xbox";
         case EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER: return "bt_classic_switch_pro";
+        case EMU_BLUETOOTH_SWITCH_2_PRO_CONTROLLER: return "ble_switch_2_pro";
         default: return "none";
     }
 }
@@ -467,6 +479,7 @@ String getModeHeaderLabel() {
         case EMU_BLUETOOTH_XBOX_CONTROLLER: return "XBOX";
         case EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER: return "SW2 BT";
         case EMU_WIRED_SWITCH_PRO_CONTROLLER: return "SW2 USB";
+        case EMU_BLUETOOTH_SWITCH_2_PRO_CONTROLLER: return "SW2 BLE";
         default: return "UNKNOWN";
     }
 }
@@ -601,6 +614,7 @@ LedColor modeToLedColor(EmulationMode mode) {
         case EMU_BLUETOOTH_XBOX_CONTROLLER: return {0, 220, 0};   // xbox green
         case EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER: return {220, 0, 0}; // red
         case EMU_WIRED_SWITCH_PRO_CONTROLLER: return {220, 70, 0}; // orange
+        case EMU_BLUETOOTH_SWITCH_2_PRO_CONTROLLER: return {200, 0, 50}; // magenta
         default: return {80, 80, 80};
     }
 }
@@ -713,6 +727,10 @@ void applyEmulationMode(EmulationMode mode) {
             currentMode = MODE_SWITCH_CONTROLLER;
             deliveryPolicy = DELIVERY_FORCE_USB;
             break;
+        case EMU_BLUETOOTH_SWITCH_2_PRO_CONTROLLER:
+            currentMode = MODE_SWITCH_CONTROLLER;
+            deliveryPolicy = DELIVERY_FORCE_BLE;
+            break;
         default:
             break;
     }
@@ -750,6 +768,7 @@ EmulationMode parseEmulationModeString(const String& rawInput) {
         return BOARD_SUPPORTS_BT_SWITCH_PRO_MODE ? EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER : EMU_WIRED_SWITCH_PRO_CONTROLLER;
     }
     if (raw == "wired_switch_2_pro_controller" || raw == "wired_switch_pro_controller" || raw == "switch_wired") return EMU_WIRED_SWITCH_PRO_CONTROLLER;
+    if (raw == "bluetooth_switch_2_pro_controller_ble" || raw == "ble_switch_2" || raw == "ble_switch_2_pro" || raw == "switch_2_ble") return EMU_BLUETOOTH_SWITCH_2_PRO_CONTROLLER;
 
     return currentEmulationMode;
 }
@@ -988,6 +1007,9 @@ void stopBLE() {
         switchProBt.end();
     }
 #endif
+    if (switch2ProBle.isConnected() || isSwitch2BlEMode()) {
+        switch2ProBle.end();
+    }
     if (bleComboMouse) { delete bleComboMouse; bleComboMouse = nullptr; }
     if (bleComboKb)    { delete bleComboKb;    bleComboKb = nullptr; }
     if (bleCompositeHid) {
@@ -1017,7 +1039,8 @@ void initBLE() {
     }
 
 #if defined(CONFIG_IDF_TARGET_ESP32)
-    if (BOARD_SUPPORTS_BT_SWITCH_PRO_MODE && isSwitchMode(currentMode)) {
+    if (BOARD_SUPPORTS_BT_SWITCH_PRO_MODE && isSwitchMode(currentMode) &&
+        currentEmulationMode == EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER) {
         if (switchProBt.begin()) {
             Serial.println("Bluetooth Switch Pro profile started (classic BT)");
         } else {
@@ -1026,6 +1049,13 @@ void initBLE() {
         return;
     }
 #endif
+
+    // BLE Switch 2 Pro Controller — uses NimBLE custom GATT (not HOGP)
+    if (isSwitch2BlEMode()) {
+        switch2ProBle.begin();
+        Serial.println("BLE Switch 2 Pro Controller started");
+        return;
+    }
 
     String advName = getBleAdvertisementName();
     configureNimBLEForCurrentMode();
@@ -1065,6 +1095,9 @@ void initBLE() {
 }
 
 bool isBLEConnected() {
+    if (isSwitch2BlEMode()) {
+        return switch2ProBle.isConnected();
+    }
 #if defined(CONFIG_IDF_TARGET_ESP32)
     if (BOARD_SUPPORTS_BT_SWITCH_PRO_MODE && isSwitchMode(currentMode)) {
         return switchProBt.isConnected();
@@ -1472,7 +1505,8 @@ void executeGamepadCommand(RuntimeDelivery transport, const String& action, Json
 
     if (transport == RUNTIME_BLE) {
 #if defined(CONFIG_IDF_TARGET_ESP32)
-        if (BOARD_SUPPORTS_BT_SWITCH_PRO_MODE && isSwitchMode(currentMode)) {
+        if (BOARD_SUPPORTS_BT_SWITCH_PRO_MODE && isSwitchMode(currentMode) &&
+            currentEmulationMode == EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER) {
             if (!switchProBt.isConnected()) {
                 response["status"] = "error";
                 response["error"] = "switch_pro_bt_not_connected";
@@ -1514,6 +1548,65 @@ void executeGamepadCommand(RuntimeDelivery transport, const String& action, Json
             }
         }
 #endif
+
+        // BLE Switch 2 Pro Controller — route through Switch2ProBLE
+        if (isSwitch2BlEMode()) {
+            if (!switch2ProBle.isConnected()) {
+                response["status"] = "error";
+                response["error"] = "switch_2_pro_ble_not_connected";
+                return;
+            }
+
+            if (action == "button_press" || action == "button_release") {
+                String button = doc["button"].as<String>();
+                uint8_t btn = mapSwitchProButtonNS(button);
+                if (btn == 0xFF) {
+                    response["status"] = "error";
+                    response["error"] = "unknown button";
+                    return;
+                }
+                if (action == "button_press") switch2ProBle.press(btn);
+                else switch2ProBle.release(btn);
+                response["status"] = "ok";
+                return;
+            }
+
+            if (action == "stick") {
+                String stick = doc["stick_id"].as<String>();
+                int x = doc["x"] | 0;
+                int y = doc["y"] | 0;
+                uint8_t mappedX = static_cast<uint8_t>(constrain(x, -127, 127) + 128);
+                uint8_t mappedY = static_cast<uint8_t>(constrain(y, -127, 127) + 128);
+                if (strEqIgnoreCase(stick, "left") || strEqIgnoreCase(stick, "l")) {
+                    switch2ProBle.leftXAxis(mappedX);
+                    switch2ProBle.leftYAxis(mappedY);
+                } else if (strEqIgnoreCase(stick, "right") || strEqIgnoreCase(stick, "r")) {
+                    switch2ProBle.rightXAxis(mappedX);
+                    switch2ProBle.rightYAxis(mappedY);
+                } else {
+                    response["status"] = "error";
+                    response["error"] = "unknown stick";
+                    return;
+                }
+                response["status"] = "ok";
+                return;
+            }
+
+            if (action == "hat") {
+                String dir = doc["direction"].as<String>();
+                uint8_t hat = mapDPadToUsbHat(dir);
+                // mapDPadToUsbHat returns 1-indexed (1=up..8=up_left), 0=center
+                // Switch2ProBLE::dPad expects 0=up..7=up_left, 0x0F=center
+                uint8_t stdHat = (hat == 0) ? 0x0F : (hat - 1);
+                switch2ProBle.dPad(stdHat);
+                response["status"] = "ok";
+                return;
+            }
+
+            response["status"] = "error";
+            response["error"] = "unknown gamepad action for ble_switch_2_pro";
+            return;
+        }
 
         if (!bleCompositeHid || !bleCompositeHid->isConnected()) {
             response["status"] = "error";
@@ -1995,6 +2088,7 @@ void handleStatus() {
     doc["supports_wired_output"] = BOARD_SUPPORTS_WIRED_OUTPUT;
     doc["supports_wired_input"] = BOARD_SUPPORTS_WIRED_INPUT;
     doc["supports_bt_switch_2_pro_mode"] = BOARD_SUPPORTS_BT_SWITCH_PRO_MODE;
+    doc["supports_ble_switch_2_pro_mode"] = true;  // Both ESP32 and S3 support BLE
     doc["input_priority"] = BOARD_SUPPORTS_WIRED_INPUT ? "wired>websocket>http" : "websocket>http";
     doc["wired_priority_active"] = wiredPriorityActive();
     doc["ws_priority_active"] = wsPriorityActive();
@@ -2408,6 +2502,7 @@ uint32_t emulationModeToPabbControllerId(EmulationMode mode) {
         case EMU_WIRED_SWITCH_PRO_CONTROLLER:
             return PABB_CID_NintendoSwitch_WiredProController;
         case EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER:
+        case EMU_BLUETOOTH_SWITCH_2_PRO_CONTROLLER:
             return PABB_CID_NintendoSwitch_WirelessProController;
         case EMU_BLUETOOTH_KEYBOARD_ONLY:
         case EMU_WIRED_KEYBOARD_ONLY:
@@ -2455,6 +2550,8 @@ std::vector<uint32_t> pabbSupportedControllers() {
     if (BOARD_SUPPORTS_BT_SWITCH_PRO_MODE) {
         ids.push_back(PABB_CID_NintendoSwitch_WirelessProController);
     }
+    // BLE Switch 2 Pro is available on all boards (both ESP32 and S3 have BLE)
+    // Already covered by WirelessProController CID above if BT is supported
     return ids;
 }
 
@@ -3027,10 +3124,14 @@ void loop() {
     updateDisplayExpiry();
     updateStatusLed();
 #if defined(CONFIG_IDF_TARGET_ESP32)
-    if (BOARD_SUPPORTS_BT_SWITCH_PRO_MODE && isSwitchMode(currentMode)) {
+    if (BOARD_SUPPORTS_BT_SWITCH_PRO_MODE && isSwitchMode(currentMode) &&
+        currentEmulationMode == EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER) {
         switchProBt.tick();
     }
 #endif
+    if (isSwitch2BlEMode()) {
+        switch2ProBle.loop();
+    }
 
     static bool lastBle = false;
     static bool lastUsb = false;
