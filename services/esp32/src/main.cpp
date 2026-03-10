@@ -1123,6 +1123,12 @@ RuntimeDelivery chooseRuntimeDelivery() {
         usbAvailable = isUSBConnected();
     }
 
+    // BLE Switch 2 Pro Controller buffers state locally — accept commands
+    // even when no host is connected so button state is ready at pairing time.
+    if (isSwitch2BlEMode() && switch2ProBle.isActive()) {
+        bleAvailable = true;
+    }
+
     switch (deliveryPolicy) {
         case DELIVERY_FORCE_USB:
             return usbAvailable ? RUNTIME_USB : RUNTIME_NONE;

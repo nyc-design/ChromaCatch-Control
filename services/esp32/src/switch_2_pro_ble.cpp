@@ -147,31 +147,41 @@ bool Switch2ProBLE::begin() {
 
     Serial.println("[SW2BLE] Initializing BLE Switch 2 Pro Controller...");
 
+    // --- Nintendo OUI PUBLIC BLE address ---
+    // NSO GC Protocol Guide: "Connect to the controller's **public** BLE address
+    // using LE 1M PHY." Real controllers use PUBLIC addresses with Nintendo OUI.
+    // We override the ESP32 base MAC before NimBLE init so the BLE public address
+    // gets a Nintendo prefix. esp_base_mac_addr_set() only affects interfaces
+    // that haven't been initialized yet, so WiFi (already running) keeps its MAC.
+    //
+    // Known Nintendo OUIs: 98:B6:E9, D8:6B:F7, 7C:BB:8A, 58:2F:40, etc.
+    // Using 98:B6:E9 (common on Pro Controllers, avoids the 0xD8 random-static ambiguity).
+    //
+    // ESP-IDF derives BLE public addr = base_mac + 2, so we set base_mac accordingly.
+    {
+        uint8_t factoryMac[6] = {0};
+        esp_read_mac(factoryMac, ESP_MAC_BT);  // read factory BT MAC for unique suffix
+        uint8_t baseMac[6] = {
+            0x98, 0xB6, 0xE9,           // Nintendo OUI
+            factoryMac[3], factoryMac[4],
+            static_cast<uint8_t>(factoryMac[5] - 2)  // base = bt_mac - 2 (ESP-IDF adds 2 for BT)
+        };
+        esp_base_mac_addr_set(baseMac);
+        // Expected BLE public addr: 98:B6:E9:XX:XX:YY (YY = factoryMac[5])
+        uint8_t expectedBle[6] = { 0x98, 0xB6, 0xE9, factoryMac[3], factoryMac[4], factoryMac[5] };
+        memcpy(kPairingMAC, expectedBle, 6);
+        Serial.printf("[SW2BLE] Base MAC set for Nintendo public BLE addr %02X:%02X:%02X:%02X:%02X:%02X\n",
+                      expectedBle[0], expectedBle[1], expectedBle[2],
+                      expectedBle[3], expectedBle[4], expectedBle[5]);
+    }
+
     // Real Switch 2 controllers use "DeviceName" as their GAP Device Name
     // (observed via nRF Connect on actual Pro Controller, confirmed in NSO GC Protocol Guide)
     NimBLEDevice::init("DeviceName");
     NimBLEDevice::setPower(9, NimBLETxPowerType::All);
 
-    // --- Nintendo OUI MAC address ---
-    // Real controllers have Nintendo MAC prefixes (98:B6:E9, D8:6B:F7, etc.).
-    // The Switch may filter by OUI during scanning.
-    // D8:6B:F7 is a known Nintendo OUI AND satisfies BLE random static address
-    // requirements (top 2 bits of first byte = 11, since 0xD8 = 0b11011000).
-    // We keep the factory MAC's lower 3 bytes for device uniqueness.
-    {
-        uint8_t factoryMac[6] = {0};
-        esp_read_mac(factoryMac, ESP_MAC_BT);
-        uint8_t nintendoAddr[6] = {
-            0xD8, 0x6B, 0xF7,           // Nintendo OUI
-            factoryMac[3], factoryMac[4], factoryMac[5]  // device-unique suffix
-        };
-        NimBLEDevice::setOwnAddrType(BLE_OWN_ADDR_RANDOM);
-        NimBLEDevice::setOwnAddr(nintendoAddr);
-        memcpy(kPairingMAC, nintendoAddr, 6);  // use same MAC in pairing responses
-        Serial.printf("[SW2BLE] BLE address set to %02X:%02X:%02X:%02X:%02X:%02X (Nintendo OUI)\n",
-                      nintendoAddr[0], nintendoAddr[1], nintendoAddr[2],
-                      nintendoAddr[3], nintendoAddr[4], nintendoAddr[5]);
-    }
+    // Use PUBLIC address type — real controllers use public BLE addresses.
+    NimBLEDevice::setOwnAddrType(BLE_OWN_ADDR_PUBLIC);
 
     // --- SMP pairing configuration (CRITICAL) ---
     // NSO GC Protocol Guide: "the single most important detail"
@@ -279,7 +289,7 @@ bool Switch2ProBLE::begin() {
                   (int)sizeof(kManufacturerData));
     Serial.printf("[SW2BLE] Flags: LE General Discoverable (no BR/EDR Not Supported)\n");
     Serial.printf("[SW2BLE] Scan response name: DeviceName\n");
-    Serial.printf("[SW2BLE] Address type: random static (Nintendo OUI D8:6B:F7)\n");
+    Serial.printf("[SW2BLE] Address type: PUBLIC (Nintendo OUI 98:B6:E9)\n");
     return true;
 }
 
