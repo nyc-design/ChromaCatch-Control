@@ -37,6 +37,8 @@ Automated shiny hunting bot for Pokemon Go using AirPlay screen mirroring, compu
   - BLE Xbox mode now uses an Xbox-specific Composite HID profile (`ESP32-BLE-CompositeHID`) instead of generic BLE gamepad descriptors.
   - ESP32 BLE Switch mode now runs a dedicated Classic-BT HID "Pro Controller" backend with Switch subcommand reply handling (`0x01` output + `0x21/0x30` input reports) to improve pairing compatibility and home/wake behavior.
   - Wired Switch mode now uses `switch_ESP32` USB descriptor/profile path for Nintendo Switch-compatible wired gamepad enumeration on S3.
+  - Switch 2 Pro USB emulation now keeps the real "silent-until-init" behavior strictly (no automatic HID report fallback after mount), so handshake failures are visible in logs instead of masked by synthetic reports.
+  - Switch 2 Pro USB mode now registers a vendor control-request handler (EP0) that logs and responds to unknown vendor setup requests with status/zeroed IN payloads, avoiding default control-transfer stalls that could prevent vendor-bulk init.
   - Output delivery is deterministic per emulation mode (Bluetooth modes stay BLE, wired modes stay USB); source input policy is configurable (`auto|wired|websocket|http`) independently.
   - BLE advertising name now changes per emulation mode (e.g. `ChromaCatch K + B`, `ChromaCatch Mouse`, `Xbox Wireless Controller`, `Pro Controller`).
   - Mode switch robustness: `POST /mode` now supports explicit BLE re-init (`force_reinit`) and exposes current BLE profile + advertised name in mode/status responses.

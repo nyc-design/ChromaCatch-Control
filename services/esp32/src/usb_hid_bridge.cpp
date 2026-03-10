@@ -29,6 +29,40 @@ USBHIDGamepad* gamepad = nullptr;
 SwitchProUSB* switchProUsb = nullptr;
 #if CONFIG_TINYUSB_VENDOR_ENABLED
 USBVendor* vendorBulk = nullptr;
+
+bool handleSwitchProVendorControlRequest(uint8_t rhport, uint8_t stage, arduino_usb_control_request_t const *request) {
+    if (!request) return false;
+
+    static uint32_t requestCount = 0;
+    requestCount++;
+    Serial.printf(
+        "[Switch2Pro] vendor ctrl req #%lu stage=%u dir=%u type=%u recip=%u bReq=0x%02X wValue=0x%04X wIndex=0x%04X wLen=%u\n",
+        static_cast<unsigned long>(requestCount),
+        static_cast<unsigned>(stage),
+        static_cast<unsigned>(request->bmRequestDirection),
+        static_cast<unsigned>(request->bmRequestType),
+        static_cast<unsigned>(request->bmRequestRecipient),
+        static_cast<unsigned>(request->bRequest),
+        static_cast<unsigned>(request->wValue),
+        static_cast<unsigned>(request->wIndex),
+        static_cast<unsigned>(request->wLength)
+    );
+
+    if (!vendorBulk) return false;
+
+    // Respond on setup stage only.
+    if (stage != REQUEST_STAGE_SETUP) return true;
+
+    // Accept unknown vendor control requests instead of stalling.
+    // If the host requests IN data, return zeroed bytes of requested length.
+    if (request->bmRequestDirection == REQUEST_DIRECTION_IN) {
+        static uint8_t zeros[64] = {0};
+        size_t len = request->wLength;
+        if (len > sizeof(zeros)) len = sizeof(zeros);
+        return vendorBulk->sendResponse(rhport, request, zeros, len);
+    }
+    return vendorBulk->sendResponse(rhport, request, nullptr, 0);
+}
 #endif
 #endif
 #endif
@@ -82,6 +116,7 @@ void init() {
         // TinyUSB never opens the vendor bulk endpoints (EP 0x02/0x82).
         vendorBulk = new USBVendor();
         vendorBulk->begin();
+        vendorBulk->onRequest(handleSwitchProVendorControlRequest);
         switchProUsb->setVendorInterface(vendorBulk);
         Serial.println("[USB] Switch Pro Controller USB mode initialized (HID + Vendor Bulk)");
 #else

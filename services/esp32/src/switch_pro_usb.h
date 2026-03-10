@@ -71,7 +71,7 @@ static constexpr uint32_t SW2_DPAD_MASK =
 /// Nintendo Switch 2 Pro Controller over USB.
 /// Emulates PID 0x2069 with byte-for-byte matching of:
 ///   - USB device descriptor (VID/PID/class/strings)
-///   - Configuration descriptor (HID + Vendor Bulk, 80 bytes)
+///   - Configuration descriptor (HID + Vendor Bulk, 64 bytes)
 ///   - HID report descriptor (97 bytes)
 ///   - Report 0x09 format (button bitfield, 12-bit sticks, IMU placeholder)
 ///   - Vendor Bulk Interface 1 init protocol (18-step handshake)

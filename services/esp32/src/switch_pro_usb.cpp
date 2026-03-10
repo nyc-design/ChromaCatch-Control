@@ -300,18 +300,21 @@ void SwitchProUSB::onVendorRx(const uint8_t* data, uint16_t len) {
     }
     Serial.println();
 
-    // Build ACK response — echo command structure with status bytes.
-    // Format: [cmd_id, 0x91, 0x00, arg, 0x00, ack_len, 0x00, 0x00, ...ack_data...]
-    uint8_t ack[32];
+    // Build ACK response.
+    // Real Switch 2 Pro bulk ACK header format is:
+    //   [cmd_id, 0x01, 0x00, arg, 0x00, 0xF8, 0x00, 0x00, ...optional data...]
+    uint8_t ack[64];
     memset(ack, 0, sizeof(ack));
-    uint8_t ackLen = 8;  // default minimal ACK
-
-    // Copy command header as base for ACK
-    uint8_t copyLen = (len < 8) ? len : 8;
-    memcpy(ack, data, copyLen);
-
-    // Command-specific response data
     uint8_t arg = (len >= 4) ? data[3] : 0;
+    uint8_t ackLen = 8;  // default minimal ACK
+    ack[0] = cmdId;
+    ack[1] = 0x01;
+    ack[2] = 0x00;
+    ack[3] = arg;
+    ack[4] = 0x00;
+    ack[5] = 0xF8;
+    ack[6] = 0x00;
+    ack[7] = 0x00;
 
     switch (cmdId) {
         case 0x03:
@@ -328,11 +331,14 @@ void SwitchProUSB::onVendorRx(const uint8_t* data, uint16_t len) {
             break;
         case 0x15:
             if (arg == 0x01) {
-                // MAC request — respond with our fake MAC
-                ackLen = 16;
-                memcpy(ack + 8, kFakeMAC, 6);
-                ack[14] = 0x00;
-                ack[15] = 0x00;
+                // MAC request — respond with fake gamepad MAC metadata.
+                // Layout based on reverse-engineered traces:
+                // [8]=0x01, [9]=0x04, [10]=0x01, [11..16]=gamepad MAC (LE)
+                ackLen = 17;
+                ack[8] = 0x01;
+                ack[9] = 0x04;
+                ack[10] = 0x01;
+                memcpy(ack + 11, kFakeMAC, 6);
                 Serial.println("[Switch2Pro] MAC request → responded");
             } else if (arg == 0x02) {
                 // LTK request — respond with zeroed key (USB mode, no BT pairing)
@@ -356,6 +362,23 @@ void SwitchProUSB::onVendorRx(const uint8_t* data, uint16_t len) {
             // Generic ACK — echo first bytes
             Serial.printf("[Switch2Pro] CMD 0x%02X (generic ACK)\n", cmdId);
             break;
+    }
+
+    // Known extra payload observed for command 0x01 ACK.
+    if (cmdId == 0x01 && ackLen < 12) {
+        ackLen = 12;
+        ack[8] = 0x61;
+        ack[9] = 0x12;
+        ack[10] = 0x50;
+        ack[11] = 0x10;
+    }
+
+    // Known extra payload observed for command 0x03 arg 0x01 ACK.
+    if (cmdId == 0x03 && arg == 0x01 && ackLen < 16) {
+        ackLen = 16;
+        ack[10] = 0x40;
+        ack[11] = 0xF0;
+        ack[14] = 0x60;
     }
 
 #if CONFIG_TINYUSB_VENDOR_ENABLED
@@ -674,12 +697,16 @@ void SwitchProUSB::loop() {
         }
     }
 
-    // Auto-enable HID output after 10 seconds if no vendor init received.
-    // This is a diagnostic fallback — the real controller waits for 0x03/0x0D.
+    // Real behavior: do NOT auto-enable reports.
+    // Keep waiting for host init (0x03/0x0D).
+    static bool initTimeoutLogged = false;
+    if (!mounted) {
+        initTimeoutLogged = false;
+    }
     if (mounted && !_hidOutputEnabled && mountTimeMs > 0 &&
-        (millis() - mountTimeMs >= 10000)) {
-        _hidOutputEnabled = true;
-        Serial.println("[Switch2Pro] AUTO-ENABLED HID output (no vendor init after 10s)");
+        (millis() - mountTimeMs >= 10000) && !initTimeoutLogged) {
+        initTimeoutLogged = true;
+        Serial.println("[Switch2Pro] Still waiting for vendor init (0x03/0x0D); no auto-enable fallback");
     }
 
     if (!_hidOutputEnabled) return;
