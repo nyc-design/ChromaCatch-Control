@@ -555,16 +555,12 @@ void SwitchProUSB::sendReport09() {
     // [0]: incrementing counter
     payload[0] = _timer++;
 
-    // [1]: battery/connection status byte.
-    // Format matches Switch 1 convention (Report 0x30 byte 1):
-    //   bits 7-4: battery level (0x8=full, 0x6=medium, 0x4=low, 0x2=critical)
-    //   bit 3:    isCharging (1=charging, 0=not charging)
-    //   bit 2:    connection type (1=USB, 0=BT)
-    //   bits 1-0: reserved
-    // 0x8E = full battery (8) + charging (1) + USB (1) + reserved (10)
-    // Note: joypad-os labels this "fixed" at 0x00, but the Switch UI reads
-    // battery from this byte. Without it, battery shows "not charging."
-    payload[1] = 0x8E;
+    // [1]: fixed vendor byte — always 0x00 on Switch 2 Pro Controller (PID 0x2069).
+    // Unlike Switch 1 (Report 0x30 byte 1 = battery/connection status 0x8E),
+    // the Switch 2 uses a completely different protocol. This byte is fixed at 0x00.
+    // Source: joypad-os switch2_pro.h struct ("fixed" field), enable_hid.py parsing.
+    // Battery status on Switch 2 may come from vendor bulk protocol responses.
+    payload[1] = 0x00;
 
     // [2-4]: 3 button bytes — bits map directly from _buttons word
     // _buttons bits 0-7 → payload[2], bits 8-15 → payload[3], bits 16-20 → payload[4]
@@ -727,6 +723,8 @@ void SwitchProUSB::loop() {
     static uint32_t lastDiagMs = 0;
     static bool mountLogged = false;
     static bool descriptorDumped = false;
+    static bool selfTestDone = false;
+    static uint32_t selfTestStartMs = 0;
 
     bool mounted = tud_mounted();
 
@@ -742,6 +740,8 @@ void SwitchProUSB::loop() {
         mountTimeMs = 0;
         descriptorDumped = false;
         _hidOutputEnabled = false;
+        selfTestDone = false;
+        selfTestStartMs = 0;
         Serial.println("[Switch2Pro] USB unmounted");
     }
 
@@ -781,6 +781,42 @@ void SwitchProUSB::loop() {
     }
 
     if (!_hidOutputEnabled) return;
+
+    // --- Stick self-test: sweep sticks after HID enable to verify they register ---
+    if (!selfTestDone) {
+        if (selfTestStartMs == 0) {
+            selfTestStartMs = millis();
+            Serial.println("[Switch2Pro] Stick self-test: setting sticks to extremes for 1s");
+            // Move left stick full-right, right stick full-up
+            _lx = 0xFF; _ly = 0x80; _rx = 0x80; _ry = 0xFF;
+        } else if (millis() - selfTestStartMs >= 1000) {
+            Serial.println("[Switch2Pro] Stick self-test: returning to center");
+            _lx = 0x80; _ly = 0x80; _rx = 0x80; _ry = 0x80;
+            selfTestDone = true;
+        }
+    }
+
+    // --- Periodic hex dump of report being sent (every 2s) ---
+    static uint32_t lastHexDumpMs = 0;
+    if (millis() - lastHexDumpMs >= 2000) {
+        lastHexDumpMs = millis();
+        // Build what the report looks like
+        uint16_t lx12 = static_cast<uint16_t>(_lx) << 4;
+        uint16_t ly12 = static_cast<uint16_t>(_ly) << 4;
+        uint16_t rx12 = static_cast<uint16_t>(_rx) << 4;
+        uint16_t ry12 = static_cast<uint16_t>(_ry) << 4;
+        Serial.printf("[Switch2Pro] Report hex: [%02X %02X] btn[%02X %02X %02X] Lstick[%02X %02X %02X] Rstick[%02X %02X %02X]\n",
+                      _timer, 0x00,
+                      static_cast<uint8_t>(_buttons & 0xFF),
+                      static_cast<uint8_t>((_buttons >> 8) & 0xFF),
+                      static_cast<uint8_t>((_buttons >> 16) & 0x1F),
+                      static_cast<uint8_t>(lx12 & 0xFF),
+                      static_cast<uint8_t>(((lx12 >> 8) & 0x0F) | ((ly12 & 0x0F) << 4)),
+                      static_cast<uint8_t>((ly12 >> 4) & 0xFF),
+                      static_cast<uint8_t>(rx12 & 0xFF),
+                      static_cast<uint8_t>(((rx12 >> 8) & 0x0F) | ((ry12 & 0x0F) << 4)),
+                      static_cast<uint8_t>((ry12 >> 4) & 0xFF));
+    }
 
     // Process deferred releases after minimum hold time
     if (_pendingReleaseMask && (millis() - _lastPressMs >= kMinHoldMs)) {
