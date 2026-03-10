@@ -65,10 +65,11 @@ static const uint8_t kManufacturerData[] = {
     0x69, 0x20,                          // [5-6]: PID 0x2069 (LE)
     0x00,                                // [7]:   padding
     0x01,                                // [8]:   state/flags
-    0x00, 0x00, 0x00, 0x00, 0x00,        // [9-13]: zeros
-    0x0F,                                // [14]:  status byte
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // [15-20]: zeros
-    0x00,                                // [21]:  zero
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // [9-14]: zeros
+    0x00,                                // [15]:  zero
+    0x0F,                                // [16]:  status byte
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // [17-22]: zeros
+    0x00,                                // [23]:  zero
 };
 
 // MAC for BT pairing responses — will be populated from actual BLE address in begin()
@@ -227,40 +228,18 @@ bool Switch2ProBLE::begin() {
     _server->setCallbacks(this);
 
     // ================================================================
-    // Match real controller's GATT table exactly (from nRF Connect capture):
-    //   1. GAP (0x1800) — EMPTY (no 0x2A00/0x2A01 characteristics)
-    //   2. GATT (0x1801) — EMPTY (no 0x2A05/0x2B3A/0x2B29 characteristics)
-    //   3. BD280 (control service) — 3 characteristics
-    //   4. FD0 (Nintendo main service) — 11 characteristics
+    // Service order: GAP → GATT → BD280 → FD0 (matches real controller)
     //
-    // NimBLEDevice::createServer() registers GAP with 0x2A00/0x2A01 and
-    // GATT with 0x2A05/0x2B3A/0x2B29 — characteristics the real controller
-    // does NOT have. We must free the service list and re-register empty
-    // GAP/GATT manually.
+    // nRF Connect capture of a real Switch 2 Pro Controller shows:
+    //   1. Generic Access (0x1800) — first
+    //   2. Generic Attribute (0x1801) — second
+    //   3. BD280 (control service) — third
+    //   4. FD0 (Nintendo main service) — fourth
+    //
+    // NimBLEDevice::createServer() already registers GAP and GATT first.
+    // We just register our custom services after — no need to reorder.
+    // The Switch discovers services by UUID, not hardcoded handles.
     // ================================================================
-    ble_gatts_free_svcs();
-
-    // Empty GAP service (real controller has no characteristics in 0x1800)
-    static const ble_uuid16_t kGapSvcUuid = BLE_UUID16_INIT(0x1800);
-    static const struct ble_gatt_chr_def kGapSvcChrs[] = { { 0 } };
-    static const struct ble_gatt_svc_def kEmptyGapSvc[] = {
-        { .type = BLE_GATT_SVC_TYPE_PRIMARY, .uuid = &kGapSvcUuid.u,
-          .includes = nullptr, .characteristics = kGapSvcChrs, },
-        { 0 },
-    };
-    ble_gatts_count_cfg(kEmptyGapSvc);
-    ble_gatts_add_svcs(kEmptyGapSvc);
-
-    // Empty GATT service (real controller has no characteristics in 0x1801)
-    static const ble_uuid16_t kGattSvcUuid = BLE_UUID16_INIT(0x1801);
-    static const struct ble_gatt_chr_def kGattSvcChrs[] = { { 0 } };
-    static const struct ble_gatt_svc_def kEmptyGattSvc[] = {
-        { .type = BLE_GATT_SVC_TYPE_PRIMARY, .uuid = &kGattSvcUuid.u,
-          .includes = nullptr, .characteristics = kGattSvcChrs, },
-        { 0 },
-    };
-    ble_gatts_count_cfg(kEmptyGattSvc);
-    ble_gatts_add_svcs(kEmptyGattSvc);
 
     // --- Register control service (BD280) ---
     NimBLEService* secSvc = _server->createService(kSecondaryServiceUUID);
@@ -340,7 +319,8 @@ bool Switch2ProBLE::begin() {
 
     svc->start();
 
-    Serial.println("[SW2BLE] Services registered: GAP(empty) → GATT(empty) → BD280 → FD0 (matches real controller)");
+    // GAP and GATT are already registered by createServer() — matches real controller order.
+    Serial.println("[SW2BLE] Services registered: GAP → GATT → BD280 → FD0 (matches real controller)");
 
     // --- Advertising ---
     // CRITICAL: NimBLEAdvertisementData::setFlags() ALWAYS ORs in
