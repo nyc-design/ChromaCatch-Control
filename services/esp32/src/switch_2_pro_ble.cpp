@@ -206,53 +206,85 @@ bool Switch2ProBLE::begin() {
     _server->setCallbacks(this);
 
     // Create secondary service — "service control"
-    // Host writes 0x01 0x00 to the second characteristic to activate the controller.
+    // Host writes 0x01 0x00 to BD282 to activate the controller.
+    // Properties MUST match real controller exactly (verified via nRF Connect):
+    //   BD281: Read only
+    //   BD282: Write only (service enable)
+    //   BD283: Read only
     NimBLEService* secSvc = _server->createService(kSecondaryServiceUUID);
-    secSvc->createCharacteristic(kSecChar1UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
-    _svcEnableChar = secSvc->createCharacteristic(kSecChar2UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
+    secSvc->createCharacteristic(kSecChar1UUID, NIMBLE_PROPERTY::READ);
+    _svcEnableChar = secSvc->createCharacteristic(kSecChar2UUID, NIMBLE_PROPERTY::WRITE);
     _svcEnableChar->setCallbacks(this);
-    secSvc->createCharacteristic(kSecChar3UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
+    secSvc->createCharacteristic(kSecChar3UUID, NIMBLE_PROPERTY::READ);
     secSvc->start();
 
     // Create Nintendo GATT service with all characteristics matching real controller.
+    // Characteristic ORDER and PROPERTIES must match exactly — verified via nRF Connect
+    // against a real Switch 2 Pro Controller. The Switch may use hardcoded handles.
+    //
+    // Real controller handle order (from nRF Connect):
+    //   1. 3DACBC7E — Write Without Response
+    //   2. 4147423D — Write Without Response
+    //   3. 506D9F7D — Notify
+    //   4. 649D4AC9 — Write Without Response
+    //   5. 7492866C — Read + Notify
+    //   6. FD2      — Read + Notify (input reports)
+    //   7. FDE      — Read + Notify
+    //   8. FDF      — Write Without Response
+    //   9. C765A961 — Notify
+    //  10. CC483F51 — Write Without Response
+    //  11. D3BD69D2 — Notify
     NimBLEService* svc = _server->createService(kNintendoServiceUUID);
 
-    // Input report (NOTIFY) — 63-byte controller reports
+    // 1. 3DACBC7E — Write Without Response
+    auto* wc3 = svc->createCharacteristic(kWriteChar3UUID, NIMBLE_PROPERTY::WRITE_NR);
+    wc3->setCallbacks(this);
+
+    // 2. 4147423D — Write Without Response
+    auto* wc4 = svc->createCharacteristic(kWriteChar4UUID, NIMBLE_PROPERTY::WRITE_NR);
+    wc4->setCallbacks(this);
+
+    // 3. 506D9F7D — Notify only
+    svc->createCharacteristic(kNotifyChar2UUID, NIMBLE_PROPERTY::NOTIFY);
+
+    // 4. 649D4AC9 — Write Without Response
+    auto* wc2 = svc->createCharacteristic(kWriteChar2UUID, NIMBLE_PROPERTY::WRITE_NR);
+    wc2->setCallbacks(this);
+
+    // 5. 7492866C — Read + Notify (command response / ACK channel)
+    _outCmdChar = svc->createCharacteristic(
+        kOutCmdCharUUID,
+        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY
+    );
+    _outCmdChar->setCallbacks(this);
+
+    // 6. FD2 — Read + Notify (63-byte input reports)
     _inputChar = svc->createCharacteristic(
         kInputCharUUID,
         NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY
     );
     _inputChar->setCallbacks(this);
 
-    // Output/Cmd (NOTIFY + WRITE) — host sends commands and reads ACKs here
-    _outCmdChar = svc->createCharacteristic(
-        kOutCmdCharUUID,
-        NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
-    );
-    _outCmdChar->setCallbacks(this);
-
-    // Additional write characteristics (handle all writes for command routing)
-    auto* wc1 = svc->createCharacteristic(kWriteChar1UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
-    wc1->setCallbacks(this);
-    auto* wc2 = svc->createCharacteristic(kWriteChar2UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
-    wc2->setCallbacks(this);
-    auto* wc3 = svc->createCharacteristic(kWriteChar3UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
-    wc3->setCallbacks(this);
-    auto* wc4 = svc->createCharacteristic(kWriteChar4UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
-    wc4->setCallbacks(this);
-
-    // Additional notify characteristics
-    svc->createCharacteristic(kNotifyChar1UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
-    svc->createCharacteristic(kNotifyChar2UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
-    svc->createCharacteristic(kNotifyChar3UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
-
-    // FDE (NOTIFY) — may be used for ACKs by some hosts
+    // 7. FDE — Read + Notify
     _ackChar = svc->createCharacteristic(
         kCharFDEUUID,
         NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY
     );
     _ackChar->setCallbacks(this);
-    svc->createCharacteristic(kCharFDFUUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
+
+    // 8. FDF — Write Without Response
+    auto* fdfChar = svc->createCharacteristic(kCharFDFUUID, NIMBLE_PROPERTY::WRITE_NR);
+    fdfChar->setCallbacks(this);
+
+    // 9. C765A961 — Notify only
+    svc->createCharacteristic(kNotifyChar1UUID, NIMBLE_PROPERTY::NOTIFY);
+
+    // 10. CC483F51 — Write Without Response
+    auto* wc1 = svc->createCharacteristic(kWriteChar1UUID, NIMBLE_PROPERTY::WRITE_NR);
+    wc1->setCallbacks(this);
+
+    // 11. D3BD69D2 — Notify only
+    svc->createCharacteristic(kNotifyChar3UUID, NIMBLE_PROPERTY::NOTIFY);
 
     svc->start();
 
