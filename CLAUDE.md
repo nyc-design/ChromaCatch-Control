@@ -26,11 +26,44 @@ Automated shiny hunting bot for Pokemon Go using AirPlay screen mirroring, compu
 
 ### Service Architecture
 - **Airplay Client** (`services/airplay-client/`): Runs near the source device. Manages video capture (AirPlay, SysDVR, NTR, screen capture), delivers media to the backend (via WebRTC, SRT, or WebSocket), and routes commands from the backend to the target device via pluggable Commander interface (ESP32, sys-botbase, Luma3DS, virtual gamepad). Deployed as a CLI tool.
-- **iOS Controller App** (`services/ios-app/`): Native iPhone app — full drop-in replacement for the CLI airplay-client. Controls iTools BT GPS dongle (EA session + BLE NMEA), relays HID commands to ESP32 over WebSocket-first transport (HTTP fallback), and broadcasts screen via ReplayKit (H.264 over WebSocket, same h264-ws protocol as CLI). Connects to backend control WS (`/ws/control`) plus external location service.
+- **iOS Controller App** (`services/ios-app/`): Native iPhone app focused on **video + input control**. Relays backend HID/gamepad commands to ESP32 (HTTP/WS) or local BLE HID commander, and broadcasts screen via ReplayKit (H.264 over WebSocket, same h264-ws protocol as CLI). Connects to backend control WS (`/ws/control`).
+- **iOS Location Spoofer App** (`services/ios-location-spoofer/`): Dedicated iPhone app for **location spoofing only**. Controls iTools BT GPS dongle (EA session + BLE NMEA), connects to external location service (`/ws/location`), verifies drift via CLLocationManager, and manages DNS location guard extension.
 - **Remote Backend** (`services/backend/`): Runs in the cloud (Cloud Run, VM, etc.). Receives frames (via RTSP from MediaMTX or WebSocket), runs CV analysis, and exposes split APIs:
   - client API (`/api/client/v1/...`) for first-party client communication and ops tooling
   - automation API (`/api/automation/v1/...`) for external game automation repos
-- **ESP32 Firmware** (`services/esp32/`): Multi-mode HID device with e-ink display menu. Supports BLE Mouse+Keyboard, BLE Gamepad, and USB HID (wired) output modes. Receives commands over WiFi HTTP or USB Serial. On-device button menu for mode selection. Mode discovery via `GET /mode` and remote configuration via `POST /mode`.
+- **ESP32 Firmware** (`services/esp32/`): Single codebase targeting both ESP32-S3 and ESP32-WROOM.
+  - **ESP32-S3**: wired USB HID + BLE modes, with command input priority `wired > websocket > http`.
+  - **ESP32-WROOM**: BLE modes only, with command input priority `websocket > http`.
+  - BLE Xbox mode now uses an Xbox-specific Composite HID profile (`ESP32-BLE-CompositeHID`) instead of generic BLE gamepad descriptors.
+  - ESP32 BLE Switch mode now runs a dedicated Classic-BT HID "Pro Controller" backend with Switch subcommand reply handling (`0x01` output + `0x21/0x30` input reports) to improve pairing compatibility and home/wake behavior.
+  - Wired Switch mode now uses `switch_ESP32` USB descriptor/profile path for Nintendo Switch-compatible wired gamepad enumeration on S3.
+  - Switch 2 Pro USB emulation now keeps the real "silent-until-init" behavior strictly (no automatic HID report fallback after mount), so handshake failures are visible in logs instead of masked by synthetic reports.
+  - Switch 2 Pro USB mode now registers a vendor control-request handler (EP0) that logs and responds to unknown vendor setup requests with status/zeroed IN payloads, avoiding default control-transfer stalls that could prevent vendor-bulk init.
+  - Output delivery is deterministic per emulation mode (Bluetooth modes stay BLE, wired modes stay USB); source input policy is configurable (`auto|wired|websocket|http`) independently.
+  - BLE advertising name now changes per emulation mode (e.g. `ChromaCatch K + B`, `ChromaCatch Mouse`, `Xbox Wireless Controller`, `Pro Controller`).
+  - Mode switch robustness: `POST /mode` now supports explicit BLE re-init (`force_reinit`) and exposes current BLE profile + advertised name in mode/status responses.
+  - Mode persistence: last selected emulation mode and input policy are persisted in NVS (`Preferences`) and restored on boot, so devices can power-on directly into modes like wired Switch Pro.
+  - BLE identity isolation: NimBLE modes now derive and apply a deterministic mode-scoped random MAC address per emulation mode, reducing host pairing confusion when switching between HID personalities.
+  - BLE ops hardening commands: `restart_ble`, `clear_ble_bonds`, and `set_input_policy` (plus backward-compatible `set_delivery_policy` as input policy alias).
+  - Build-time Wi-Fi config now supports environment injection: set `CC_WIFI_SSID` / `CC_WIFI_PASSWORD` (or `WIFI_SSID` / `WIFI_PASSWORD`) before `pio run` to avoid editing firmware source on pulls.
+  - Wi-Fi env injection script now emits proper C string macros for SSID/password (fixes unquoted macro compile failures when using env vars).
+  - Added dedicated `platformio` environment `esp32s3_switch` with `ARDUINO_USB_CDC_ON_BOOT=0` for cleaner Nintendo Switch USB controller enumeration on S3.
+  - `esp32` environment now builds with dual framework (`arduino, espidf`) plus `sdkconfig.defaults.esp32` to enable Classic BT HID (`CONFIG_BT_HID_ENABLED=y`) required for Switch Pro Bluetooth emulation.
+  - Switch wired stick mapping now follows Pokemon Automation semantics (inverted Y on wired Switch reports).
+  - ESP32 classic-BT Switch mode now mirrors Pokemon Automation state semantics more closely: OEM button-byte mapping, 12-bit stick packing, and joystick magnitude projection thresholds (`min=1874`, `max=320`) used by PA’s Pro Controller path.
+  - ESP32 classic-BT Switch mode still emits an explicit startup diagnostic when classic HID support is missing in the active SDK config, instead of silently failing with generic `hidd_dev_init` errors.
+  - ESP32 classic-BT Switch mode now requires/enables `CONFIG_BT_HID_DEVICE_ENABLED` in the ESP32 sdkconfig (the flag used by `esp_hidd_dev_init(..., ESP_HID_TRANSPORT_BT, ...)`) to avoid runtime `hidd_dev_init failed: -1`.
+  - ESP32 classic-BT Switch mode now aligns closer to established PA/BlueCon behavior for device-info status bytes, Bluetooth Class-of-Device gamepad signaling, and ~15ms wireless report cadence.
+  - ESP32 classic-BT Switch mode now aligns further with EasyCon/BlueCon subcommand handling (`0x21` MCU set-mode ACK behavior) and default 0x30 input report markers (`status=0x80`, vibration ACK byte `0x08`).
+  - Wired serial input now supports PA-style `SerialPABotBase` binary framing (inverted-length + CRC32C) in addition to legacy JSON lines, with request/ack handling for core PA protocol requests (versions, controller mode, status, MAC, controller list) and Switch/HID command message IDs (`0x90`, `0xa0`, `0xa1`, `0x82`).
+  - PA-style long commands now use command ACK + queued timed execution + `PABB_MSG_REQUEST_COMMAND_FINISHED` callbacks (best-effort, queue size 4) so host-side PA command flow can complete without relying on JSON command semantics.
+  - ESP32 Switch BT backend now includes a legacy Bluedroid HID API fallback path (`esp_bt_hid_device_*`) when `esp_hidd_dev_init(..., ESP_HID_TRANSPORT_BT, ...)` fails at runtime, improving compatibility with boards/core builds where the newer HID device init path is unstable.
+  - Wi-Fi compile-time macro handling is now resilient to both quoted and unquoted `CC_WIFI_SSID`/`CC_WIFI_PASSWORD` definitions (stringify + runtime unescape), preventing `'ssid' was not declared in this scope` build errors from mismatched define quoting.
+  - BLE shutdown path now guards `NimBLEDevice::deinit()` behind `NimBLEDevice::isInitialized()`, preventing ESP32 boot-time mutex asserts when starting directly in classic-BT Switch mode.
+  - ESP32 dual-framework (`arduino, espidf`) builds now auto-patch known `ESP32-BLE-CompositeHID` warning-as-error issues (constructor init-order + class-memaccess) so `esp32` environment compiles reliably under ESP-IDF `-Werror`.
+  - Onboard status LED now reflects emulation mode with mode-specific colors and connection state: blinking while output transport is disconnected, solid once connected (S3 RGB on built-in NeoPixel; ESP32 mono fallback uses the same blink/solid behavior).
+  - Wired Switch Pro mode now runs a periodic `switch_ESP32` loop tick so host detection/presence behaves like the upstream example’s continuous report cadence.
+  - Emulation presets include bluetooth/wired mouse+keyboard variants, bluetooth Xbox-controller profile, bluetooth Switch-pro profile (ESP32 only), and wired Switch-pro profile (S3 only). Mode discovery via `GET /mode` and remote configuration via `POST /mode`.
 - **Control SDK** (`services/control-sdk/`): Python SDK package for automation repos to consume control-plane REST + WebSocket APIs.
 - **Shared** (`services/shared/`): Protocol contract between services — message models, frame codec, constants.
 
@@ -199,14 +232,14 @@ ChromaCatch-Go/
 │   │       ├── test_transport.py            # SRT + WS transport + factory tests
 │   │       ├── test_ws_client.py
 │   │       └── test_cli.py
-│   ├── ios-app/                              # iOS: full client (dongle + screen broadcast + HID relay)
+│   ├── ios-app/                              # iOS: controller app (video broadcast + input relay)
 │   │   └── ChromaCatchController/
 │   │       ├── ChromaCatchController.xcodeproj
 │   │       ├── ChromaCatchController/
 │   │       │   ├── ChromaCatchControllerApp.swift  # @main SwiftUI entry
-│   │       │   ├── ContentView.swift              # UI (status, settings, broadcast, coords, log)
-│   │       │   ├── AppCoordinator.swift           # Central orchestrator (dual WS + ESP32 relay)
-│   │       │   ├── Info.plist                     # EA protocols, background modes, BT/location
+│   │       │   ├── ContentView.swift              # UI (dashboard, video, input, settings)
+│   │       │   ├── AppCoordinator.swift           # Control WS + ESP32/BLE HID orchestrator
+│   │       │   ├── Info.plist                     # App metadata, BT + network permissions
 │   │       │   ├── ChromaCatchController.entitlements  # App Group (group.com.chromacatch)
 │   │       │   ├── Managers/
 │   │       │   │   ├── BLEManager.swift           # CoreBluetooth central (FF12 service)
@@ -228,10 +261,13 @@ ChromaCatch-Go/
 │   │       │   ├── BroadcastWSClient.swift        # Simplified WS client (h264-ws protocol)
 │   │       │   ├── Info.plist                     # Extension config (broadcast-services-upload)
 │   │       │   └── ChromaCatchBroadcast.entitlements  # App Group (group.com.chromacatch)
-│   │       └── ChromaCatchDNS/                    # NEPacketTunnelProvider DNS Filter Extension
-│   │           ├── PacketTunnelProvider.swift      # DNS sinkhole for Apple location domains
-│   │           ├── Info.plist                     # Extension config (packet-tunnel)
-│   │           └── ChromaCatchDNS.entitlements    # packet-tunnel-provider + App Group
+│   ├── ios-location-spoofer/                     # iOS: dedicated location spoof app package
+│   │   ├── README.md
+│   │   └── ChromaCatchLocationSpoof/
+│   │       ├── ChromaCatchLocationSpoof.xcodeproj
+│   │       ├── ChromaCatchController/            # spoof-focused SwiftUI app target
+│   │       ├── ChromaCatchDNS/                   # DNS location guard extension
+│   │       └── ChromaCatchBroadcast/             # retained copy (safe to remove after move if unused)
 │   └── esp32/                               # ESP32 firmware (v2: multi-mode HID)
 │       ├── platformio.ini                   # BLE Mouse/KB/Gamepad + GxEPD2 + AceButton
 │       └── src/main.cpp                     # Multi-mode HID + e-ink menu + WiFi/Serial
@@ -307,7 +343,7 @@ ChromaCatch-Go/
 - [x] H264Decoder (backend PyAV/FFmpeg streaming H.264 → BGR decode)
 - [x] 260 tests passing (95 new transport + failover + MediaMTX + RTSP + H.264 tests)
 
-### Phase 1.7: Location Spoofing + iOS Full Client [IN PROGRESS]
+### Phase 1.7: Location Spoofing + iOS Split Apps [IN PROGRESS]
 - [x] iTools BT dongle protocol reverse-engineered (AT+CN/RP init, NMEA RMC+GGA over BLE FF03)
 - [x] Standalone location service extracted to external `ChromaCatch-Go` repo (decoupled from control-plane backend)
 - [x] iOS app scaffold (SwiftUI, CoreBluetooth BLEManager, EA EAManager, WebSocket, NMEA generator)
@@ -319,6 +355,9 @@ ChromaCatch-Go/
 - [x] App Group IPC (shared UserDefaults between main app and broadcast extension)
 - [x] GPS location verification (LocationMonitor: CLLocationManager polling + haversine drift + auto-recovery)
 - [x] DNS filter extension (NEPacketTunnelProvider sinkhole for Apple Wi-Fi/cell positioning domains)
+- [x] iOS app split into two deliverables:
+  - `services/ios-app/` for video/input control + ReplayKit broadcast
+  - `services/ios-location-spoofer/` for location spoofing + DNS location guard
 - [x] 265 tests passing (location service tests now live in external `ChromaCatch-Go` repo)
 - [ ] On-device testing: verify EA session activates dongle GPS forwarding (RP status `>`)
 - [ ] End-to-end: external location service POST /location → iOS app WS → BLE NMEA → iPhone location change
