@@ -528,20 +528,18 @@ void SwitchProUSB::_onOutput(uint8_t report_id, const uint8_t* buffer, uint16_t 
 // ============================================================
 // Report 0x09 builder and sender
 //
-// Verified against joycon2cpp (TheFrano/joycon2cpp) which reads
-// the real Switch 2 Pro Controller on Windows via HID API.
+// Verified against joypad-os WebHID parser reading a real
+// Switch 2 Pro Controller RAW wire format (NOT HID-API-reinterpreted).
 //
 // Payload offsets (63 bytes, report ID 0x09 sent separately):
 //   [0]      Counter (uint8_t, increments each report)
-//   [1]      Fixed vendor/status byte (0x00)
-//   [2]      Status byte (0x00)
-//   [3]      Buttons A: Y(0), X(1), B(2), A(3), ?(4), ?(5), R(6), ZR(7)
-//   [4]      Buttons B: -(0), +(1), R3(2), L3(3), Home(4), Cap(5), R4(6), L4(7)
-//   [5]      Buttons C: DD(0), DU(1), DR(2), DL(3), ?(4), ?(5), L(6), ZL(7)
-//   [6-8]    Reserved (zeroed)
-//   [9-11]   Left stick  (packed 12-bit X, Y)
-//   [12-14]  Right stick (packed 12-bit X, Y)
-//   [15-62]  Vendor data (zeroed — optical mouse, IMU, etc.)
+//   [1]      Battery/status byte (0x90 = USB-powered full battery)
+//   [2]      Buttons 0: B(0), A(1), Y(2), X(3), R(4), ZR(5), +(6), R3(7)
+//   [3]      Buttons 1: DD(0), DR(1), DL(2), DU(3), L(4), ZL(5), -(6), L3(7)
+//   [4]      Buttons 2: Home(0), Cap(1), R4(2), L4(3), Square(4), unused(5-7)
+//   [5-7]    Left stick  (packed 12-bit X, Y)
+//   [8-10]   Right stick (packed 12-bit X, Y)
+//   [11-62]  IMU / motion data (zeroed)
 //
 // 12-bit stick packing:
 //   byte[0] = X[7:0]
@@ -557,17 +555,18 @@ void SwitchProUSB::sendReport09() {
     // [0]: incrementing counter
     payload[0] = _timer++;
 
-    // [1-2]: vendor/status bytes
-    payload[1] = 0x00;
-    payload[2] = 0x00;
+    // [1]: battery/status byte
+    // High nibble = battery level: 0x8=full, 0x6=medium, 0x4=low, 0x2=critical
+    // Bit 0 = charging flag (1=charging/USB-powered)
+    // 0x90 = full battery (0x8 << 4) + USB-powered (0x10 flag from Switch 1 convention)
+    // Real Switch 2 Pro on USB shows full battery with this value.
+    payload[1] = 0x90;
 
-    // [3-5]: 3 button bytes — bits map directly from _buttons word
-    // _buttons bits 0-7 → payload[3], bits 8-15 → payload[4], bits 16-23 → payload[5]
-    payload[3] = static_cast<uint8_t>(_buttons & 0xFF);
-    payload[4] = static_cast<uint8_t>((_buttons >> 8) & 0xFF);
-    payload[5] = static_cast<uint8_t>((_buttons >> 16) & 0xFF);
-
-    // [6-8]: reserved (zeroed)
+    // [2-4]: 3 button bytes — bits map directly from _buttons word
+    // _buttons bits 0-7 → payload[2], bits 8-15 → payload[3], bits 16-20 → payload[4]
+    payload[2] = static_cast<uint8_t>(_buttons & 0xFF);
+    payload[3] = static_cast<uint8_t>((_buttons >> 8) & 0xFF);
+    payload[4] = static_cast<uint8_t>((_buttons >> 16) & 0x1F);
 
     // Scale 8-bit (0x00-0xFF) to 12-bit (0x000-0xFF0)
     // Center: 0x80 → 0x800 (2048) — matches real controller center
@@ -576,17 +575,17 @@ void SwitchProUSB::sendReport09() {
     uint16_t rx12 = static_cast<uint16_t>(_rx) << 4;
     uint16_t ry12 = static_cast<uint16_t>(_ry) << 4;
 
-    // [9-11]: left stick (12-bit X, 12-bit Y packed into 3 bytes)
-    payload[9]  = lx12 & 0xFF;
-    payload[10] = ((lx12 >> 8) & 0x0F) | ((ly12 & 0x0F) << 4);
-    payload[11] = (ly12 >> 4) & 0xFF;
+    // [5-7]: left stick (12-bit X, 12-bit Y packed into 3 bytes)
+    payload[5] = lx12 & 0xFF;
+    payload[6] = ((lx12 >> 8) & 0x0F) | ((ly12 & 0x0F) << 4);
+    payload[7] = (ly12 >> 4) & 0xFF;
 
-    // [12-14]: right stick (12-bit X, 12-bit Y packed into 3 bytes)
-    payload[12] = rx12 & 0xFF;
-    payload[13] = ((rx12 >> 8) & 0x0F) | ((ry12 & 0x0F) << 4);
-    payload[14] = (ry12 >> 4) & 0xFF;
+    // [8-10]: right stick (12-bit X, 12-bit Y packed into 3 bytes)
+    payload[8]  = rx12 & 0xFF;
+    payload[9]  = ((rx12 >> 8) & 0x0F) | ((ry12 & 0x0F) << 4);
+    payload[10] = (ry12 >> 4) & 0xFF;
 
-    // [15-62]: vendor data (optical mouse, IMU, etc.) — zeroed
+    // [11-62]: IMU / motion data — zeroed
 
     trySendReport(0x09, payload, sizeof(payload));
 }

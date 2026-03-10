@@ -14,53 +14,48 @@ class USBVendor;  // forward declaration (avoid including USBVendor.h → tusb.h
 
 // ============================================================
 // Switch 2 Pro Controller button bit positions
-// Verified against joycon2cpp (TheFrano/joycon2cpp) which reads
-// the real controller's Report 0x09 on Windows.
+// Based on joypad-os raw wire format (WebHID parser reading from
+// real Switch 2 Pro Controller, NOT Windows HID API reinterpreted).
 //
 // Report 0x09 layout (64 bytes total, 63 bytes payload after report ID):
 //   [0]      Counter (uint8_t, increments each report)
-//   [1]      Fixed vendor byte (0x00)
-//   [2]      Status byte (0x00)
-//   [3]      Buttons A: Y(0), X(1), B(2), A(3), ?(4), ?(5), R(6), ZR(7)
-//   [4]      Buttons B: -(0), +(1), R3(2), L3(3), Home(4), Cap(5), R4(6), L4(7)
-//   [5]      Buttons C: DD(0), DU(1), DR(2), DL(3), ?(4), ?(5), L(6), ZL(7)
-//   [6-8]    Unknown (zeroed — maybe extra buttons/triggers on future FW)
-//   [9-11]   Left stick  (packed 12-bit X, Y)
-//   [12-14]  Right stick (packed 12-bit X, Y)
-//   [15-18]  Optical mouse delta (signed 16-bit X, Y — zeroed if unused)
-//   [19-46]  Unknown / reserved
-//   [47-58]  IMU (accel XYZ + gyro XYZ, signed 16-bit)
-//   [59-62]  Unknown / reserved
+//   [1]      Fixed/status byte (0x00)
+//   [2]      Buttons 0: B(0), A(1), Y(2), X(3), R(4), ZR(5), +(6), R3(7)
+//   [3]      Buttons 1: DD(0), DR(1), DL(2), DU(3), L(4), ZL(5), -(6), L3(7)
+//   [4]      Buttons 2: Home(0), Cap(1), R4(2), L4(3), Square(4), unused(5-7)
+//   [5-7]    Left stick  (packed 12-bit X, Y)
+//   [8-10]   Right stick (packed 12-bit X, Y)
+//   [11-62]  IMU / motion data (zeroed)
 // ============================================================
 enum Switch2ProButton : uint8_t {
-    // Payload byte [3]: face buttons + R shoulder + trigger
-    SW2_BTN_Y     = 0,   // Y (left face button)
-    SW2_BTN_X     = 1,   // X (top face button)
-    SW2_BTN_B     = 2,   // B (bottom face button)
-    SW2_BTN_A     = 3,   // A (right face button)
-    SW2_BTN_R     = 6,   // R shoulder
-    SW2_BTN_ZR    = 7,   // ZR trigger
+    // Payload byte [2]: face buttons + R shoulder/trigger + start + R3
+    SW2_BTN_B     = 0,   // B (bottom face button)
+    SW2_BTN_A     = 1,   // A (right face button)
+    SW2_BTN_Y     = 2,   // Y (left face button)
+    SW2_BTN_X     = 3,   // X (top face button)
+    SW2_BTN_R     = 4,   // R shoulder
+    SW2_BTN_ZR    = 5,   // ZR trigger
+    SW2_BTN_PLUS  = 6,   // + (start)
+    SW2_BTN_R3    = 7,   // Right stick click
 
-    // Payload byte [4]: system buttons + stick clicks + paddles
-    SW2_BTN_MINUS   = 8,  // - (select)
-    SW2_BTN_PLUS    = 9,  // + (start)
-    SW2_BTN_R3      = 10, // Right stick click
-    SW2_BTN_L3      = 11, // Left stick click
-    SW2_BTN_HOME    = 12, // Home
-    SW2_BTN_CAPTURE = 13, // Capture
-    SW2_BTN_R4      = 14, // Rear right paddle
-    SW2_BTN_L4      = 15, // Rear left paddle
+    // Payload byte [3]: d-pad + L shoulder/trigger + select + L3
+    SW2_BTN_DDOWN  = 8,  // D-pad down
+    SW2_BTN_DRIGHT = 9,  // D-pad right
+    SW2_BTN_DLEFT  = 10, // D-pad left
+    SW2_BTN_DUP    = 11, // D-pad up
+    SW2_BTN_L      = 12, // L shoulder
+    SW2_BTN_ZL     = 13, // ZL trigger
+    SW2_BTN_MINUS  = 14, // - (select)
+    SW2_BTN_L3     = 15, // Left stick click
 
-    // Payload byte [5]: d-pad + L shoulder + trigger
-    SW2_BTN_DDOWN  = 16, // D-pad down
-    SW2_BTN_DUP    = 17, // D-pad up
-    SW2_BTN_DRIGHT = 18, // D-pad right
-    SW2_BTN_DLEFT  = 19, // D-pad left
-    SW2_BTN_SQUARE = 20, // Square button (new on Switch 2)
-    SW2_BTN_L      = 22, // L shoulder
-    SW2_BTN_ZL     = 23, // ZL trigger
+    // Payload byte [4]: system buttons + paddles + square
+    SW2_BTN_HOME    = 16, // Home
+    SW2_BTN_CAPTURE = 17, // Capture
+    SW2_BTN_R4      = 18, // Rear right paddle
+    SW2_BTN_L4      = 19, // Rear left paddle
+    SW2_BTN_SQUARE  = 20, // Square button (new on Switch 2)
 
-    SW2_BTN_COUNT  = 24,
+    SW2_BTN_COUNT  = 21,
 };
 
 // D-pad mask for clearing all direction bits at once
@@ -91,8 +86,8 @@ public:
     inline void releaseAll() { _buttons = 0; }
 
     // Set all buttons at once (bits match SW2_BTN_* positions).
-    // D-pad directions are part of the button word (bits 16-19).
-    inline void setButtons(uint32_t b) { _buttons = b & 0x00FFFFFF; }
+    // D-pad directions are part of the button word (bits 8-11).
+    inline void setButtons(uint32_t b) { _buttons = b & 0x001FFFFF; }
 
     // D-pad: hat value 0-7=directions, 0x0F=center.
     // Sets individual direction bits in the button word.
@@ -149,9 +144,9 @@ private:
     uint32_t _lastPressMs = 0;
     uint32_t _pendingReleaseMask = 0;  // button bits pending release
 
-    // Button state — bits 0-23 match SW2_BTN_* positions directly.
-    // Bits 0-7 → payload[3], 8-15 → payload[4], 16-23 → payload[5].
-    // D-pad directions are individual button bits (16-19), not a separate field.
+    // Button state — bits 0-20 match SW2_BTN_* positions directly.
+    // Bits 0-7 → payload[2], 8-15 → payload[3], 16-20 → payload[4].
+    // D-pad directions are individual button bits (8-11), not a separate field.
     uint32_t _buttons = 0;
 
     // Stick state (8-bit, 0x80 = center, maps to 12-bit 0x800 = 2048 center)
