@@ -451,7 +451,7 @@ String getBleAdvertisementName() {
         case EMU_BLUETOOTH_KEYBOARD_ONLY: return "ChromaCatch Keyboard";
         case EMU_BLUETOOTH_XBOX_CONTROLLER: return "Xbox Wireless Controller";
         case EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER: return "Pro Controller";
-        case EMU_BLUETOOTH_SWITCH_2_PRO_CONTROLLER: return "Pro Controller";
+        case EMU_BLUETOOTH_SWITCH_2_PRO_CONTROLLER: return "DeviceName";
         default: return String(DEVICE_NAME);
     }
 }

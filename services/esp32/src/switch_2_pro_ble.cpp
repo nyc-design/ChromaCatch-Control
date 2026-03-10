@@ -1,5 +1,6 @@
 #include "switch_2_pro_ble.h"
 #include <cstring>
+#include <esp_mac.h>
 
 // ============================================================
 // Nintendo Switch 2 Pro Controller BLE GATT UUIDs
@@ -68,8 +69,8 @@ static const uint8_t kManufacturerData[] = {
     0x00,                                // [23]:  zero
 };
 
-// Fake MAC for BT pairing responses
-static const uint8_t kFakeMAC[] = { 0xCC, 0xCC, 0x02, 0x03, 0x04, 0x05 };
+// MAC for BT pairing responses — will be populated from actual BLE address in begin()
+static uint8_t kPairingMAC[] = { 0xD8, 0x6B, 0xF7, 0x01, 0x02, 0x03 };
 
 // ============================================================
 // Button remapping: internal SW2_BTN_* → BLE report byte layout
@@ -146,8 +147,31 @@ bool Switch2ProBLE::begin() {
 
     Serial.println("[SW2BLE] Initializing BLE Switch 2 Pro Controller...");
 
-    NimBLEDevice::init("Pro Controller");
+    // Real Switch 2 controllers use "DeviceName" as their GAP Device Name
+    // (observed via nRF Connect on actual Pro Controller, confirmed in NSO GC Protocol Guide)
+    NimBLEDevice::init("DeviceName");
     NimBLEDevice::setPower(9, NimBLETxPowerType::All);
+
+    // --- Nintendo OUI MAC address ---
+    // Real controllers have Nintendo MAC prefixes (98:B6:E9, D8:6B:F7, etc.).
+    // The Switch may filter by OUI during scanning.
+    // D8:6B:F7 is a known Nintendo OUI AND satisfies BLE random static address
+    // requirements (top 2 bits of first byte = 11, since 0xD8 = 0b11011000).
+    // We keep the factory MAC's lower 3 bytes for device uniqueness.
+    {
+        uint8_t factoryMac[6] = {0};
+        esp_read_mac(factoryMac, ESP_MAC_BT);
+        uint8_t nintendoAddr[6] = {
+            0xD8, 0x6B, 0xF7,           // Nintendo OUI
+            factoryMac[3], factoryMac[4], factoryMac[5]  // device-unique suffix
+        };
+        NimBLEDevice::setOwnAddrType(BLE_OWN_ADDR_RANDOM);
+        NimBLEDevice::setOwnAddr(nintendoAddr);
+        memcpy(kPairingMAC, nintendoAddr, 6);  // use same MAC in pairing responses
+        Serial.printf("[SW2BLE] BLE address set to %02X:%02X:%02X:%02X:%02X:%02X (Nintendo OUI)\n",
+                      nintendoAddr[0], nintendoAddr[1], nintendoAddr[2],
+                      nintendoAddr[3], nintendoAddr[4], nintendoAddr[5]);
+    }
 
     // --- SMP pairing configuration (CRITICAL) ---
     // NSO GC Protocol Guide: "the single most important detail"
@@ -222,13 +246,16 @@ bool Switch2ProBLE::begin() {
     NimBLEAdvertising* pAdv = NimBLEDevice::getAdvertising();
 
     NimBLEAdvertisementData advData;
-    advData.setFlags(BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP);
+    // Real controller may support BR/EDR, so don't set BREDR_UNSUP.
+    // Use only LE General Discoverable flag.
+    advData.setFlags(BLE_HS_ADV_F_DISC_GEN);
     advData.setManufacturerData(
         std::string(reinterpret_cast<const char*>(kManufacturerData), sizeof(kManufacturerData)));
     pAdv->setAdvertisementData(advData);
 
+    // Scan response with device name matching real controller
     NimBLEAdvertisementData scanRsp;
-    scanRsp.setName("Pro Controller");
+    scanRsp.setName("DeviceName");
     pAdv->setScanResponseData(scanRsp);
 
     pAdv->setMinInterval(0x20);  // 20ms
@@ -246,7 +273,13 @@ bool Switch2ProBLE::begin() {
     _lastReportMs = 0;
     _pendingReleaseMask = 0;
 
+    // Log advertising details for diagnostics
     Serial.println("[SW2BLE] BLE Switch 2 Pro Controller advertising started");
+    Serial.printf("[SW2BLE] Manufacturer data: %d bytes (company ID 0x0553)\n",
+                  (int)sizeof(kManufacturerData));
+    Serial.printf("[SW2BLE] Flags: LE General Discoverable (no BR/EDR Not Supported)\n");
+    Serial.printf("[SW2BLE] Scan response name: DeviceName\n");
+    Serial.printf("[SW2BLE] Address type: random static (Nintendo OUI D8:6B:F7)\n");
     return true;
 }
 
@@ -470,8 +503,8 @@ void Switch2ProBLE::handlePairingCommand(const uint8_t* data, uint16_t len, uint
                 size_t copyLen = (len - 4 > 12) ? 12 : (len - 4);
                 memcpy(val, data + 4, copyLen);
             }
-            // Place our fake MAC at expected offset
-            memcpy(val + 4, kFakeMAC, 6);
+            // Place our MAC at expected offset
+            memcpy(val + 4, kPairingMAC, 6);
             sendAck(0x15, subcmd, val, 16);
             break;
         }
