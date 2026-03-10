@@ -13,32 +13,59 @@
 // service: first NOTIFY = input, first WRITE = output/cmd. The Switch
 // console likely does the same. Characteristic order in GATT matters.
 // ============================================================
+// Primary Nintendo service and characteristics
 static const NimBLEUUID kNintendoServiceUUID("ab7de9be-89fe-49ad-828f-118f09df7fd0");
 static const NimBLEUUID kInputCharUUID("ab7de9be-89fe-49ad-828f-118f09df7fd2");
-static const NimBLEUUID kOutCmdCharUUID("ab7de9be-89fe-49ad-828f-118f09df7fd3");
-static const NimBLEUUID kAckCharUUID("ab7de9be-89fe-49ad-828f-118f09df7fd5");
+static const NimBLEUUID kOutCmdCharUUID("7492866c-ec3e-4619-8258-32755ffcc0f8");
+static const NimBLEUUID kWriteChar1UUID("cc483f51-9258-427d-a939-630c31f72b05");
+static const NimBLEUUID kWriteChar2UUID("649d4ac9-8eb7-4e6c-af44-1ea54fe5f005");
+static const NimBLEUUID kWriteChar3UUID("3dacbc7e-6955-40b5-8eaf-6f9809e8b379");
+static const NimBLEUUID kWriteChar4UUID("4147423d-fdae-4df7-a4f7-d23e5df59f8d");
+static const NimBLEUUID kNotifyChar1UUID("c765a961-d9d8-4d36-a20a-5315b111836a");
+static const NimBLEUUID kNotifyChar2UUID("506d9f7d-4278-4e95-a549-326ba77657e0");
+static const NimBLEUUID kNotifyChar3UUID("d3bd69d2-841c-4241-ab15-f86f406d2a80");
+static const NimBLEUUID kCharFDEUUID("ab7de9be-89fe-49ad-828f-118f09df7fde");
+static const NimBLEUUID kCharFDFUUID("ab7de9be-89fe-49ad-828f-118f09df7fdf");
+
+// Secondary service (unknown purpose, present on real controller)
+static const NimBLEUUID kSecondaryServiceUUID("00c5af5d-1964-4e30-8f51-1956f96bd280");
+static const NimBLEUUID kSecChar1UUID("00c5af5d-1964-4e30-8f51-1956f96bd281");
+static const NimBLEUUID kSecChar2UUID("00c5af5d-1964-4e30-8f51-1956f96bd282");
+static const NimBLEUUID kSecChar3UUID("00c5af5d-1964-4e30-8f51-1956f96bd283");
 
 // ============================================================
 // BLE advertising manufacturer data
 //
-// Format (from NS2-Connect.py extract_nintendo_info):
-//   Bytes 0-1: Company ID 0x0553 (LE) — included by NimBLE in AD type
-//   Payload bytes (after company ID):
-//     [0-1]: Unknown header bytes
-//     [2]:   0x03 (magic marker)
-//     [3]:   0x7E (part of vendor ID 0x057E)
-//     [4-5]: PID (LE) — 0x69, 0x20 for PID 0x2069
+// Captured from real Switch 2 Pro Controller via nRF Connect:
+//   Company ID: 0x0553 (Nintendo, LE) — first 2 bytes in AD type 0xFF
+//   Payload (24 bytes after company ID):
+//     [0]:    0x01 (type/version)
+//     [1]:    0x00
+//     [2]:    0x03 (magic marker — NS2-Connect checks data[2]==0x03)
+//     [3-4]:  VID 0x057E (LE: 7E 05)  — NS2-Connect checks data[3]==0x7E
+//     [5-6]:  PID 0x2069 (LE: 69 20)
+//     [7]:    0x00
+//     [8]:    0x01 (state/flags)
+//     [9-15]: zeros
+//     [16]:   0x0F (status byte)
+//     [17-23]: zeros
 //
-// NS2-Connect checks: data[2]==0x03 && data[3]==0x7E → Nintendo
-//   then reads PID from (data[5]<<8)|data[4]
-//
-// BlueRetro hci.c detects Switch 2 by company ID 0x0553 alone.
+// Real adv hex (after company ID):
+//   01 00 03 7E 05 69 20 00 01 00 00 00 00 00 00 00 0F 00 00 00 00 00 00 00
 // ============================================================
 static const uint8_t kManufacturerData[] = {
-    0x53, 0x05,  // Company ID: 0x0553 (little-endian)
-    0x00, 0x00,  // Payload [0-1]: header (padding)
-    0x03, 0x7E,  // Payload [2-3]: magic marker
-    0x69, 0x20,  // Payload [4-5]: PID 0x2069 (Switch 2 Pro Controller, LE)
+    0x53, 0x05,                          // Company ID: 0x0553 (little-endian)
+    0x01, 0x00,                          // [0-1]: type/version
+    0x03,                                // [2]:   magic marker
+    0x7E, 0x05,                          // [3-4]: VID 0x057E (LE)
+    0x69, 0x20,                          // [5-6]: PID 0x2069 (LE)
+    0x00,                                // [7]:   padding
+    0x01,                                // [8]:   state/flags
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // [9-14]: zeros
+    0x00,                                // [15]:  zero
+    0x0F,                                // [16]:  status byte
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // [17-22]: zeros
+    0x00,                                // [23]:  zero
 };
 
 // Fake MAC for BT pairing responses
@@ -103,56 +130,72 @@ bool Switch2ProBLE::begin() {
     _server = NimBLEDevice::createServer();
     _server->setCallbacks(this);
 
-    // Create Nintendo custom GATT service
+    // Create secondary service (present on real controller, unknown purpose)
+    // Must exist before Nintendo service to match real GATT handle ordering.
+    NimBLEService* secSvc = _server->createService(kSecondaryServiceUUID);
+    secSvc->createCharacteristic(kSecChar1UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
+    secSvc->createCharacteristic(kSecChar2UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
+    secSvc->createCharacteristic(kSecChar3UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
+    secSvc->start();
+
+    // Create Nintendo custom GATT service with all 11 characteristics
+    // matching the real Switch 2 Pro Controller GATT structure captured via nRF Connect.
+    // Characteristic order determines GATT handle order — must match real controller.
     NimBLEService* svc = _server->createService(kNintendoServiceUUID);
 
-    // IMPORTANT: Characteristic creation order determines GATT handle order.
-    // NS2-Connect discovers by property: first NOTIFY = input, first WRITE = output/cmd.
-    // The Switch console likely does the same.
-
-    // 1. Input characteristic: controller → host (NOTIFY) — MUST be first NOTIFY
+    // 1. Input: controller → host (NOTIFY + CCCD) — primary input reports
     _inputChar = svc->createCharacteristic(
         kInputCharUUID,
         NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY
     );
     _inputChar->setCallbacks(this);
 
-    // 2. Combined output/cmd: host → controller (WRITE + WRITE_NR) — MUST be first WRITE
-    //    Handles both rumble output and init commands in one characteristic.
-    //    BlueRetro uses separate handles (0x0012 for rumble, 0x0014 for cmd, 0x0016 for combined),
-    //    but NS2-Connect sends everything to the first writable characteristic.
+    // 2. Output/Cmd: host → controller (NOTIFY + WRITE) — commands and rumble
+    //    NS2-Connect sends commands to the first writable characteristic with NOTIFY.
     _outCmdChar = svc->createCharacteristic(
         kOutCmdCharUUID,
-        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
+        NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
     );
     _outCmdChar->setCallbacks(this);
 
-    // 3. ACK characteristic: controller → host (NOTIFY) — second NOTIFY
+    // 3-6. Additional write characteristics (no CCCD on real controller)
+    svc->createCharacteristic(kWriteChar1UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
+    svc->createCharacteristic(kWriteChar2UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
+    svc->createCharacteristic(kWriteChar3UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
+    svc->createCharacteristic(kWriteChar4UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
+
+    // 7-9. Additional notify characteristics (have CCCD on real controller)
+    svc->createCharacteristic(kNotifyChar1UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
+    svc->createCharacteristic(kNotifyChar2UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
+    svc->createCharacteristic(kNotifyChar3UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
+
+    // 10-11. FDE (NOTIFY + CCCD) and FDF (no CCCD)
     _ackChar = svc->createCharacteristic(
-        kAckCharUUID,
+        kCharFDEUUID,
         NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY
     );
     _ackChar->setCallbacks(this);
+    svc->createCharacteristic(kCharFDFUUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
 
     svc->start();
 
-    // Configure advertising
+    // Configure advertising to match real Switch 2 Pro Controller capture:
+    //   - Manufacturer data with full 24-byte payload (company ID + payload)
+    //   - NO advertised service UUIDs (real controller: "does not advertise any service")
+    //   - NO appearance value
+    //   - Connectable: yes
+    //   - ~20ms advertising interval
     NimBLEAdvertising* pAdv = NimBLEDevice::getAdvertising();
 
     NimBLEAdvertisementData advData;
+    advData.setFlags(BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP);
     advData.setName("Pro Controller");
-    advData.setAppearance(0x03C4);  // HID Gamepad
     advData.setManufacturerData(
         std::string(reinterpret_cast<const char*>(kManufacturerData), sizeof(kManufacturerData)));
     pAdv->setAdvertisementData(advData);
 
-    // Scan response with Nintendo service UUID
-    NimBLEAdvertisementData scanRsp;
-    scanRsp.addServiceUUID(kNintendoServiceUUID);
-    pAdv->setScanResponseData(scanRsp);
-
     pAdv->setMinInterval(0x20);  // 20ms
-    pAdv->setMaxInterval(0x40);  // 40ms
+    pAdv->setMaxInterval(0x28);  // ~25ms (real controller: 20.51ms avg)
     pAdv->start();
 
     _active = true;
@@ -233,10 +276,15 @@ void Switch2ProBLE::onSubscribe(NimBLECharacteristic* pChar,
         _inputSubscribed = notify;
         Serial.printf("[SW2BLE] Input notifications %s\n",
                       notify ? "ENABLED → sending reports" : "disabled");
-    } else if (pChar == _ackChar) {
+    } else if (pChar == _outCmdChar) {
         _ackSubscribed = notify;
-        Serial.printf("[SW2BLE] ACK notifications %s\n",
+        Serial.printf("[SW2BLE] OutCmd (ACK) notifications %s\n",
                       notify ? "ENABLED" : "disabled");
+    } else if (pChar == _ackChar) {
+        Serial.printf("[SW2BLE] FDE notifications %s\n",
+                      notify ? "ENABLED" : "disabled");
+    } else {
+        Serial.printf("[SW2BLE] Unknown char subscribe: notify=%d\n", notify);
     }
 }
 
@@ -358,7 +406,9 @@ void Switch2ProBLE::handleCommand(const uint8_t* data, uint16_t len) {
 // ============================================================
 void Switch2ProBLE::sendAck(uint8_t cmd, uint8_t subcmd,
                             const uint8_t* valuePayload, size_t valueLen) {
-    if (!_ackChar || !_connected) return;
+    // Send ACK on the outCmd characteristic (has NOTIFY), matching
+    // BlueRetro's expectation that ACKs come on the same handle as commands.
+    if (!_outCmdChar || !_connected) return;
 
     uint8_t buf[64];
     memset(buf, 0, sizeof(buf));
@@ -375,8 +425,8 @@ void Switch2ProBLE::sendAck(uint8_t cmd, uint8_t subcmd,
     size_t total = 4 + valueLen;
     if (total > sizeof(buf)) total = sizeof(buf);
 
-    _ackChar->setValue(buf, total);
-    _ackChar->notify();
+    _outCmdChar->setValue(buf, total);
+    _outCmdChar->notify();
 }
 
 // ============================================================
