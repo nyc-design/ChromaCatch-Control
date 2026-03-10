@@ -116,9 +116,9 @@ void init() {
         vendorBulk->begin();
         vendorBulk->onRequest(handleSwitchProVendorControlRequest);
         switchProUsb->setVendorInterface(vendorBulk);
-        Serial.println("[USB] Switch Pro Controller USB mode initialized (HID + Vendor Bulk)");
+        Serial.println("[USB] Switch 2 Pro Controller USB mode initialized (HID + Vendor Bulk)");
 #else
-        Serial.println("[USB] Switch Pro Controller USB mode initialized (HID only)");
+        Serial.println("[USB] Switch 2 Pro Controller USB mode initialized (HID only)");
 #endif
     } else {
 #if CONFIG_TINYUSB_ENABLED

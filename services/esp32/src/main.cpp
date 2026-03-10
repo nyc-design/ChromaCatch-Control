@@ -399,8 +399,8 @@ const char* emulationModeToString(EmulationMode mode) {
         case EMU_WIRED_MOUSE_ONLY: return "wired_mouse_only";
         case EMU_WIRED_KEYBOARD_ONLY: return "wired_keyboard_only";
         case EMU_BLUETOOTH_XBOX_CONTROLLER: return "bluetooth_xbox_controller";
-        case EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER: return "bluetooth_switch_pro_controller";
-        case EMU_WIRED_SWITCH_PRO_CONTROLLER: return "wired_switch_pro_controller";
+        case EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER: return "bluetooth_switch_2_pro_controller";
+        case EMU_WIRED_SWITCH_PRO_CONTROLLER: return "wired_switch_2_pro_controller";
         default: return "bluetooth_combo";
     }
 }
@@ -465,8 +465,8 @@ String getModeHeaderLabel() {
         case EMU_WIRED_MOUSE_ONLY: return "WIRED MOUSE";
         case EMU_WIRED_KEYBOARD_ONLY: return "WIRED KBD";
         case EMU_BLUETOOTH_XBOX_CONTROLLER: return "XBOX";
-        case EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER: return "SWITCH BT";
-        case EMU_WIRED_SWITCH_PRO_CONTROLLER: return "SWITCH USB";
+        case EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER: return "SW2 BT";
+        case EMU_WIRED_SWITCH_PRO_CONTROLLER: return "SW2 USB";
         default: return "UNKNOWN";
     }
 }
@@ -745,11 +745,11 @@ EmulationMode parseEmulationModeString(const String& rawInput) {
     if (raw == "wired_keyboard_only") return EMU_WIRED_KEYBOARD_ONLY;
 
     if (raw == "bluetooth_xbox_controller" || raw == "gamepad" || raw == "general_gamepad") return EMU_BLUETOOTH_XBOX_CONTROLLER;
-    if (raw == "bluetooth_switch_pro_controller") return EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER;
-    if (raw == "switch" || raw == "switch_pro" || raw == "switch_controller") {
+    if (raw == "bluetooth_switch_2_pro_controller" || raw == "bluetooth_switch_pro_controller") return EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER;
+    if (raw == "switch" || raw == "switch_pro" || raw == "switch_controller" || raw == "switch_2" || raw == "switch2") {
         return BOARD_SUPPORTS_BT_SWITCH_PRO_MODE ? EMU_BLUETOOTH_SWITCH_PRO_CONTROLLER : EMU_WIRED_SWITCH_PRO_CONTROLLER;
     }
-    if (raw == "wired_switch_pro_controller" || raw == "switch_wired") return EMU_WIRED_SWITCH_PRO_CONTROLLER;
+    if (raw == "wired_switch_2_pro_controller" || raw == "wired_switch_pro_controller" || raw == "switch_wired") return EMU_WIRED_SWITCH_PRO_CONTROLLER;
 
     return currentEmulationMode;
 }
@@ -1789,14 +1789,14 @@ void executeCommand(JsonDocument& doc, JsonDocument& response, CommandSource sou
         response["active_delivery"] = runtimeDeliveryToString(chooseRuntimeDelivery());
         response["ws_connected_clients"] = wsConnectedClients;
 #if defined(CONFIG_IDF_TARGET_ESP32S3) && CONFIG_TINYUSB_HID_ENABLED
-        response["usb_gamepad_profile"] = (UsbHidBridge::getGamepadProfile() == UsbHidBridge::USB_GAMEPAD_PROFILE_SWITCH_PRO) ? "switch_pro" : "generic";
+        response["usb_gamepad_profile"] = (UsbHidBridge::getGamepadProfile() == UsbHidBridge::USB_GAMEPAD_PROFILE_SWITCH_PRO) ? "switch_2_pro" : "generic";
 #endif
         return;
     }
 #if defined(CONFIG_IDF_TARGET_ESP32S3) && CONFIG_TINYUSB_ENABLED
     if (action == "dump_usb") {
-        // Dump USB descriptors as hex strings for debugging Pro Controller recognition.
-        // Compare these byte-for-byte against a real Pro Controller to find mismatches.
+        // Dump USB descriptors as hex strings for debugging Switch 2 Pro Controller recognition.
+        // Compare these byte-for-byte against a real Switch 2 Pro Controller to find mismatches.
         response["status"] = "ok";
 
         // Device descriptor (18 bytes)
@@ -1994,7 +1994,7 @@ void handleStatus() {
     doc["board"] = BOARD_IS_ESP32S3 ? "esp32s3" : (BOARD_IS_ESP32 ? "esp32" : "unknown");
     doc["supports_wired_output"] = BOARD_SUPPORTS_WIRED_OUTPUT;
     doc["supports_wired_input"] = BOARD_SUPPORTS_WIRED_INPUT;
-    doc["supports_bt_switch_pro_mode"] = BOARD_SUPPORTS_BT_SWITCH_PRO_MODE;
+    doc["supports_bt_switch_2_pro_mode"] = BOARD_SUPPORTS_BT_SWITCH_PRO_MODE;
     doc["input_priority"] = BOARD_SUPPORTS_WIRED_INPUT ? "wired>websocket>http" : "websocket>http";
     doc["wired_priority_active"] = wiredPriorityActive();
     doc["ws_priority_active"] = wsPriorityActive();
@@ -2002,7 +2002,7 @@ void handleStatus() {
     doc["ws_priority_window_ms"] = WS_PRIORITY_WINDOW_MS;
     doc["ws_port"] = WS_PORT;
     doc["ws_connected_clients"] = wsConnectedClients;
-    doc["usb_gamepad_profile"] = (UsbHidBridge::getGamepadProfile() == UsbHidBridge::USB_GAMEPAD_PROFILE_SWITCH_PRO) ? "switch_pro" : "generic";
+    doc["usb_gamepad_profile"] = (UsbHidBridge::getGamepadProfile() == UsbHidBridge::USB_GAMEPAD_PROFILE_SWITCH_PRO) ? "switch_2_pro" : "generic";
     doc["status_led_rgb"] = String(ledColor.r) + "," + String(ledColor.g) + "," + String(ledColor.b);
     doc["status_led_behavior"] = (chooseRuntimeDelivery() == RUNTIME_NONE) ? "blinking" : "solid";
     doc["status_led_rgb_pin_primary"] = statusLedRgbPinPrimary;

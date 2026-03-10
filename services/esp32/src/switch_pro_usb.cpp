@@ -533,7 +533,7 @@ void SwitchProUSB::_onOutput(uint8_t report_id, const uint8_t* buffer, uint16_t 
 //
 // Payload offsets (63 bytes, report ID 0x09 sent separately):
 //   [0]      Counter (uint8_t, increments each report)
-//   [1]      Battery/status byte (0x90 = USB-powered full battery)
+//   [1]      Fixed vendor byte (0x00 on real controller)
 //   [2]      Buttons 0: B(0), A(1), Y(2), X(3), R(4), ZR(5), +(6), R3(7)
 //   [3]      Buttons 1: DD(0), DR(1), DL(2), DU(3), L(4), ZL(5), -(6), L3(7)
 //   [4]      Buttons 2: Home(0), Cap(1), R4(2), L4(3), Square(4), unused(5-7)
@@ -555,13 +555,12 @@ void SwitchProUSB::sendReport09() {
     // [0]: incrementing counter
     payload[0] = _timer++;
 
-    // [1]: battery/connection status byte
-    // Bits 7-4 (upper nibble): battery level — valid values: 0,2,4,6,8 (8=full)
-    // Bit 3: charging flag (1=charging/USB-powered)
-    // Bits 2-0: connection info
-    // 0x88 = full battery (8 << 4) + charging (bit 3 set)
-    // Source: joypad-os switch_pro.c:389-392 parsing logic
-    payload[1] = 0x88;
+    // [1]: fixed vendor byte — always 0x00 on real Switch 2 Pro Controller.
+    // Unlike Switch 1 (Report 0x30 where byte 1 = battery/connection status),
+    // the Switch 2 Report 0x09 byte 1 is a fixed vendor field.
+    // Battery status on Switch 2 comes from vendor bulk protocol, not HID reports.
+    // Source: joypad-os switch2_pro.h struct (field "fixed", value 0x00)
+    payload[1] = 0x00;
 
     // [2-4]: 3 button bytes — bits map directly from _buttons word
     // _buttons bits 0-7 → payload[2], bits 8-15 → payload[3], bits 16-20 → payload[4]
