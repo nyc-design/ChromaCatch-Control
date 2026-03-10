@@ -1550,13 +1550,9 @@ void executeGamepadCommand(RuntimeDelivery transport, const String& action, Json
 #endif
 
         // BLE Switch 2 Pro Controller — route through Switch2ProBLE
+        // Accept commands even when not connected — buffers state so it's
+        // ready when host connects (e.g. pressing A during pairing).
         if (isSwitch2BlEMode()) {
-            if (!switch2ProBle.isConnected()) {
-                response["status"] = "error";
-                response["error"] = "switch_2_pro_ble_not_connected";
-                return;
-            }
-
             if (action == "button_press" || action == "button_release") {
                 String button = doc["button"].as<String>();
                 uint8_t btn = mapSwitchProButtonNS(button);

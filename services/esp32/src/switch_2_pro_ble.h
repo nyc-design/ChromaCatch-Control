@@ -105,16 +105,17 @@ public:
 private:
     void sendInputReport();
     void handleCommand(const uint8_t* data, uint16_t len);
+    void handlePairingCommand(const uint8_t* data, uint16_t len, uint8_t subcmd);
     void sendAck(uint8_t cmd, uint8_t subcmd, const uint8_t* valuePayload, size_t valueLen);
     void handleSpiRead(const uint8_t* data, uint16_t len);
 
-    // Remap USB SW2_BTN_* button word to BLE bit order
     static uint32_t remapButtonsUsbToBle(uint32_t usbButtons);
 
     NimBLEServer* _server = nullptr;
-    NimBLECharacteristic* _inputChar = nullptr;   // NOTIFY — 63-byte input reports
-    NimBLECharacteristic* _ackChar = nullptr;      // NOTIFY — command ACKs
-    NimBLECharacteristic* _outCmdChar = nullptr;   // WRITE|WRITE_NR — combined output/cmd from host
+    NimBLECharacteristic* _inputChar = nullptr;    // NOTIFY — 63-byte input reports
+    NimBLECharacteristic* _ackChar = nullptr;       // NOTIFY — FDE char
+    NimBLECharacteristic* _outCmdChar = nullptr;    // NOTIFY+WRITE — commands + ACK
+    NimBLECharacteristic* _svcEnableChar = nullptr; // Secondary svc — service enable
 
     uint32_t _buttons = 0;
     uint8_t _lx = 0x80, _ly = 0x80, _rx = 0x80, _ry = 0x80;
@@ -123,9 +124,9 @@ private:
     bool _connected = false;
     bool _inputSubscribed = false;
     bool _ackSubscribed = false;
+    bool _serviceEnabled = false;
     bool _active = false;
 
-    // Minimum hold enforcement (48ms — matches Pokemon Automation timing)
     static constexpr uint32_t kMinHoldMs = 48;
     uint32_t _lastPressMs = 0;
     uint32_t _pendingReleaseMask = 0;
