@@ -730,7 +730,7 @@ void Switch2ProBLE::handleSpiRead(const uint8_t* data, uint16_t len) {
 // [14-62]: IMU / padding
 // ============================================================
 void Switch2ProBLE::sendInputReport() {
-    if (!_inputChar || !_connected) return;
+    if (!_inputChar || !_connected || !_active) return;
 
     uint8_t report[63];
     memset(report, 0, sizeof(report));
@@ -837,7 +837,10 @@ void Switch2ProBLE::setFullState(uint32_t buttons, uint8_t lx, uint8_t ly, uint8
 // loop() — Send periodic input reports + process deferred releases
 // ============================================================
 void Switch2ProBLE::loop() {
-    if (!_active || !_connected || !_inputSubscribed) return;
+    if (!_active || !_connected) return;
+    // Send input reports immediately upon connection — don't wait for CCCD subscription.
+    // Real controllers start sending reports right away, which may be what triggers
+    // the Switch to proceed with service enable and protocol init.
 
     // Process deferred releases
     if (_pendingReleaseMask && (millis() - _lastPressMs >= kMinHoldMs)) {
