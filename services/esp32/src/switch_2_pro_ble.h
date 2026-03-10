@@ -129,6 +129,11 @@ private:
     bool _serviceEnabled = false;
     bool _active = false;
 
+    // SMP initiation tracking — peripheral sends Security Request after connect
+    uint16_t _connHandle = BLE_HS_CONN_HANDLE_NONE;
+    bool _smpPending = false;
+    uint32_t _connectTimeMs = 0;
+
     static constexpr uint32_t kMinHoldMs = 48;
     uint32_t _lastPressMs = 0;
     uint32_t _pendingReleaseMask = 0;
