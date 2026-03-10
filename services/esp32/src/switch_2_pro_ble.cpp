@@ -3,6 +3,11 @@
 #include <esp_mac.h>
 #include <esp_log.h>
 
+// NimBLE C API for low-level GATT/GAP service control.
+// ble_gatts_reset/count_cfg/add_svcs are in ble_gatt.h (via NimBLEDevice.h).
+// ble_svc_gap_init needs its own include.
+#include "nimble/nimble/host/services/gap/include/services/gap/ble_svc_gap.h"
+
 // ============================================================
 // Nintendo Switch 2 Pro Controller BLE GATT UUIDs
 //
@@ -53,7 +58,7 @@ static const NimBLEUUID kSecChar3UUID("00c5af5d-1964-4e30-8f51-1956f96bd283");
 // Total manufacturer AD: 2 (company) + 24 (payload) = 26 bytes.
 // With AD header (length + type): 28 bytes.
 // Plus 3-byte flags AD = 31 bytes total (exact BLE adv limit).
-// Device name "Pro Controller" goes in scan response.
+// Device name "DeviceName" goes in scan response.
 // ============================================================
 static const uint8_t kManufacturerData[] = {
     0x53, 0x05,                          // Company ID: 0x0553 (little-endian)
@@ -142,6 +147,19 @@ uint32_t Switch2ProBLE::remapButtonsUsbToBle(uint32_t usbButtons) {
 //   2. MTU >= 185 (63-byte reports silently dropped at default 23-byte MTU)
 //   3. Connectable advertising with company ID 0x0553 manufacturer data
 //   4. Service enable: host writes 0x01 0x00 to secondary service char
+//
+// CRITICAL IMPLEMENTATION NOTES:
+//   - The Switch 2 console uses HARDCODED GATT handles (documented in NSO GC
+//     Protocol Guide). Service enable MUST be at handle 0x0005. This means
+//     our custom services must be registered BEFORE the standard GAP/GATT
+//     services in NimBLE's service list.
+//   - NimBLE's built-in GATT service (0x1801) auto-adds 0x2A05 (Service Changed),
+//     0x2B3A (Server Supported Features), 0x2B29 (Client Supported Features).
+//     The real controller has an EMPTY GATT service. We skip ble_svc_gatt_init()
+//     entirely and register a minimal empty GATT service manually.
+//   - NimBLE's setFlags() always ORs in BLE_HS_ADV_F_BREDR_UNSUP (0x04).
+//     The real controller advertises with only 0x02 (LE General Discoverable).
+//     We bypass setFlags() and build raw advertising data.
 // ============================================================
 bool Switch2ProBLE::begin() {
     if (_active) return true;
@@ -183,7 +201,6 @@ bool Switch2ProBLE::begin() {
     }
 
     // Real Switch 2 controllers use "DeviceName" as their GAP Device Name
-    // (observed via nRF Connect on actual Pro Controller, confirmed in NSO GC Protocol Guide)
     NimBLEDevice::init("DeviceName");
     NimBLEDevice::setPower(9, NimBLETxPowerType::All);
 
@@ -202,15 +219,41 @@ bool Switch2ProBLE::begin() {
     // --- MTU (63-byte reports need MTU >= 185) ---
     NimBLEDevice::setMTU(185);
 
+    // Clear stale bonds that might confuse the Switch
+    NimBLEDevice::deleteAllBonds();
+
     _server = NimBLEDevice::createServer();
     _server->setCallbacks(this);
 
-    // Create secondary service — "service control"
-    // Host writes 0x01 0x00 to BD282 to activate the controller.
-    // Properties MUST match real controller exactly (verified via nRF Connect):
-    //   BD281: Read only
-    //   BD282: Write only (service enable)
-    //   BD283: Read only
+    // ================================================================
+    // CRITICAL: Reset GATT table to control handle ordering.
+    //
+    // NimBLEDevice::createServer() registers GAP (0x1800) and GATT (0x1801)
+    // services FIRST, consuming handles 1-13+. But the real Switch 2 Pro
+    // Controller has custom services FIRST:
+    //   - Secondary service (bd280) at handles 1-7, service enable at 0x0005
+    //   - Primary service (fd0) at handles 8+
+    //   - GAP at handle ~0x002D
+    //   - GATT (empty) at handle ~0x0030
+    //
+    // The Switch console uses hardcoded handle values. If service enable
+    // isn't at handle 0x0005, the Switch writes to the wrong handle and
+    // the protocol fails silently.
+    //
+    // Strategy: reset the GATT table, register OUR services first (lowest
+    // handles), then re-register GAP+GATT at the end (highest handles).
+    // ================================================================
+    ble_gatts_reset();
+
+    // --- Register secondary service FIRST (handles 1-7) ---
+    // Handle layout:
+    //   1: Service declaration (bd280)
+    //   2: BD281 char decl
+    //   3: BD281 value (Read)
+    //   4: BD282 char decl
+    //   5: BD282 value (Write) ← SERVICE ENABLE (0x0005) ✓
+    //   6: BD283 char decl
+    //   7: BD283 value (Read)
     NimBLEService* secSvc = _server->createService(kSecondaryServiceUUID);
     secSvc->createCharacteristic(kSecChar1UUID, NIMBLE_PROPERTY::READ);
     _svcEnableChar = secSvc->createCharacteristic(kSecChar2UUID, NIMBLE_PROPERTY::WRITE);
@@ -218,9 +261,9 @@ bool Switch2ProBLE::begin() {
     secSvc->createCharacteristic(kSecChar3UUID, NIMBLE_PROPERTY::READ);
     secSvc->start();
 
-    // Create Nintendo GATT service with all characteristics matching real controller.
-    // Characteristic ORDER and PROPERTIES must match exactly — verified via nRF Connect
-    // against a real Switch 2 Pro Controller. The Switch may use hardcoded handles.
+    // --- Register primary Nintendo service (handles 8+) ---
+    // Characteristic ORDER and PROPERTIES must match real controller exactly
+    // (verified via nRF Connect against a real Switch 2 Pro Controller).
     //
     // Real controller handle order (from nRF Connect):
     //   1. 3DACBC7E — Write Without Response
@@ -288,18 +331,54 @@ bool Switch2ProBLE::begin() {
 
     svc->start();
 
+    // --- Register GAP service LAST (high handles, like real controller ~0x002D) ---
+    ble_svc_gap_init();
+
+    // --- Register minimal empty GATT service (real controller has empty 0x1801) ---
+    // Do NOT call ble_svc_gatt_init() — it adds unwanted 0x2A05 (Service Changed),
+    // 0x2B3A (Server Supported Features), 0x2B29 (Client Supported Features).
+    // The real controller's GATT service is empty (just the service declaration).
+    //
+    // Note: We use static variables because the NimBLE C API takes pointers to
+    // these structs and they must persist beyond this function call.
+    static const ble_uuid16_t kGattSvcUuid = BLE_UUID16_INIT(0x1801);
+    static const struct ble_gatt_chr_def kGattSvcChrs[] = { { 0 } };
+    static const struct ble_gatt_svc_def kMinimalGattSvc[] = {
+        {
+            .type = BLE_GATT_SVC_TYPE_PRIMARY,
+            .uuid = &kGattSvcUuid.u,
+            .includes = nullptr,
+            .characteristics = kGattSvcChrs,
+        },
+        { 0 },
+    };
+    ble_gatts_count_cfg(kMinimalGattSvc);
+    ble_gatts_add_svcs(kMinimalGattSvc);
+
+    // Log the handle layout for diagnostics
+    Serial.printf("[SW2BLE] Services registered: secondary(bd280) → primary(fd0) → GAP → GATT(empty)\n");
+    Serial.printf("[SW2BLE] Expected service enable at handle 0x0005\n");
+
     // --- Advertising ---
-    // BLE adv packet max = 31 bytes.
-    // Flags (3) + manufacturer data (1+1+26=28) = 31 → exactly fits.
-    // Name goes in scan response.
+    // CRITICAL: NimBLEAdvertisementData::setFlags() ALWAYS ORs in
+    // BLE_HS_ADV_F_BREDR_UNSUP (0x04), making flags=0x06. But the real
+    // Switch 2 Pro Controller advertises with flags=0x02 ONLY (LE General
+    // Discoverable, no BR/EDR Not Supported).
+    //
+    // We bypass setFlags() and build raw advertising data using addData().
     NimBLEAdvertising* pAdv = NimBLEDevice::getAdvertising();
 
     NimBLEAdvertisementData advData;
-    // Real controller may support BR/EDR, so don't set BREDR_UNSUP.
-    // Use only LE General Discoverable flag.
-    advData.setFlags(BLE_HS_ADV_F_DISC_GEN);
-    advData.setManufacturerData(
-        std::string(reinterpret_cast<const char*>(kManufacturerData), sizeof(kManufacturerData)));
+    // Raw flags AD structure: len=2, type=0x01(Flags), value=0x02(LE General Discoverable)
+    // NO BR/EDR Not Supported flag — real controller doesn't set it.
+    uint8_t flagsAd[3] = { 0x02, 0x01, 0x02 };
+    advData.addData(flagsAd, sizeof(flagsAd));
+    // Raw manufacturer data AD structure
+    uint8_t mfgAd[2 + sizeof(kManufacturerData)];
+    mfgAd[0] = 1 + sizeof(kManufacturerData);  // length (type byte + data)
+    mfgAd[1] = 0xFF;                            // type: manufacturer specific
+    memcpy(&mfgAd[2], kManufacturerData, sizeof(kManufacturerData));
+    advData.addData(mfgAd, sizeof(mfgAd));
     pAdv->setAdvertisementData(advData);
 
     // Scan response with device name matching real controller
@@ -322,12 +401,26 @@ bool Switch2ProBLE::begin() {
     _lastReportMs = 0;
     _pendingReleaseMask = 0;
 
-    // Log advertising details for diagnostics
+    // Log actual BLE address for diagnostics (verify Nintendo OUI took effect)
+    NimBLEAddress addr = NimBLEDevice::getAddress();
+    Serial.printf("[SW2BLE] Actual BLE address: %s (type: %d)\n",
+                  addr.toString().c_str(), addr.getType());
+
+    // Log handle assignments after GATT start
+    // (ble_gatts_start() is called by pAdv->start() via NimBLEServer::start())
+    if (_svcEnableChar) {
+        Serial.printf("[SW2BLE] Service enable (BD282) handle: 0x%04X (expected 0x0005)\n",
+                      _svcEnableChar->getHandle());
+    }
+    if (_inputChar) {
+        Serial.printf("[SW2BLE] Input char (FD2) handle: 0x%04X\n", _inputChar->getHandle());
+    }
+    if (_outCmdChar) {
+        Serial.printf("[SW2BLE] OutCmd char (7492) handle: 0x%04X\n", _outCmdChar->getHandle());
+    }
+
     Serial.println("[SW2BLE] BLE Switch 2 Pro Controller advertising started");
-    Serial.printf("[SW2BLE] Manufacturer data: %d bytes (company ID 0x0553)\n",
-                  (int)sizeof(kManufacturerData));
-    Serial.printf("[SW2BLE] Flags: LE General Discoverable (no BR/EDR Not Supported)\n");
-    Serial.printf("[SW2BLE] Scan response name: DeviceName\n");
+    Serial.printf("[SW2BLE] Flags: 0x02 (LE General Discoverable ONLY, no BR/EDR Not Supported)\n");
     Serial.printf("[SW2BLE] Address type: PUBLIC (Nintendo OUI 98:B6:E9)\n");
     return true;
 }
@@ -373,8 +466,6 @@ void Switch2ProBLE::onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) {
 
     // Don't initiate SMP from peripheral — let the Switch drive the flow.
     // The Switch connects → MTU → GATT discovery → service enable → protocol init.
-    // Forcing startSecurity() from our side was causing SMP failure (encrypted=0).
-    // Debug logging (CONFIG_BT_NIMBLE_LOG_LEVEL=0) will show what the Switch does.
 }
 
 void Switch2ProBLE::onAuthenticationComplete(NimBLEConnInfo& connInfo) {
@@ -418,14 +509,19 @@ void Switch2ProBLE::onSubscribe(NimBLECharacteristic* pChar,
 
     if (pChar == _inputChar) {
         _inputSubscribed = notify;
-        Serial.printf("[SW2BLE] Input CCCD %s\n", notify ? "ENABLED → sending reports" : "disabled");
+        Serial.printf("[SW2BLE] Input CCCD %s (handle=0x%04X)\n",
+                      notify ? "ENABLED → sending reports" : "disabled",
+                      pChar->getHandle());
     } else if (pChar == _outCmdChar) {
         _ackSubscribed = notify;
-        Serial.printf("[SW2BLE] OutCmd CCCD %s\n", notify ? "ENABLED" : "disabled");
+        Serial.printf("[SW2BLE] OutCmd CCCD %s (handle=0x%04X)\n",
+                      notify ? "ENABLED" : "disabled", pChar->getHandle());
     } else if (pChar == _ackChar) {
-        Serial.printf("[SW2BLE] FDE CCCD %s\n", notify ? "ENABLED" : "disabled");
+        Serial.printf("[SW2BLE] FDE CCCD %s (handle=0x%04X)\n",
+                      notify ? "ENABLED" : "disabled", pChar->getHandle());
     } else {
-        Serial.printf("[SW2BLE] CCCD %s on %s\n", notify ? "ENABLED" : "disabled", uuid);
+        Serial.printf("[SW2BLE] CCCD %s on %s (handle=0x%04X)\n",
+                      notify ? "ENABLED" : "disabled", uuid, pChar->getHandle());
     }
 }
 
@@ -448,9 +544,10 @@ void Switch2ProBLE::onWrite(NimBLECharacteristic* pChar,
     if (pChar == _svcEnableChar) {
         if (len >= 2 && data[0] == 0x01 && data[1] == 0x00) {
             _serviceEnabled = true;
-            Serial.println("[SW2BLE] Service ENABLED by host (0x01 0x00)");
+            Serial.printf("[SW2BLE] Service ENABLED by host (0x01 0x00) on handle=0x%04X\n",
+                          pChar->getHandle());
         } else {
-            Serial.printf("[SW2BLE] Service enable write: len=%d", len);
+            Serial.printf("[SW2BLE] Service enable write: len=%d handle=0x%04X", len, pChar->getHandle());
             for (uint16_t i = 0; i < len && i < 8; i++) Serial.printf(" %02X", data[i]);
             Serial.println();
         }
@@ -458,8 +555,8 @@ void Switch2ProBLE::onWrite(NimBLECharacteristic* pChar,
     }
 
     if (len < 4) {
-        Serial.printf("[SW2BLE] Short write (%d bytes) on %s\n", len,
-                      pChar->getUUID().toString().c_str());
+        Serial.printf("[SW2BLE] Short write (%d bytes) on %s handle=0x%04X\n", len,
+                      pChar->getUUID().toString().c_str(), pChar->getHandle());
         return;
     }
 
@@ -476,8 +573,8 @@ void Switch2ProBLE::onWrite(NimBLECharacteristic* pChar,
     }
 
     // Log unrecognized writes for debugging
-    Serial.printf("[SW2BLE] Write on %s len=%d:",
-                  pChar->getUUID().toString().c_str(), len);
+    Serial.printf("[SW2BLE] Write on %s handle=0x%04X len=%d:",
+                  pChar->getUUID().toString().c_str(), pChar->getHandle(), len);
     for (uint16_t i = 0; i < len && i < 16; i++) Serial.printf(" %02X", data[i]);
     if (len > 16) Serial.printf("...");
     Serial.println();
