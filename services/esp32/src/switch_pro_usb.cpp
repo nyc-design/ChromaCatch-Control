@@ -240,8 +240,68 @@ extern "C" {
         return __real_tud_descriptor_configuration_cb(index);
     }
 
-    // Vendor Bulk callbacks are in switch_pro_vendor.cpp (separate TU to avoid
-    // inheriting TU_ATTR_WEAK from vendor_device.h included via tusb.h).
+    // --- 5) Intercept vendor control requests before framework dispatch ---
+    // The framework's tud_vendor_control_xfer_cb (esp32-hal-tinyusb.c) goes
+    // through USBVendor::_onRequest() → our callback. But the SETUP stage
+    // never reaches our callback — only DATA/ACK stages arrive. This --wrap
+    // intercepts at the TinyUSB level and handles Switch 2 vendor control
+    // requests directly with tud_control_xfer(), bypassing the framework.
+    bool __real_tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage,
+                                            tusb_control_request_t const* request);
+
+    bool __wrap_tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage,
+                                            tusb_control_request_t const* request) {
+        if (!g_switchProUsbDevice || !request) {
+            return __real_tud_vendor_control_xfer_cb(rhport, stage, request);
+        }
+
+        // Log every vendor control request at every stage for diagnostics
+        Serial.printf("[Switch2Pro] vendorCtrl stage=%u dir=%u type=%u recip=%u bReq=0x%02X wVal=0x%04X wIdx=0x%04X wLen=%u\n",
+                      stage,
+                      request->bmRequestType_bit.direction,
+                      request->bmRequestType_bit.type,
+                      request->bmRequestType_bit.recipient,
+                      request->bRequest,
+                      request->wValue, request->wIndex, request->wLength);
+
+        // Only handle vendor-type requests ourselves
+        if (request->bmRequestType_bit.type != TUSB_REQ_TYPE_VENDOR) {
+            return __real_tud_vendor_control_xfer_cb(rhport, stage, request);
+        }
+
+        if (stage == CONTROL_STAGE_SETUP) {
+            if (request->bmRequestType_bit.direction == TUSB_DIR_IN) {
+                // Host wants data from us (IN transfer).
+                // Build a response that mimics a real Switch 2 Pro Controller.
+                // bRequest=0x03 appears to be a device capabilities/status probe.
+                static uint8_t ctrl_response[64];
+                memset(ctrl_response, 0, sizeof(ctrl_response));
+
+                // Echo the request code and provide a "ready" indicator.
+                // Based on bulk ACK format: [cmd_id, status, 0x00, ...]
+                ctrl_response[0] = request->bRequest;  // echo bRequest
+                ctrl_response[1] = 0x01;  // ACK/ready status
+                ctrl_response[2] = 0x00;
+                ctrl_response[3] = 0x00;
+                ctrl_response[4] = 0x00;
+                ctrl_response[5] = 0xF8;  // status flag (observed in bulk ACKs)
+
+                uint16_t len = request->wLength;
+                if (len > sizeof(ctrl_response)) len = sizeof(ctrl_response);
+
+                Serial.printf("[Switch2Pro] vendorCtrl SETUP IN → responding %u bytes\n", len);
+                return tud_control_xfer(rhport, request, ctrl_response, len);
+            } else {
+                // Host is sending data to us (OUT transfer).
+                // Accept with zero-length status.
+                Serial.println("[Switch2Pro] vendorCtrl SETUP OUT → accepting");
+                return tud_control_status(rhport, request);
+            }
+        }
+
+        // DATA and ACK stages — just acknowledge
+        return true;
+    }
 }
 
 // Report body size (report ID sent separately by TinyUSB)

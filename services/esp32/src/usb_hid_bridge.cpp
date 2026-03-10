@@ -31,30 +31,28 @@ SwitchProUSB* switchProUsb = nullptr;
 USBVendor* vendorBulk = nullptr;
 
 bool handleSwitchProVendorControlRequest(uint8_t rhport, uint8_t stage, arduino_usb_control_request_t const *request) {
+    // NOTE: With --wrap=tud_vendor_control_xfer_cb, Switch 2 vendor control
+    // requests are now handled directly in switch_pro_usb.cpp BEFORE they
+    // reach this USBVendor callback. This handler remains as a fallback for
+    // any vendor control requests that make it through the framework path.
     if (!request) return false;
 
     static uint32_t requestCount = 0;
     requestCount++;
     Serial.printf(
-        "[Switch2Pro] vendor ctrl req #%lu stage=%u dir=%u type=%u recip=%u bReq=0x%02X wValue=0x%04X wIndex=0x%04X wLen=%u\n",
+        "[Switch2Pro] USBVendor ctrl fallback #%lu stage=%u dir=%u type=%u recip=%u bReq=0x%02X wLen=%u\n",
         static_cast<unsigned long>(requestCount),
         static_cast<unsigned>(stage),
         static_cast<unsigned>(request->bmRequestDirection),
         static_cast<unsigned>(request->bmRequestType),
         static_cast<unsigned>(request->bmRequestRecipient),
         static_cast<unsigned>(request->bRequest),
-        static_cast<unsigned>(request->wValue),
-        static_cast<unsigned>(request->wIndex),
         static_cast<unsigned>(request->wLength)
     );
 
     if (!vendorBulk) return false;
-
-    // Respond on setup stage only.
     if (stage != REQUEST_STAGE_SETUP) return true;
 
-    // Accept unknown vendor control requests instead of stalling.
-    // If the host requests IN data, return zeroed bytes of requested length.
     if (request->bmRequestDirection == REQUEST_DIRECTION_IN) {
         static uint8_t zeros[64] = {0};
         size_t len = request->wLength;
