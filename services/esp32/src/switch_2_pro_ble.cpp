@@ -3,7 +3,10 @@
 #include <esp_mac.h>
 #include <esp_log.h>
 
-// NimBLE C API available via NimBLEDevice.h (ble_gatt.h, etc.)
+// NimBLE C API for low-level GATT/GAP service control.
+// ble_gatts_reset/count_cfg/add_svcs are in ble_gatt.h (via NimBLEDevice.h).
+// ble_svc_gap_init needs its own include.
+#include "nimble/nimble/host/services/gap/include/services/gap/ble_svc_gap.h"
 
 // ============================================================
 // Nintendo Switch 2 Pro Controller BLE GATT UUIDs
@@ -168,12 +171,6 @@ bool Switch2ProBLE::begin() {
     esp_log_level_set("NimBLEServer", ESP_LOG_VERBOSE);
     esp_log_level_set("NimBLEDevice", ESP_LOG_VERBOSE);
     esp_log_level_set("NimBLECharacteristic", ESP_LOG_VERBOSE);
-    // SMP/ATT/L2CAP level logging for deeper protocol debugging
-    esp_log_level_set("ble_sm", ESP_LOG_VERBOSE);
-    esp_log_level_set("ble_att", ESP_LOG_VERBOSE);
-    esp_log_level_set("ble_l2cap", ESP_LOG_VERBOSE);
-    esp_log_level_set("ble_hs", ESP_LOG_VERBOSE);
-    esp_log_level_set("ble_gap", ESP_LOG_VERBOSE);
 
     // --- Nintendo OUI PUBLIC BLE address ---
     // NSO GC Protocol Guide: "Connect to the controller's **public** BLE address
@@ -195,11 +192,12 @@ bool Switch2ProBLE::begin() {
             static_cast<uint8_t>(factoryMac[5] - 2)  // base = bt_mac - 2 (ESP-IDF adds 2 for BT)
         };
         esp_base_mac_addr_set(baseMac);
-        // NimBLE uses base MAC directly as BLE public address (not base+2 like classic BT).
-        memcpy(kPairingMAC, baseMac, 6);
+        // Expected BLE public addr: 98:B6:E9:XX:XX:YY (YY = factoryMac[5])
+        uint8_t expectedBle[6] = { 0x98, 0xB6, 0xE9, factoryMac[3], factoryMac[4], factoryMac[5] };
+        memcpy(kPairingMAC, expectedBle, 6);
         Serial.printf("[SW2BLE] Base MAC set for Nintendo public BLE addr %02X:%02X:%02X:%02X:%02X:%02X\n",
-                      baseMac[0], baseMac[1], baseMac[2],
-                      baseMac[3], baseMac[4], baseMac[5]);
+                      expectedBle[0], expectedBle[1], expectedBle[2],
+                      expectedBle[3], expectedBle[4], expectedBle[5]);
     }
 
     // Real Switch 2 controllers use "DeviceName" as their GAP Device Name
@@ -228,20 +226,35 @@ bool Switch2ProBLE::begin() {
     _server->setCallbacks(this);
 
     // ================================================================
-    // Service order: GAP → GATT → BD280 → FD0 (matches real controller)
+    // CRITICAL: Free entire GATT service list to control handle ordering.
     //
-    // nRF Connect capture of a real Switch 2 Pro Controller shows:
-    //   1. Generic Access (0x1800) — first
-    //   2. Generic Attribute (0x1801) — second
-    //   3. BD280 (control service) — third
-    //   4. FD0 (Nintendo main service) — fourth
+    // NimBLEDevice::createServer() registers GAP (0x1800) and GATT (0x1801)
+    // services FIRST, consuming handles 1-13+. But the real Switch 2 Pro
+    // Controller has custom services FIRST:
+    //   - Secondary service (bd280) at handles 1-7, service enable at 0x0005
+    //   - Primary service (fd0) at handles 8+
+    //   - GAP at handle ~0x002D
+    //   - GATT (empty) at handle ~0x0030
     //
-    // NimBLEDevice::createServer() already registers GAP and GATT first.
-    // We just register our custom services after — no need to reorder.
-    // The Switch discovers services by UUID, not hardcoded handles.
+    // The Switch console uses hardcoded handle values. If service enable
+    // isn't at handle 0x0005, the Switch writes to the wrong handle and
+    // the protocol fails silently.
+    //
+    // ble_gatts_reset() only zeroes handle assignments but leaves services
+    // in the list. ble_gatts_free_svcs() actually frees the list so we can
+    // re-register services in the correct order.
     // ================================================================
+    ble_gatts_free_svcs();
 
-    // --- Register control service (BD280) ---
+    // --- Register secondary service FIRST (handles 1-7) ---
+    // Handle layout:
+    //   1: Service declaration (bd280)
+    //   2: BD281 char decl
+    //   3: BD281 value (Read)
+    //   4: BD282 char decl
+    //   5: BD282 value (Write) ← SERVICE ENABLE (0x0005) ✓
+    //   6: BD283 char decl
+    //   7: BD283 value (Read)
     NimBLEService* secSvc = _server->createService(kSecondaryServiceUUID);
     secSvc->createCharacteristic(kSecChar1UUID, NIMBLE_PROPERTY::READ);
     _svcEnableChar = secSvc->createCharacteristic(kSecChar2UUID, NIMBLE_PROPERTY::WRITE);
@@ -319,8 +332,33 @@ bool Switch2ProBLE::begin() {
 
     svc->start();
 
-    // GAP and GATT are already registered by createServer() — matches real controller order.
-    Serial.println("[SW2BLE] Services registered: GAP → GATT → BD280 → FD0 (matches real controller)");
+    // --- Register GAP service LAST (high handles, like real controller ~0x002D) ---
+    ble_svc_gap_init();
+
+    // --- Register minimal empty GATT service (real controller has empty 0x1801) ---
+    // Do NOT call ble_svc_gatt_init() — it adds unwanted 0x2A05 (Service Changed),
+    // 0x2B3A (Server Supported Features), 0x2B29 (Client Supported Features).
+    // The real controller's GATT service is empty (just the service declaration).
+    //
+    // Note: We use static variables because the NimBLE C API takes pointers to
+    // these structs and they must persist beyond this function call.
+    static const ble_uuid16_t kGattSvcUuid = BLE_UUID16_INIT(0x1801);
+    static const struct ble_gatt_chr_def kGattSvcChrs[] = { { 0 } };
+    static const struct ble_gatt_svc_def kMinimalGattSvc[] = {
+        {
+            .type = BLE_GATT_SVC_TYPE_PRIMARY,
+            .uuid = &kGattSvcUuid.u,
+            .includes = nullptr,
+            .characteristics = kGattSvcChrs,
+        },
+        { 0 },
+    };
+    ble_gatts_count_cfg(kMinimalGattSvc);
+    ble_gatts_add_svcs(kMinimalGattSvc);
+
+    // Log the handle layout for diagnostics
+    Serial.printf("[SW2BLE] Services registered: secondary(bd280) → primary(fd0) → GAP → GATT(empty)\n");
+    Serial.printf("[SW2BLE] Expected service enable at handle 0x0005\n");
 
     // --- Advertising ---
     // CRITICAL: NimBLEAdvertisementData::setFlags() ALWAYS ORs in
@@ -375,7 +413,7 @@ bool Switch2ProBLE::begin() {
     // Log handle assignments after GATT start
     // (ble_gatts_start() is called by pAdv->start() via NimBLEServer::start())
     if (_svcEnableChar) {
-        Serial.printf("[SW2BLE] Service enable (BD282) handle: 0x%04X\n",
+        Serial.printf("[SW2BLE] Service enable (BD282) handle: 0x%04X (expected 0x0005)\n",
                       _svcEnableChar->getHandle());
     }
     if (_inputChar) {
@@ -422,6 +460,7 @@ void Switch2ProBLE::onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) {
     _connected = true;
     _connHandle = connInfo.getConnHandle();
     _connectTimeMs = millis();
+    _smpPending = true;  // Will trigger Security Request from loop() after delay
 
     Serial.printf("[SW2BLE] Host connected (addr: %s, type: %d, connHandle=%d)\n",
                   connInfo.getAddress().toString().c_str(),
@@ -433,7 +472,7 @@ void Switch2ProBLE::onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) {
                   connInfo.getConnTimeout());
     Serial.printf("[SW2BLE] Security: encrypted=%d, authenticated=%d, bonded=%d\n",
                   connInfo.isEncrypted(), connInfo.isAuthenticated(), connInfo.isBonded());
-    // Don't initiate SMP — let the Switch drive the flow after GATT discovery.
+    Serial.println("[SW2BLE] SMP Security Request will be sent after 300ms delay...");
 }
 
 void Switch2ProBLE::onAuthenticationComplete(NimBLEConnInfo& connInfo) {
@@ -911,6 +950,18 @@ void Switch2ProBLE::setFullState(uint32_t buttons, uint8_t lx, uint8_t ly, uint8
 // ============================================================
 void Switch2ProBLE::loop() {
     if (!_active || !_connected) return;
+
+    // --- SMP Security Request (peripheral-initiated) ---
+    // NSO GC Protocol Guide sequence: Connect → SMP → MTU → GATT discovery.
+    // The Switch may be waiting for us (the peripheral) to send a Security Request
+    // PDU before it proceeds. We delay 300ms after connect to let PHY/MTU settle.
+    if (_smpPending && _connHandle != BLE_HS_CONN_HANDLE_NONE &&
+        millis() - _connectTimeMs >= 300) {
+        _smpPending = false;
+        Serial.println("[SW2BLE] Sending SMP Security Request (peripheral-initiated)...");
+        bool rc = NimBLEDevice::startSecurity(_connHandle);
+        Serial.printf("[SW2BLE] startSecurity() returned %s\n", rc ? "true" : "false");
+    }
 
     // Process deferred releases
     if (_pendingReleaseMask && (millis() - _lastPressMs >= kMinHoldMs)) {
