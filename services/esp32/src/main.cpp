@@ -1823,11 +1823,11 @@ void executeGamepadCommand(RuntimeDelivery transport, const String& action, Json
             int y = doc["y"] | 0;
             int8_t mappedX = clampInt8(map(x, -32768, 32767, -127, 127));
             int8_t mappedY = clampInt8(map(y, -32768, 32767, -127, 127));
-            // Pokemon Automation wired-controller path uses inverted Y for Switch
-            // wired reports (see NintendoSwitch_SerialPABotBase_WiredController.cpp).
-            if (switchLayout) {
-                mappedY = -mappedY;
-            }
+            // Switch 2 Pro (0x2069) uses Nintendo convention: higher Y = stick up.
+            // Do NOT invert Y for Switch 2 Pro USB mode.
+            // PA wired Switch 1 used inverted Y, but generic USB gamepad should
+            // also not invert. Only invert for non-Switch-Pro generic gamepad
+            // modes that specifically need it.
             if (strEqIgnoreCase(stick, "left")) {
                 UsbHidBridge::gamepadLeftStick(mappedX, mappedY);
             } else {

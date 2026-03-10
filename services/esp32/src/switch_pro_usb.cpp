@@ -555,12 +555,16 @@ void SwitchProUSB::sendReport09() {
     // [0]: incrementing counter
     payload[0] = _timer++;
 
-    // [1]: fixed vendor byte — always 0x00 on real Switch 2 Pro Controller.
-    // Unlike Switch 1 (Report 0x30 where byte 1 = battery/connection status),
-    // the Switch 2 Report 0x09 byte 1 is a fixed vendor field.
-    // Battery status on Switch 2 comes from vendor bulk protocol, not HID reports.
-    // Source: joypad-os switch2_pro.h struct (field "fixed", value 0x00)
-    payload[1] = 0x00;
+    // [1]: battery/connection status byte.
+    // Format matches Switch 1 convention (Report 0x30 byte 1):
+    //   bits 7-4: battery level (0x8=full, 0x6=medium, 0x4=low, 0x2=critical)
+    //   bit 3:    isCharging (1=charging, 0=not charging)
+    //   bit 2:    connection type (1=USB, 0=BT)
+    //   bits 1-0: reserved
+    // 0x8E = full battery (8) + charging (1) + USB (1) + reserved (10)
+    // Note: joypad-os labels this "fixed" at 0x00, but the Switch UI reads
+    // battery from this byte. Without it, battery shows "not charging."
+    payload[1] = 0x8E;
 
     // [2-4]: 3 button bytes — bits map directly from _buttons word
     // _buttons bits 0-7 → payload[2], bits 8-15 → payload[3], bits 16-20 → payload[4]
@@ -586,6 +590,14 @@ void SwitchProUSB::sendReport09() {
     payload[10] = (ry12 >> 4) & 0xFF;
 
     // [11-62]: IMU / motion data — zeroed
+
+    // Diagnostic: log stick values when they change from center
+    static uint8_t lastLogLx = 0x80, lastLogLy = 0x80, lastLogRx = 0x80, lastLogRy = 0x80;
+    if (_lx != lastLogLx || _ly != lastLogLy || _rx != lastLogRx || _ry != lastLogRy) {
+        Serial.printf("[Switch2Pro] sticks LX=%u LY=%u RX=%u RY=%u (12bit: %03X %03X %03X %03X)\n",
+                      _lx, _ly, _rx, _ry, lx12, ly12, rx12, ry12);
+        lastLogLx = _lx; lastLogLy = _ly; lastLogRx = _rx; lastLogRy = _ry;
+    }
 
     trySendReport(0x09, payload, sizeof(payload));
 }
