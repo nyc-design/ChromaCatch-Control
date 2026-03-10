@@ -555,12 +555,13 @@ void SwitchProUSB::sendReport09() {
     // [0]: incrementing counter
     payload[0] = _timer++;
 
-    // [1]: battery/status byte
-    // High nibble = battery level: 0x8=full, 0x6=medium, 0x4=low, 0x2=critical
-    // Bit 0 = charging flag (1=charging/USB-powered)
-    // 0x90 = full battery (0x8 << 4) + USB-powered (0x10 flag from Switch 1 convention)
-    // Real Switch 2 Pro on USB shows full battery with this value.
-    payload[1] = 0x90;
+    // [1]: battery/connection status byte
+    // Bits 7-4 (upper nibble): battery level — valid values: 0,2,4,6,8 (8=full)
+    // Bit 3: charging flag (1=charging/USB-powered)
+    // Bits 2-0: connection info
+    // 0x88 = full battery (8 << 4) + charging (bit 3 set)
+    // Source: joypad-os switch_pro.c:389-392 parsing logic
+    payload[1] = 0x88;
 
     // [2-4]: 3 button bytes — bits map directly from _buttons word
     // _buttons bits 0-7 → payload[2], bits 8-15 → payload[3], bits 16-20 → payload[4]
@@ -669,7 +670,7 @@ void SwitchProUSB::release(uint8_t b) {
 }
 
 void SwitchProUSB::setFullState(uint32_t buttons, uint8_t lx, uint8_t ly, uint8_t rx, uint8_t ry) {
-    _buttons = buttons & 0x00FFFFFF;  // 24 bits (3 button bytes)
+    _buttons = buttons & 0x001FFFFF;  // 21 bits (SW2_BTN_COUNT)
     _lx = lx;
     _ly = ly;
     _rx = rx;
