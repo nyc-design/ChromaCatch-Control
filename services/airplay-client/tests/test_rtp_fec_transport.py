@@ -574,9 +574,9 @@ class TestRTPFECProtocol:
         assert p.fec_recoveries == 0
 
     def test_short_packet_ignored(self):
-        """Packets shorter than HEADER_SIZE are silently dropped."""
+        """Packets shorter than RTP_HEADER_SIZE are silently dropped."""
         p = self._make_protocol()
-        p.datagram_received(b"\x00" * (HEADER_SIZE - 1), ("127.0.0.1", 7000))
+        p.datagram_received(b"\x00" * (RTP_HEADER_SIZE - 1), ("127.0.0.1", 7000))
         assert p.packets_received == 0
 
     def test_packet_exactly_header_size_counted(self):

@@ -12,7 +12,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 
-from backend.h264_decoder import H264Decoder
+from backend.video_decoder import VideoDecoder, detect_codec
 from backend.session_manager import SessionManager
 from shared.rtp_fec_protocol import (
     CC_HEADER_SIZE,
@@ -20,6 +20,9 @@ from shared.rtp_fec_protocol import (
     HEADER_SIZE,
     PAYLOAD_SIZE,
     RTP_HEADER_SIZE,
+    RTP_PAYLOAD_TYPE_AUDIO,
+    is_audio_packet,
+    parse_audio_rtp_packet,
     parse_cc_header,
     parse_rtp_header,
 )
@@ -75,13 +78,14 @@ class RTPFECProtocol(asyncio.DatagramProtocol):
     ) -> None:
         self._session_manager = session_manager
         self._client_id = client_id
-        self._decoder = H264Decoder()
+        self._decoder = VideoDecoder()
         self._fec_decoder = None  # Lazy init
         self._pending_blocks: dict[tuple[int, int], FECBlock] = {}  # (frame_id, block_id)
         self._pending_frames: dict[int, FrameAssembly] = {}
         self._packets_received = 0
         self._frames_decoded = 0
         self._fec_recoveries = 0
+        self._audio_packets_received = 0
         self._transport: asyncio.DatagramTransport | None = None
 
     def _get_fec_decoder(self, k: int, m: int):
@@ -98,13 +102,24 @@ class RTPFECProtocol(asyncio.DatagramProtocol):
         logger.info("RTP+FEC receiver listening")
 
     def datagram_received(self, data: bytes, addr: tuple) -> None:
-        if len(data) < HEADER_SIZE:
+        if len(data) < RTP_HEADER_SIZE:
             return
 
         self._packets_received += 1
 
-        # Parse headers
+        # Parse RTP header to check payload type
         rtp = parse_rtp_header(data[:RTP_HEADER_SIZE])
+
+        # Audio packets: PT=97, no FEC/CC header — just RTP + Opus payload
+        if is_audio_packet(rtp):
+            self._handle_audio_packet(data)
+            return
+
+        # Video packets need full header (RTP + CC)
+        if len(data) < HEADER_SIZE:
+            return
+
+        # Parse CC header
         cc = parse_cc_header(data[RTP_HEADER_SIZE : RTP_HEADER_SIZE + CC_HEADER_SIZE])
         payload = data[HEADER_SIZE:]
 
@@ -138,6 +153,24 @@ class RTPFECProtocol(asyncio.DatagramProtocol):
         # Try to complete the block
         if block.complete:
             self._complete_block(block)
+
+    def _handle_audio_packet(self, data: bytes) -> None:
+        """Handle an incoming Opus audio RTP packet."""
+        _, opus_payload = parse_audio_rtp_packet(data)
+        if not opus_payload:
+            return
+        self._audio_packets_received += 1
+        # Store Opus audio in session
+        session = self._session_manager.get_session(self._client_id)
+        if session is None:
+            return
+        session.latest_audio_chunk = opus_payload
+        session.latest_audio_sequence += 1
+        session.latest_audio_sample_rate = 48000
+        session.latest_audio_channels = 2
+        session.latest_audio_format = "opus"
+        session.audio_chunks_received += 1
+        session.last_audio_at = time.time()
 
     def _complete_block(self, block: FECBlock) -> None:
         """Recover data from a complete FEC block and add to frame assembly."""
@@ -192,11 +225,18 @@ class RTPFECProtocol(asyncio.DatagramProtocol):
             self._deliver_frame(frame)
 
     def _deliver_frame(self, frame: FrameAssembly) -> None:
-        """Decode H.264 AU and push to SessionManager."""
+        """Decode video AU and push to SessionManager."""
         au_data = b"".join(frame.blocks[i] for i in sorted(frame.blocks.keys()))
         self._pending_frames.pop(frame.frame_id, None)
 
         try:
+            # Auto-detect codec from keyframes and reset decoder if needed
+            if frame.is_keyframe:
+                detected = detect_codec(au_data)
+                if detected != self._decoder.codec_type:
+                    logger.info("RTP+FEC codec change detected: %s → %s", self._decoder.codec_type, detected)
+                    self._decoder.reset(codec=detected)
+
             bgr = self._decoder.decode(au_data)
             if bgr is not None:
                 import cv2
@@ -209,7 +249,7 @@ class RTPFECProtocol(asyncio.DatagramProtocol):
                 )
                 self._frames_decoded += 1
         except Exception:
-            logger.exception("H.264 decode failed for frame %d", frame.frame_id)
+            logger.exception("Video decode failed for frame %d", frame.frame_id)
 
     async def _update_session(self, bgr, jpeg_bytes: bytes) -> None:
         """Push decoded frame to SessionManager."""
@@ -239,6 +279,10 @@ class RTPFECProtocol(asyncio.DatagramProtocol):
     @property
     def fec_recoveries(self) -> int:
         return self._fec_recoveries
+
+    @property
+    def audio_packets_received(self) -> int:
+        return self._audio_packets_received
 
 
 class RTPFECReceiver:
