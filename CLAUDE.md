@@ -26,7 +26,7 @@ Automated shiny hunting bot for Pokemon Go using AirPlay screen mirroring, compu
 
 ### Service Architecture
 - **Airplay Client** (`services/airplay-client/`): Runs near the source device. Manages video capture (AirPlay, SysDVR, NTR, screen capture), delivers media to the backend (via WebRTC, SRT, or WebSocket), and routes commands from the backend to the target device via pluggable Commander interface (ESP32, sys-botbase, Luma3DS, virtual gamepad). Deployed as a CLI tool.
-- **iOS Controller App** (`services/ios-app/`): Native iPhone app — full drop-in replacement for the CLI airplay-client. Controls iTools BT GPS dongle (EA session + BLE NMEA), relays HID commands to ESP32 over WebSocket-first transport (HTTP fallback), and broadcasts screen via ReplayKit (H.264 over WebSocket, same h264-ws protocol as CLI). Connects to backend control WS (`/ws/control`) plus external location service.
+- **iOS Controller App** (`services/ios-app/`): Native iPhone app — full drop-in replacement for the CLI airplay-client. Controls iTools BT GPS dongle (EA session + BLE NMEA), relays HID commands to ESP32 over WebSocket-first transport (HTTP fallback), and broadcasts screen via ReplayKit (H.264 over RTP+FEC primary with WebSocket fallback, same protocol as CLI). Connects to backend control WS (`/ws/control`) plus external location service.
 - **Remote Backend** (`services/backend/`): Runs in the cloud (Cloud Run, VM, etc.). Receives frames (via RTSP from MediaMTX or WebSocket), runs CV analysis, and exposes split APIs:
   - client API (`/api/client/v1/...`) for first-party client communication and ops tooling
   - automation API (`/api/automation/v1/...`) for external game automation repos
@@ -159,7 +159,8 @@ ChromaCatch-Go/
 │   │   │   ├── audio/
 │   │   │   │   ├── factory.py               # Runtime audio source selection
 │   │   │   │   ├── airplay_audio_source.py  # AirPlay RTP audio source adapter
-│   │   │   │   └── ffmpeg_audio_source.py   # System/capture-device audio adapter
+│   │   │   │   ├── ffmpeg_audio_source.py   # System/capture-device audio adapter
+│   │   │   │   └── device_match.py         # Cross-platform UVC audio device auto-pairing
 │   │   │   ├── ws_client.py                 # WebSocket client (auto-reconnect + command ack)
 │   │   │   ├── esp32_forwarder.py           # CommandForwarder: WS command → Commander (+ ack timing)
 │   │   │   ├── capture/
@@ -225,7 +226,8 @@ ChromaCatch-Go/
 │   │       ├── ChromaCatchBroadcast/              # ReplayKit Broadcast Upload Extension
 │   │       │   ├── SampleHandler.swift            # RPBroadcastSampleHandler (screen capture → H.264)
 │   │       │   ├── H264Encoder.swift              # VideoToolbox encoder (AVCC → Annex-B)
-│   │       │   ├── BroadcastWSClient.swift        # Simplified WS client (h264-ws protocol)
+│   │       │   ├── BroadcastWSClient.swift        # Simplified WS client (h264-ws protocol, fallback)
+│   │       │   ├── BroadcastRTPClient.swift       # RTP+FEC UDP sender (NWConnection, primary transport)
 │   │       │   ├── Info.plist                     # Extension config (broadcast-services-upload)
 │   │       │   └── ChromaCatchBroadcast.entitlements  # App Group (group.com.chromacatch)
 │   │       └── ChromaCatchDNS/                    # NEPacketTunnelProvider DNS Filter Extension
@@ -266,7 +268,7 @@ ChromaCatch-Go/
 | H.264 decode | PyAV (av) — FFmpeg wrapper for backend H.264→BGR decode |
 | iOS app | Swift, SwiftUI, CoreBluetooth, ExternalAccessory, URLSessionWebSocketTask |
 | GPS spoofing | iTools BT dongle (Beken BK-BLE-1.0, MFi coprocessor, EA protocol) |
-| Testing | pytest, pytest-asyncio (543 tests) |
+| Testing | pytest, pytest-asyncio (584 tests) |
 | Linting | ruff, black, mypy |
 
 ## Phases
@@ -432,7 +434,9 @@ CC_CLIENT_AUDIO_SAMPLE_RATE=44100
 CC_CLIENT_AUDIO_CHANNELS=2
 CC_CLIENT_AUDIO_CHUNK_MS=100
 CC_CLIENT_AUDIO_INPUT_BACKEND=auto          # auto | avfoundation | pulse | dshow
-CC_CLIENT_AUDIO_INPUT_DEVICE=               # backend-specific input selector
+CC_CLIENT_AUDIO_INPUT_DEVICE=               # backend-specific input selector (auto-paired for UVC capture cards)
+# Transcode passthrough sources (airplay, sysdvr) H.264 → H.265
+CC_CLIENT_TRANSCODE_CODEC=none              # none (zero-copy default) | h265 (decode+re-encode)
 # Commander (input target)
 CC_CLIENT_COMMANDER_MODE=esp32              # esp32 | sysbotbase | luma3ds | virtual-gamepad | dsu
 CC_CLIENT_COMMANDER_HOST=192.168.1.100      # Target host (ESP32, Switch, 3DS)

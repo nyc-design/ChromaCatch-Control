@@ -236,3 +236,183 @@ class TestEncodingProviderWithAudio:
     def test_start_starts_audio(self, provider, mock_audio_source):
         provider.start()
         mock_audio_source.start.assert_called_once()
+
+
+class TestTranscodingCaptureProvider:
+    @pytest.fixture
+    def mock_inner(self):
+        inner = MagicMock()
+        inner.provider_name = "airplay-passthrough"
+        inner.is_running = True
+        inner.codec = "h264"
+        inner.has_audio = False
+        inner.start = MagicMock()
+        inner.stop = MagicMock()
+        inner.get_au = AsyncMock(
+            return_value=EncodedAccessUnit(
+                data=b"\x00\x00\x00\x01\x65data",
+                is_keyframe=True,
+                codec="h264",
+                capture_timestamp=1700000000.0,
+                sequence=1,
+            )
+        )
+        inner.get_audio = AsyncMock(return_value=None)
+        return inner
+
+    @pytest.fixture
+    def mock_encoder(self):
+        encoder = MagicMock()
+        encoder.encoder_name = "nvenc-h265"
+        encoder.codec = "h265"
+        encoder.is_ready = False
+        encoder.start = MagicMock()
+        encoder.stop = MagicMock()
+        encoder.flush = MagicMock(return_value=[])
+        encoder.encode = MagicMock(
+            return_value=EncodedAccessUnit(
+                data=b"hevc_encoded",
+                is_keyframe=True,
+                codec="h265",
+                width=1920,
+                height=1080,
+            )
+        )
+        return encoder
+
+    @pytest.fixture
+    def provider(self, mock_inner, mock_encoder):
+        from airplay_client.capture_provider.transcoding_provider import TranscodingCaptureProvider
+
+        return TranscodingCaptureProvider(inner=mock_inner, encoder=mock_encoder)
+
+    def test_provider_name(self, provider):
+        assert provider.provider_name == "airplay-passthrough→nvenc-h265"
+
+    def test_codec_is_encoder_codec(self, provider):
+        assert provider.codec == "h265"
+
+    def test_is_running_delegates(self, provider, mock_inner):
+        assert provider.is_running is True
+        mock_inner.is_running = False
+        assert provider.is_running is False
+
+    def test_has_audio_delegates(self, provider, mock_inner):
+        assert provider.has_audio is False
+        mock_inner.has_audio = True
+        assert provider.has_audio is True
+
+    def test_start_starts_inner(self, provider, mock_inner):
+        provider.start()
+        mock_inner.start.assert_called_once()
+
+    def test_stop_stops_inner_and_encoder(self, provider, mock_inner, mock_encoder):
+        provider.start()
+        provider._encoder_started = True
+        provider.stop()
+        mock_inner.stop.assert_called_once()
+        mock_encoder.flush.assert_called_once()
+        mock_encoder.stop.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_get_au_transcodes(self, provider, mock_inner, mock_encoder):
+        import sys
+
+        provider.start()
+        # Mock PyAV decode
+        mock_frame = MagicMock()
+        mock_frame.to_ndarray.return_value = np.zeros((1080, 1920, 3), dtype=np.uint8)
+
+        mock_decoder = MagicMock()
+        mock_decoder.decode.return_value = [mock_frame]
+
+        mock_av = MagicMock()
+        mock_av.CodecContext.create.return_value = mock_decoder
+        mock_av.Packet = lambda data: MagicMock(data=data)
+        mock_av.error.InvalidDataError = Exception
+
+        with patch.dict(sys.modules, {"av": mock_av, "av.error": mock_av.error}):
+            # Reset the lazy decoder so it uses our mock
+            provider._decoder = None
+            au = await provider.get_au(timeout=0.5)
+
+        assert au is not None
+        assert au.codec == "h265"
+        assert au.capture_timestamp == 1700000000.0
+        mock_encoder.start.assert_called_once_with(1920, 1080)
+        mock_encoder.encode.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_get_au_returns_none_when_inner_none(self, provider, mock_inner):
+        mock_inner.get_au = AsyncMock(return_value=None)
+        provider.start()
+        au = await provider.get_au(timeout=0.1)
+        assert au is None
+
+    @pytest.mark.asyncio
+    async def test_get_audio_delegates_to_inner(self, provider, mock_inner):
+        audio_frame = EncodedAudioFrame(data=b"opus_data")
+        mock_inner.get_audio = AsyncMock(return_value=audio_frame)
+        result = await provider.get_audio()
+        assert result is audio_frame
+
+
+class TestFactoryTranscodeWrapping:
+    @pytest.fixture(autouse=True)
+    def restore_settings(self):
+        from airplay_client.config import client_settings
+
+        orig = (
+            client_settings.capture_source,
+            client_settings.transcode_codec,
+        )
+        try:
+            yield
+        finally:
+            client_settings.capture_source, client_settings.transcode_codec = orig
+
+    def test_no_transcode_by_default(self):
+        from airplay_client.capture_provider.factory import _maybe_wrap_transcode
+        from airplay_client.config import client_settings
+
+        client_settings.transcode_codec = "none"
+        mock_provider = MagicMock()
+        result = _maybe_wrap_transcode(mock_provider)
+        assert result is mock_provider  # Not wrapped
+
+    def test_transcode_h265_wraps(self):
+        from airplay_client.capture_provider.factory import _maybe_wrap_transcode
+        from airplay_client.capture_provider.transcoding_provider import TranscodingCaptureProvider
+        from airplay_client.config import client_settings
+
+        client_settings.transcode_codec = "h265"
+        mock_provider = MagicMock()
+        mock_provider.provider_name = "airplay-passthrough"
+
+        with patch("airplay_client.encode.factory.probe_encoder_backends") as mock_probe:
+            from airplay_client.encode.probe import EncoderCapability
+
+            mock_probe.return_value = [
+                EncoderCapability(name="software", h264_codec="libx264", h265_codec="libx265", priority=99)
+            ]
+            result = _maybe_wrap_transcode(mock_provider)
+            assert isinstance(result, TranscodingCaptureProvider)
+
+    def test_empty_transcode_codec_no_wrap(self):
+        from airplay_client.capture_provider.factory import _maybe_wrap_transcode
+        from airplay_client.config import client_settings
+
+        client_settings.transcode_codec = ""
+        mock_provider = MagicMock()
+        result = _maybe_wrap_transcode(mock_provider)
+        assert result is mock_provider
+
+    def test_invalid_transcode_codec_raises(self):
+        from airplay_client.capture_provider.factory import _maybe_wrap_transcode
+        from airplay_client.config import client_settings
+
+        client_settings.transcode_codec = "vp9"
+        mock_provider = MagicMock()
+
+        with pytest.raises(ValueError, match="Unsupported CC_CLIENT_TRANSCODE_CODEC"):
+            _maybe_wrap_transcode(mock_provider)

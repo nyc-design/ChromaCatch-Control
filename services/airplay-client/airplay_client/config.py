@@ -58,6 +58,10 @@ class ClientSettings(BaseSettings):
     ntr_port: int = 8000  # NTR top screen UDP port
     airplay_reconnect_timeout_s: float = 8.0
 
+    # Transcode passthrough sources (airplay, sysdvr) from H.264 → H.265
+    # "none" = zero-copy passthrough (default), "h265" = decode + re-encode H.265
+    transcode_codec: str = "none"  # none | h265
+
     # Frame encoding for transport
     jpeg_quality: int = DEFAULT_JPEG_QUALITY
     max_dimension: int = DEFAULT_MAX_DIMENSION
