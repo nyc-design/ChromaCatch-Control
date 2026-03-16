@@ -12,7 +12,7 @@ import wave
 from fastapi import APIRouter, HTTPException, Query, WebSocket
 from pydantic import BaseModel
 
-from backend.app_state import rtsp_consumer, session_manager, ws_handler
+from backend.app_state import session_manager, ws_handler
 from backend.config import backend_settings
 from shared.frame_codec import encode_frame
 from shared.messages import GameCommandMessage, HIDCommandMessage, SetHIDModeMessage
@@ -189,15 +189,6 @@ async def get_client_status(client_id: str):
         payload["backend_frame_latency_ms"] = session.last_frame_latency_ms
         return payload
     return {"detail": "No status received yet"}
-
-
-@router.post("/clients/{client_id}/rtsp-start")
-async def start_rtsp_consumer(client_id: str, stream_path: str = Query(default=None)):
-    if not backend_settings.rtsp_consumer_enabled:
-        raise HTTPException(status_code=503, detail="RTSP consumer not enabled")
-    path = stream_path or f"chromacatch/{client_id}"
-    await rtsp_consumer.add_stream(client_id, path)
-    return {"status": "started", "client_id": client_id, "stream_path": path}
 
 
 @router.get("/clients/{client_id}/frame")

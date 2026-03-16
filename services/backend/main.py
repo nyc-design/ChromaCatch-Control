@@ -11,9 +11,7 @@ from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from backend.app_state import (
-    mediamtx_manager,
     rtp_fec_receiver,
-    rtsp_consumer,
     session_manager,
     ws_handler,
 )
@@ -30,16 +28,12 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("ChromaCatch-Go backend starting")
-    # Start MediaMTX if enabled
-    mediamtx_manager.start()
     # Start RTP+FEC receiver if enabled
     if backend_settings.rtp_fec_enabled:
         await rtp_fec_receiver.start()
     yield
     # Shutdown
     await rtp_fec_receiver.stop()
-    await rtsp_consumer.stop()
-    mediamtx_manager.stop()
     logger.info("ChromaCatch-Go backend shutting down")
 
 
@@ -212,16 +206,6 @@ async def get_client_status(client_id: str):
     return {"detail": "No status received yet"}
 
 
-@app.post("/clients/{client_id}/rtsp-start")
-async def start_rtsp_consumer(client_id: str, stream_path: str = Query(default=None)):
-    """Start consuming RTSP frames for a client (called when SRT client connects)."""
-    if not backend_settings.rtsp_consumer_enabled:
-        raise HTTPException(status_code=503, detail="RTSP consumer not enabled")
-    path = stream_path or f"chromacatch/{client_id}"
-    await rtsp_consumer.add_stream(client_id, path)
-    return {"status": "started", "client_id": client_id, "stream_path": path}
-
-
 @app.get("/clients/{client_id}/frame")
 async def get_latest_frame(client_id: str):
     """Get the latest frame as JPEG (for debug viewing)."""
@@ -329,10 +313,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         .fail { color: #e94560; }
         .stream-container { position: relative; display: inline-block; }
         .stream { max-width: 100%; border-radius: 4px; background: #000; }
-        .stream-badge { position: absolute; top: 8px; right: 8px; padding: 3px 8px; border-radius: 4px;
-                        font-size: 0.75em; font-weight: bold; color: #fff; }
-        .badge-webrtc { background: #4ecca3; }
-        .badge-mjpeg { background: #e9a345; }
         .no-clients { color: #888; font-style: italic; padding: 40px; text-align: center; }
     </style>
 </head>
@@ -340,53 +320,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <h1>ChromaCatch-Go</h1>
     <div id="clients"><div class="no-clients">Loading...</div></div>
     <script>
-        const WEBRTC_PORT = """ + str(backend_settings.mediamtx_webrtc_port) + """;
-        const MEDIAMTX_ENABLED = """ + str(backend_settings.mediamtx_enabled).lower() + """;
-
-        function toggleMute(clientId) {
-            const videoEl = document.getElementById('webrtc-' + clientId);
-            const btn = document.getElementById('unmute-' + clientId);
-            if (videoEl) {
-                videoEl.muted = !videoEl.muted;
-                btn.textContent = videoEl.muted ? 'Unmute Audio' : 'Mute Audio';
-                btn.style.borderColor = videoEl.muted ? '#4ecca3' : '#e94560';
-                btn.style.color = videoEl.muted ? '#4ecca3' : '#e94560';
-            }
-        }
-
-        async function startWHEP(videoEl, badgeEl, clientId) {
-            if (!MEDIAMTX_ENABLED) return false;
-            const whepUrl = location.protocol + '//' + location.hostname + ':' + WEBRTC_PORT
-                + '/chromacatch/' + clientId + '/whep';
-            try {
-                const pc = new RTCPeerConnection({
-                    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-                });
-                pc.addTransceiver('video', { direction: 'recvonly' });
-                pc.addTransceiver('audio', { direction: 'recvonly' });
-                pc.ontrack = (ev) => {
-                    if (ev.streams[0]) videoEl.srcObject = ev.streams[0];
-                };
-                const offer = await pc.createOffer();
-                await pc.setLocalDescription(offer);
-                const resp = await fetch(whepUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/sdp' },
-                    body: pc.localDescription.sdp,
-                });
-                if (!resp.ok) throw new Error('WHEP ' + resp.status);
-                const answer = await resp.text();
-                await pc.setRemoteDescription({ type: 'answer', sdp: answer });
-                videoEl.style.display = 'block';
-                badgeEl.textContent = 'WebRTC';
-                badgeEl.className = 'stream-badge badge-webrtc';
-                return true;
-            } catch (e) {
-                console.warn('WebRTC unavailable for ' + clientId + ':', e.message);
-                return false;
-            }
-        }
-
         // Track which clients have active streams to avoid destroying them on refresh
         let activeClients = new Set();
 
@@ -422,13 +355,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     <span class="value">${s.audio_source || 'n/a'}</span></div>
                 <div class="status-item"><span class="label">Frame Latency</span><br>
                     <span class="value">${s.backend_frame_latency_ms ? Math.round(s.backend_frame_latency_ms) + ' ms' : 'n/a'}</span></div>
-                ${s.srt_rtt_ms != null ? `
-                <div class="status-item"><span class="label">SRT RTT</span><br>
-                    <span class="value">${Math.round(s.srt_rtt_ms)} ms</span></div>
-                <div class="status-item"><span class="label">SRT Bandwidth</span><br>
-                    <span class="value">${s.srt_bandwidth_kbps ? Math.round(s.srt_bandwidth_kbps) + ' kbps' : 'n/a'}</span></div>
-                <div class="status-item"><span class="label">SRT Loss</span><br>
-                    <span class="value ${(s.srt_packet_loss_pct || 0) > 1 ? 'fail' : 'ok'}">${s.srt_packet_loss_pct != null ? s.srt_packet_loss_pct.toFixed(1) + '%' : 'n/a'}</span></div>` : ''}
                 <div class="status-item"><span class="label">Uptime</span><br>
                     <span class="value">${Math.floor((s.uptime_seconds || 0) / 60)}m ${Math.floor((s.uptime_seconds || 0) % 60)}s</span></div>`;
         }
@@ -491,28 +417,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                         <div id="status-${clientId}" class="status">${statusHtml}</div>
                         <h3>Live Stream</h3>
                         <div class="stream-container">
-                            <video id="webrtc-${clientId}" class="stream" autoplay muted playsinline width="640" style="display:none"></video>
                             <img id="mjpeg-${clientId}" class="stream" src="/stream/${clientId}?t=${Date.now()}" alt="Waiting for frames..." width="640"
                                  onerror="setTimeout(() => reconnectStream('${clientId}'), 2000)">
-                            <span id="badge-${clientId}" class="stream-badge badge-mjpeg">MJPEG</span>
-                        </div>
-                        <button id="unmute-${clientId}" style="display:none; margin-top:8px; padding:6px 16px; border:1px solid #4ecca3; background:transparent; color:#4ecca3; border-radius:4px; cursor:pointer;" onclick="toggleMute('${clientId}')">Unmute Audio</button>`;
+                        </div>`;
                     container.appendChild(div);
                     activeClients.add(clientId);
-
-                    // Try WebRTC, fall back to MJPEG
-                    const videoEl = document.getElementById('webrtc-' + clientId);
-                    const imgEl = document.getElementById('mjpeg-' + clientId);
-                    const badgeEl = document.getElementById('badge-' + clientId);
-                    if (videoEl && imgEl && badgeEl) {
-                        startWHEP(videoEl, badgeEl, clientId).then(ok => {
-                            if (ok) {
-                                imgEl.style.display = 'none';
-                                const unmuteBtn = document.getElementById('unmute-' + clientId);
-                                if (unmuteBtn) unmuteBtn.style.display = 'inline-block';
-                            }
-                        });
-                    }
                 }
             } catch(e) {
                 document.getElementById('clients').innerHTML = '<div class="no-clients">Error: ' + e.message + '</div>';
