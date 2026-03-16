@@ -39,7 +39,7 @@ class FrameMetadata(BaseMessage):
 
 
 class H264FrameMetadata(BaseMessage):
-    """Metadata sent before a binary H.264 Access Unit."""
+    """Metadata sent before a binary H.264/H.265 Access Unit."""
 
     type: str = MessageType.H264_FRAME
     sequence: int
@@ -47,6 +47,7 @@ class H264FrameMetadata(BaseMessage):
     capture_timestamp: float
     sent_timestamp: float | None = None
     byte_length: int
+    codec: str = "h264"  # "h264" or "h265"
 
 
 class AudioChunk(BaseMessage):
@@ -57,6 +58,20 @@ class AudioChunk(BaseMessage):
     sample_rate: int
     channels: int
     sample_format: str = "s16le"
+    capture_timestamp: float
+    sent_timestamp: float | None = None
+    byte_length: int
+
+
+class AudioFrameMetadata(BaseMessage):
+    """Metadata sent before a binary Opus-encoded audio frame."""
+
+    type: str = MessageType.AUDIO_FRAME
+    sequence: int
+    sample_rate: int = 48000
+    channels: int = 2
+    duration_ms: int = 20
+    codec: str = "opus"
     capture_timestamp: float
     sent_timestamp: float | None = None
     byte_length: int
@@ -201,6 +216,7 @@ _TYPE_MAP: dict[str, type[BaseMessage]] = {
     MessageType.FRAME: FrameMetadata,
     MessageType.H264_FRAME: H264FrameMetadata,
     MessageType.AUDIO_CHUNK: AudioChunk,
+    MessageType.AUDIO_FRAME: AudioFrameMetadata,
     MessageType.CLIENT_STATUS: ClientStatus,
     MessageType.HID_COMMAND: HIDCommandMessage,
     MessageType.GAME_COMMAND: GameCommandMessage,

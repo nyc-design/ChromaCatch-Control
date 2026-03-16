@@ -203,12 +203,13 @@ class WebSocketClient:
         au_bytes: bytes,
         is_keyframe: bool,
         capture_timestamp: float | None = None,
+        codec: str = "h264",
     ) -> None:
-        """Send an H.264 Access Unit (metadata + binary H.264).
+        """Send an H.264/H.265 Access Unit (metadata + binary AU).
 
         Sends two WebSocket messages:
-        1. JSON metadata (H264FrameMetadata)
-        2. Binary H.264 AU bytes
+        1. JSON metadata (H264FrameMetadata with codec field)
+        2. Binary AU bytes
         """
         if not self.is_connected:
             return
@@ -221,6 +222,7 @@ class WebSocketClient:
             capture_timestamp=ts,
             sent_timestamp=time.time(),
             byte_length=len(au_bytes),
+            codec=codec,
         )
 
         async with self._send_lock:

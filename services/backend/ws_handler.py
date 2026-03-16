@@ -8,11 +8,12 @@ import cv2
 from fastapi import WebSocket, WebSocketDisconnect
 
 from backend.config import backend_settings
-from backend.h264_decoder import H264Decoder
+from backend.video_decoder import VideoDecoder
 from backend.session_manager import ChannelType, ClientSession, SessionManager
 from shared.frame_codec import decode_frame
 from shared.messages import (
     AudioChunk,
+    AudioFrameMetadata,
     ClientStatus,
     CommandAck,
     FrameMetadata,
@@ -30,13 +31,18 @@ class WebSocketHandler:
 
     def __init__(self, session_manager: SessionManager) -> None:
         self._session_manager = session_manager
-        self._h264_decoders: dict[str, H264Decoder] = {}
+        self._decoders: dict[str, VideoDecoder] = {}
 
-    def _get_decoder(self, client_id: str) -> H264Decoder:
-        """Get or create an H.264 decoder for a client."""
-        if client_id not in self._h264_decoders:
-            self._h264_decoders[client_id] = H264Decoder()
-        return self._h264_decoders[client_id]
+    def _get_decoder(self, client_id: str, codec: str = "h264") -> VideoDecoder:
+        """Get or create a video decoder for a client, resetting if codec changes."""
+        decoder = self._decoders.get(client_id)
+        if decoder is None:
+            self._decoders[client_id] = VideoDecoder(codec=codec)
+            return self._decoders[client_id]
+        if decoder.codec_type != codec:
+            logger.info("Codec change for %s: %s → %s, resetting decoder", client_id, decoder.codec_type, codec)
+            decoder.reset(codec=codec)
+        return decoder
 
     async def handle_connection(
         self,
@@ -59,8 +65,8 @@ class WebSocketHandler:
         )
         # Reset H.264 decoder on new frame channel — stale state from previous
         # broadcast session would reject all P-frames until next keyframe.
-        if channel == "frame" and resolved_client_id in self._h264_decoders:
-            self._h264_decoders[resolved_client_id].reset()
+        if channel == "frame" and resolved_client_id in self._decoders:
+            self._decoders[resolved_client_id].reset()
             logger.info("H.264 decoder reset for reconnected client %s", resolved_client_id)
         logger.info("Client %s connected (channel=%s)", resolved_client_id, channel)
 
@@ -83,7 +89,7 @@ class WebSocketHandler:
             if current_ws is websocket:
                 await self._session_manager.unregister(resolved_client_id, channel=channel)
                 if channel == "frame":
-                    self._h264_decoders.pop(resolved_client_id, None)
+                    self._decoders.pop(resolved_client_id, None)
             else:
                 logger.info("Client %s: skipping cleanup, connection already replaced (channel=%s)", resolved_client_id, channel)
 
@@ -97,6 +103,7 @@ class WebSocketHandler:
         expecting_frame_data: FrameMetadata | None = None
         expecting_h264_data: H264FrameMetadata | None = None
         expecting_audio_data: AudioChunk | None = None
+        expecting_opus_data: AudioFrameMetadata | None = None
         msg_count = 0
 
         while True:
@@ -122,16 +129,25 @@ class WebSocketHandler:
                     expecting_frame_data = msg
                     expecting_h264_data = None
                     expecting_audio_data = None
+                    expecting_opus_data = None
 
                 elif isinstance(msg, H264FrameMetadata):
                     expecting_h264_data = msg
                     expecting_frame_data = None
+                    expecting_audio_data = None
+                    expecting_opus_data = None
+
+                elif isinstance(msg, AudioFrameMetadata):
+                    expecting_opus_data = msg
+                    expecting_frame_data = None
+                    expecting_h264_data = None
                     expecting_audio_data = None
 
                 elif isinstance(msg, AudioChunk):
                     expecting_audio_data = msg
                     expecting_frame_data = None
                     expecting_h264_data = None
+                    expecting_opus_data = None
 
                 elif isinstance(msg, ClientStatus):
                     session.last_status = msg
@@ -154,7 +170,23 @@ class WebSocketHandler:
             elif "bytes" in message:
                 binary_data = message["bytes"]
 
-                # --- Audio chunk ---
+                # --- Opus audio frame ---
+                if expecting_opus_data is not None:
+                    if len(binary_data) > backend_settings.max_audio_bytes:
+                        logger.warning("Opus frame too large from %s: %d bytes", client_id, len(binary_data))
+                        expecting_opus_data = None
+                        continue
+                    session.latest_audio_chunk = binary_data
+                    session.latest_audio_sequence = expecting_opus_data.sequence
+                    session.latest_audio_sample_rate = expecting_opus_data.sample_rate
+                    session.latest_audio_channels = expecting_opus_data.channels
+                    session.latest_audio_format = "opus"
+                    session.audio_chunks_received += 1
+                    session.last_audio_at = time.time()
+                    expecting_opus_data = None
+                    continue
+
+                # --- Audio chunk (legacy PCM) ---
                 if expecting_audio_data is not None:
                     if len(binary_data) > backend_settings.max_audio_bytes:
                         logger.warning(
@@ -186,7 +218,8 @@ class WebSocketHandler:
                         continue
 
                     try:
-                        decoder = self._get_decoder(client_id)
+                        codec = getattr(expecting_h264_data, "codec", "h264") or "h264"
+                        decoder = self._get_decoder(client_id, codec=codec)
                         frame = decoder.decode(binary_data)
                         if frame is not None:
                             _, jpeg_buf = cv2.imencode(
@@ -213,7 +246,8 @@ class WebSocketHandler:
                                     - expecting_h264_data.sent_timestamp
                                 ) * 1000
                             logger.debug(
-                                "H264 #%d from %s: %dx%d, kf=%s, latency=%.0fms, transport=%s",
+                                "%s #%d from %s: %dx%d, kf=%s, latency=%.0fms, transport=%s",
+                                codec.upper(),
                                 expecting_h264_data.sequence,
                                 client_id,
                                 frame.shape[1],
@@ -228,7 +262,7 @@ class WebSocketHandler:
                             )
                     except Exception as e:
                         logger.error(
-                            "Failed to decode H.264 from %s: %s", client_id, e
+                            "Failed to decode %s from %s: %s", codec, client_id, e
                         )
 
                     expecting_h264_data = None

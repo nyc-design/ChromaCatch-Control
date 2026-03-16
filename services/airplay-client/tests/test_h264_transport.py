@@ -124,12 +124,12 @@ class TestTransportFactoryH264WS:
             )
 
     @patch("airplay_client.transport.factory.client_settings")
-    def test_unknown_mode_includes_h264_ws(self, mock_settings):
+    def test_unknown_mode_raises_error(self, mock_settings):
         mock_settings.transport_mode = "invalid-mode"
 
         from airplay_client.transport.factory import create_media_transport
 
-        with pytest.raises(ValueError, match="h264-ws"):
+        with pytest.raises(ValueError, match="rtp-fec"):
             create_media_transport(
                 frame_source=MagicMock(),
                 audio_source=None,

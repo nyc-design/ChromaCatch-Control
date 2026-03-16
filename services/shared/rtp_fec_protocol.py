@@ -35,8 +35,11 @@ PAYLOAD_SIZE = MAX_MTU - IP_UDP_OVERHEAD - HEADER_SIZE  # ~1452 bytes
 
 # --- RTP ---
 RTP_VERSION = 2
-RTP_PAYLOAD_TYPE = 96    # dynamic PT for video
+RTP_PAYLOAD_TYPE_VIDEO = 96    # dynamic PT for video
+RTP_PAYLOAD_TYPE = RTP_PAYLOAD_TYPE_VIDEO  # backward compat alias
+RTP_PAYLOAD_TYPE_AUDIO = 97    # dynamic PT for Opus audio
 RTP_CLOCK_RATE = 90000   # standard video clock
+RTP_AUDIO_CLOCK_RATE = 48000   # Opus clock rate
 
 # --- Default ports ---
 DEFAULT_RTP_FEC_PORT = 7000
@@ -110,3 +113,36 @@ def parse_cc_header(data: bytes) -> dict:
         "is_keyframe": bool(flags & FLAG_KEYFRAME),
         "is_last_block": bool(flags & FLAG_LAST_BLOCK),
     }
+
+
+def is_audio_packet(rtp_header: dict) -> bool:
+    """Check if an RTP packet carries audio (Opus) data."""
+    return rtp_header.get("pt") == RTP_PAYLOAD_TYPE_AUDIO
+
+
+def build_audio_rtp_packet(
+    opus_data: bytes,
+    seq: int,
+    timestamp: int,
+    ssrc: int,
+) -> bytes:
+    """Build an RTP packet carrying Opus audio data.
+
+    Audio packets use PT=97 and have no ChromaCatch FEC header —
+    Opus handles loss gracefully with PLC (Packet Loss Concealment).
+    Layout: [RTP Header (12B)] [Opus payload]
+    """
+    rtp = build_rtp_header(
+        seq=seq,
+        timestamp=timestamp,
+        ssrc=ssrc,
+        marker=False,
+        pt=RTP_PAYLOAD_TYPE_AUDIO,
+    )
+    return rtp + opus_data
+
+
+def parse_audio_rtp_packet(data: bytes) -> tuple[dict, bytes]:
+    """Parse an audio RTP packet into (rtp_header, opus_payload)."""
+    rtp = parse_rtp_header(data[:RTP_HEADER_SIZE])
+    return rtp, data[RTP_HEADER_SIZE:]
