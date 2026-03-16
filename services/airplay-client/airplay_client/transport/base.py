@@ -1,19 +1,36 @@
 """Abstract base class for media transport."""
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from airplay_client.capture_provider.base import CaptureProvider
 
 
 class MediaTransport(ABC):
-    """Base class for media transport backends (SRT or WebSocket).
+    """Base class for media transport backends.
 
     A MediaTransport is responsible for delivering video and audio data
     from the client to the backend. The control plane (commands, status,
     ACKs) always uses WebSocket regardless of transport mode.
+
+    New (unified) transports implement start_with_provider() to pull
+    EncodedAccessUnit/EncodedAudioFrame from a CaptureProvider.
+    Legacy transports implement start() with their own source management.
     """
 
     @abstractmethod
     async def start(self) -> None:
-        """Start the transport (connect / launch subprocess)."""
+        """Start the transport (legacy path — transport manages its own sources)."""
+
+    async def start_with_provider(self, provider: CaptureProvider) -> None:
+        """Start the transport, pulling media from the given CaptureProvider.
+
+        Override this in unified transports. Default falls back to start().
+        """
+        await self.start()
 
     @abstractmethod
     async def stop(self) -> None:
